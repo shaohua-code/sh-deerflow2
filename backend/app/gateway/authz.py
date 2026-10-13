@@ -34,7 +34,7 @@ import functools
 import inspect
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 from fastapi import HTTPException, Request
 
 from deerflow.authz.principal import build_principal_from_context
-from deerflow.authz.provider import AuthorizationProvider, AuthzDecision, AuthzRequest, Principal
+from deerflow.authz.provider import AuthorizationProvider, AuthzRequest, Principal, is_authz_decision
 from deerflow.authz.runtime import resolve_authorization_provider
 from deerflow.config.authorization_config import AuthorizationConfig
 
@@ -72,6 +72,43 @@ class Permissions:
     PROJECTS_READ = "projects:read"
     PROJECTS_WRITE = "projects:write"
     PROJECTS_DELETE = "projects:delete"
+
+    # Custom Agent definitions are scoped to the current Gateway user. The
+    # global USER.md endpoint uses AGENTS_ADMIN because it is injected into
+    # every custom Agent in this deployment.
+    AGENTS_READ = "agents:read"
+    AGENTS_WRITE = "agents:write"
+    AGENTS_DELETE = "agents:delete"
+    AGENTS_ADMIN = "agents:admin"
+
+    # Per-user memory API access; config inspection is administrative.
+    MEMORY_READ = "memory:read"
+    MEMORY_WRITE = "memory:write"
+    MEMORY_DELETE = "memory:delete"
+    MEMORY_ADMIN = "memory:admin"
+
+    # 当前登录用户的工作台偏好；服务端还会检查 session 和本地 owner。
+    PREFERENCES_READ = "preferences:read"
+    PREFERENCES_WRITE = "preferences:write"
+
+    # User-owned external connector bindings; runtime secrets stay admin-only.
+    CHANNELS_READ = "channels:read"
+    CHANNELS_WRITE = "channels:write"
+    CHANNELS_ADMIN = "channels:admin"
+    INTEGRATIONS_READ = "integrations:read"
+    INTEGRATIONS_WRITE = "integrations:write"
+    INTEGRATIONS_ADMIN = "integrations:admin"
+
+    # User-owned skill content and deployment-wide skill configuration.
+    SKILLS_READ = "skills:read"
+    SKILLS_WRITE = "skills:write"
+    SKILLS_DELETE = "skills:delete"
+    SKILLS_ADMIN = "skills:admin"
+
+    # Shared managed subagent catalog and MCP runtime configuration.
+    SUBAGENTS_READ = "subagents:read"
+    SUBAGENTS_ADMIN = "subagents:admin"
+    MCP_ADMIN = "mcp:admin"
 
 
 class AuthContext:
@@ -119,6 +156,132 @@ class AuthContext:
         return self.user
 
 
+@dataclass(slots=True)
+class ScheduledTaskAuthorizationContext:
+    """Short-lived owner authorization resolved for one scheduled occurrence.
+
+    The IAM credential capability is memory-only and is passed to the run
+    worker through ``RunContext``; callers must never persist or serialize it.
+    """
+
+    user: Any
+    auth: AuthContext
+    authz_attributes: dict[str, Any]
+
+
+async def resolve_scheduled_task_authorization(
+    user_id: str,
+    *,
+    context_mode: str,
+    thread_id: str | None,
+    thread_store: Any,
+) -> ScheduledTaskAuthorizationContext:
+    """Reauthorize one scheduled Agent occurrence as its active owner.
+
+    Scheduled runs outlive their creating HTTP request. Before a worker is
+    admitted, reload the owner, resolve a currently active server-side OIDC
+    vault session, re-evaluate route grants, and apply the same owner data
+    scopes used by interactive run admission. If no Central IAM provider is
+    configured, local RBAC remains the source of route permissions and the
+    repository/thread owner checks remain mandatory.
+    """
+    from app.gateway.auth_disabled import AUTH_SOURCE_SESSION
+    from app.gateway.deps import get_local_provider
+
+    user = await get_local_provider().get_user(user_id)
+    if user is None or not getattr(user, "is_active", False):
+        raise HTTPException(status_code=403, detail="Scheduled tasks are unavailable for this account")
+
+    authorization_config = _get_route_authorization_config()
+    provider = None
+    if authorization_config.enabled is True:
+        try:
+            provider = _get_cached_route_provider(authorization_config)
+        except Exception:
+            logger.warning("Could not resolve authorization provider for scheduled task admission")
+            raise HTTPException(status_code=503, detail="Scheduled task authorization is unavailable") from None
+        if provider is None:
+            raise HTTPException(status_code=503, detail="Scheduled task authorization is unavailable")
+
+    authz_attributes: dict[str, Any] = {}
+    is_central_iam = provider is not None and (getattr(provider, "requires_iam_identity", False) is True or getattr(provider, "name", None) == "central-iam")
+    if is_central_iam:
+        try:
+            from app.gateway.auth.iam_token_vault import load_active_iam_authorization_attributes
+            from app.gateway.routers.auth import _get_oidc_service
+            from deerflow.config.app_config import get_app_config
+
+            app_config = get_app_config()
+            authz_attributes = await load_active_iam_authorization_attributes(
+                user=user,
+                provider_configs=app_config.auth.oidc.providers,
+                oidc_service=_get_oidc_service(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Could not resolve an active IAM vault session for scheduled task admission")
+            raise HTTPException(status_code=503, detail="Scheduled task IAM authorization is unavailable") from None
+        credentials = authz_attributes.get("iam_credentials")
+        if credentials is None:
+            raise HTTPException(status_code=403, detail="An active IAM session is required to run this scheduled task")
+
+    permissions = await resolve_route_permissions(
+        user,
+        is_internal=False,
+        authz_attributes=authz_attributes,
+    )
+    auth = AuthContext(user=user, permissions=permissions)
+    if not auth.has_permission("threads", "write") or not auth.has_permission("runs", "create"):
+        raise HTTPException(status_code=403, detail="Permission denied: scheduled task run creation")
+
+    synthetic_request = SimpleNamespace(
+        state=SimpleNamespace(
+            user=user,
+            auth=auth,
+            auth_source=AUTH_SOURCE_SESSION,
+            iam_authz_attributes=authz_attributes,
+        ),
+        headers={},
+    )
+    await require_iam_data_scope_for_request(
+        synthetic_request,
+        user,
+        target="threads:write",
+        action="write",
+    )
+    await require_iam_data_scope_for_request(
+        synthetic_request,
+        user,
+        target="runs:create",
+        action="create",
+    )
+
+    if context_mode == "reuse_thread":
+        if not isinstance(thread_id, str) or not thread_id:
+            raise HTTPException(status_code=403, detail="Scheduled task thread is unavailable")
+        if not auth.has_permission("threads", "read"):
+            raise HTTPException(status_code=403, detail="Permission denied: threads:read")
+        if not await thread_store.check_access(thread_id, str(user.id), require_existing=True):
+            raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+        await require_iam_data_scope_for_request(
+            synthetic_request,
+            user,
+            target="threads:read",
+            action="read",
+            resource_id=thread_id,
+        )
+        await require_iam_data_scope_for_request(
+            synthetic_request,
+            user,
+            target="threads:write",
+            action="write",
+            resource_id=thread_id,
+        )
+
+    return ScheduledTaskAuthorizationContext(user=user, auth=auth, authz_attributes=authz_attributes)
+
+
 def get_auth_context(request: Request) -> AuthContext | None:
     """Get AuthContext from request state."""
     return getattr(request.state, "auth", None)
@@ -156,6 +319,29 @@ _ALL_PERMISSIONS: list[str] = [
     Permissions.PROJECTS_READ,
     Permissions.PROJECTS_WRITE,
     Permissions.PROJECTS_DELETE,
+    Permissions.MEMORY_READ,
+    Permissions.MEMORY_WRITE,
+    Permissions.MEMORY_DELETE,
+    Permissions.MEMORY_ADMIN,
+    Permissions.PREFERENCES_READ,
+    Permissions.PREFERENCES_WRITE,
+    Permissions.AGENTS_READ,
+    Permissions.AGENTS_WRITE,
+    Permissions.AGENTS_DELETE,
+    Permissions.AGENTS_ADMIN,
+    Permissions.CHANNELS_READ,
+    Permissions.CHANNELS_WRITE,
+    Permissions.CHANNELS_ADMIN,
+    Permissions.INTEGRATIONS_READ,
+    Permissions.INTEGRATIONS_WRITE,
+    Permissions.INTEGRATIONS_ADMIN,
+    Permissions.SKILLS_READ,
+    Permissions.SKILLS_WRITE,
+    Permissions.SKILLS_DELETE,
+    Permissions.SKILLS_ADMIN,
+    Permissions.SUBAGENTS_READ,
+    Permissions.SUBAGENTS_ADMIN,
+    Permissions.MCP_ADMIN,
 ]
 
 
@@ -226,7 +412,12 @@ def _get_cached_route_provider(config: AuthorizationConfig) -> AuthorizationProv
     return provider
 
 
-async def resolve_route_permissions(user: User, *, is_internal: bool) -> list[str]:
+async def resolve_route_permissions(
+    user: User,
+    *,
+    is_internal: bool,
+    authz_attributes: dict[str, Any] | None = None,
+) -> list[str]:
     """Return the route permissions granted to an authenticated user.
 
     Disabled authorization preserves the legacy all-permissions behavior.
@@ -263,6 +454,7 @@ async def resolve_route_permissions(user: User, *, is_internal: bool) -> list[st
             "oauth_provider": getattr(user, "oauth_provider", None),
             "oauth_id": getattr(user, "oauth_id", None),
             "is_internal": is_internal,
+            "authz_attributes": authz_attributes,
         },
         default_role=config.default_role,
     )
@@ -278,7 +470,7 @@ async def resolve_route_permissions(user: User, *, is_internal: bool) -> list[st
         )
         try:
             decision = await provider.aauthorize(request)
-            if not isinstance(decision, AuthzDecision):
+            if not is_authz_decision(decision):
                 raise TypeError("AuthorizationProvider.aauthorize must return AuthzDecision")
         except asyncio.CancelledError:
             raise
@@ -303,7 +495,39 @@ async def resolve_route_permissions_for_request(request: Request, user: Any) -> 
     internal auth header), so middleware-less consumers resolve exactly what
     ``_authenticate`` resolves and the two cannot drift apart.
     """
-    return await resolve_route_permissions(user, is_internal=_is_internal_caller(request, user))
+    authz_attributes: dict[str, Any] | None = None
+    config = _get_route_authorization_config()
+    if config.enabled is True:
+        try:
+            provider = _get_cached_route_provider(config)
+        except Exception:
+            provider = None  # resolve_route_permissions applies the configured failure policy below
+        if provider is not None and (getattr(provider, "requires_iam_identity", False) is True or getattr(provider, "name", None) == "central-iam"):
+            try:
+                from app.gateway.auth.iam_token_vault import load_iam_authorization_attributes
+                from app.gateway.routers.auth import _get_oidc_service
+                from deerflow.config.app_config import get_app_config
+
+                app_config = get_app_config()
+                authz_attributes = await load_iam_authorization_attributes(
+                    user=user,
+                    session_id=getattr(request.state, "iam_session_id", None),
+                    provider_configs=app_config.auth.oidc.providers,
+                    oidc_service=_get_oidc_service(),
+                )
+            except Exception:
+                # Keep token, provider URL, and DB/network exception details out of logs.
+                logger.warning("Could not resolve a server-side IAM session for Gateway authorization")
+                authz_attributes = {}
+            # Request state is transient and is consumed only by other Gateway
+            # authorization paths during this HTTP request (models/sandbox).
+            request.state.iam_authz_attributes = authz_attributes
+
+    return await resolve_route_permissions(
+        user,
+        is_internal=_is_internal_caller(request, user),
+        authz_attributes=authz_attributes,
+    )
 
 
 class _AuthorizationUnavailable(Exception):
@@ -317,7 +541,12 @@ class _AuthorizationUnavailable(Exception):
         self.fail_closed = fail_closed
 
 
-def resolve_model_authorization(user: User, *, is_internal: bool) -> tuple[AuthorizationProvider | None, Principal | None]:
+def resolve_model_authorization(
+    user: User,
+    *,
+    is_internal: bool,
+    authz_attributes: dict[str, Any] | None = None,
+) -> tuple[AuthorizationProvider | None, Principal | None]:
     """Return ``(provider, principal)`` for model-route authorization.
 
     When authorization is disabled, returns ``(None, None)`` so callers can
@@ -343,13 +572,18 @@ def resolve_model_authorization(user: User, *, is_internal: bool) -> tuple[Autho
         raise _AuthorizationUnavailable(fail_closed=config.fail_closed)
 
     principal = build_principal_from_context(
-        _route_authz_context(user, is_internal=is_internal),
+        _route_authz_context(user, is_internal=is_internal, authz_attributes=authz_attributes),
         default_role=config.default_role,
     )
     return provider, principal
 
 
-def _route_authz_context(user: User, *, is_internal: bool) -> dict:
+def _route_authz_context(
+    user: User,
+    *,
+    is_internal: bool,
+    authz_attributes: dict[str, Any] | None = None,
+) -> dict:
     """Build the shared Principal context dict for a request-scoped user.
 
     Applies the ``INTERNAL_SYSTEM_ROLE → None`` pop so internal callers fall
@@ -368,7 +602,109 @@ def _route_authz_context(user: User, *, is_internal: bool) -> dict:
         "oauth_provider": getattr(user, "oauth_provider", None),
         "oauth_id": getattr(user, "oauth_id", None),
         "is_internal": is_internal,
+        "authz_attributes": authz_attributes,
     }
+
+
+async def require_iam_data_scope_for_request(
+    request: Request,
+    user: Any | None,
+    *,
+    target: str,
+    action: str = "read",
+    resource_id: str | None = None,
+) -> None:
+    """Check Central IAM row scope before returning owner-scoped records.
+
+    DeerFlow currently stores project/thread rows with a local ``user_id``
+    owner, but has no trusted tenant or organization ownership columns. This
+    bridge therefore accepts only IAM ``owner_user_id`` scopes that match the
+    verified OIDC subject; the repository still filters by the local user ID.
+    Broader tenant/organization scopes fail closed until DeerFlow can represent
+    and migrate those ownership relationships.
+    """
+    if getattr(request, "_deerflow_test_bypass_auth", False):
+        return
+
+    config = _get_route_authorization_config()
+    if config.enabled is not True:
+        return
+    try:
+        provider = _get_cached_route_provider(config)
+    except Exception:
+        logger.warning("Could not resolve Central IAM data-scope provider")
+        raise HTTPException(status_code=503, detail="IAM data-scope authorization is unavailable") from None
+
+    # The central IAM contract is optional when DeerFlow is configured with
+    # its local RBAC provider; that provider has no remote row-scope API.
+    if provider is None or not (getattr(provider, "requires_iam_identity", False) is True or getattr(provider, "name", None) == "central-iam"):
+        return
+
+    # Some read routers rely on the Gateway middleware rather than a permission
+    # decorator. Resolve the auth user only after Central IAM is confirmed, so
+    # local-RBAC and legacy test clients retain their existing behavior.
+    if user is None:
+        auth = getattr(request.state, "auth", None)
+        user = getattr(auth, "user", None) or getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=503, detail="IAM data-scope authorization is unavailable")
+
+    checker = getattr(provider, "aresolve_data_scope", None)
+    if not callable(checker):
+        raise HTTPException(status_code=503, detail="IAM data-scope authorization is unavailable")
+
+    authz_attributes = getattr(request.state, "iam_authz_attributes", None)
+    principal = build_principal_from_context(
+        _route_authz_context(
+            user,
+            is_internal=_is_internal_caller(request, user),
+            authz_attributes=authz_attributes,
+        ),
+        default_role=config.default_role,
+    )
+    context: dict[str, Any] = {"route_target": target}
+    if resource_id is not None:
+        context["resource_id"] = resource_id
+    try:
+        decision = await checker(
+            principal,
+            resource="route",
+            action=action,
+            target=target,
+            context=context,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Central IAM data-scope request failed")
+        raise HTTPException(status_code=503, detail="IAM data-scope authorization is unavailable") from None
+
+    if getattr(decision, "allow", False) is not True:
+        raise HTTPException(status_code=403, detail="Permission denied by Central IAM data scope")
+
+    metadata = getattr(decision, "metadata", None)
+    scope = metadata.get("data_scope") if isinstance(metadata, Mapping) else None
+    credentials = authz_attributes.get("iam_credentials") if isinstance(authz_attributes, Mapping) else None
+    subject = credentials.get("iam_subject") if isinstance(credentials, Mapping) else None
+    tenant_id = credentials.get("iam_tenant_id") if isinstance(credentials, Mapping) else None
+    constraints = scope.get("constraints") if isinstance(scope, Mapping) else None
+    if not isinstance(scope, Mapping) or scope.get("mode") != "any_of" or not isinstance(constraints, list) or not constraints or not isinstance(subject, str) or subject != getattr(user, "oauth_id", None) or not isinstance(tenant_id, str):
+        raise HTTPException(status_code=503, detail="IAM data scope cannot be applied to this resource")
+
+    # Existing repositories enforce local user ownership. Until DeerFlow has
+    # tenant/org columns and a verified IAM-to-local identity mapping, do not
+    # interpret broader IAM scopes as permission to expose another user's rows.
+    for constraint in constraints:
+        branch_tenant_id = constraint.get("tenant_id") if isinstance(constraint, Mapping) else None
+        if (
+            not isinstance(constraint, Mapping)
+            or constraint.get("kind") != "owner"
+            or constraint.get("field") != "owner_user_id"
+            or constraint.get("user_id") != subject
+            or not isinstance(branch_tenant_id, str)
+            or branch_tenant_id.lower() != tenant_id.lower()
+        ):
+            raise HTTPException(status_code=503, detail="IAM data scope cannot be applied to this resource")
 
 
 def authorize_sandbox_for_request(
@@ -376,6 +712,7 @@ def authorize_sandbox_for_request(
     *,
     is_internal: bool,
     app_config: AppConfig | None,
+    authz_attributes: dict[str, Any] | None = None,
 ) -> None:
     """Check ``sandbox:execute`` for a Gateway request before sandbox acquisition.
 
@@ -397,7 +734,7 @@ def authorize_sandbox_for_request(
     if config.enabled is not True:
         return
 
-    context = _route_authz_context(user, is_internal=is_internal)
+    context = _route_authz_context(user, is_internal=is_internal, authz_attributes=authz_attributes)
 
     try:
         authorize_sandbox_execution(
@@ -474,7 +811,12 @@ async def try_acquire_sandbox_for_request(
 
         user = await get_optional_user_from_request(request) if request is not None else None
         if user is not None:
-            authorize_sandbox_for_request(user, is_internal=_is_internal_caller(request, user), app_config=app_config)
+            authorize_sandbox_for_request(
+                user,
+                is_internal=_is_internal_caller(request, user),
+                app_config=app_config,
+                authz_attributes=getattr(request.state, "iam_authz_attributes", None),
+            )
     except SandboxAuthorizationError:
         logger.info("Sandbox sync skipped: sandbox execution not permitted for this caller (thread_id=%s)", thread_id)
         return SandboxRequestLease(
@@ -597,6 +939,7 @@ def require_permission(
     action: str,
     owner_check: bool = False,
     require_existing: bool = False,
+    request_parameter: str = "request",
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Decorator that checks permission for resource:action.
 
@@ -613,6 +956,8 @@ def require_permission(
                           **destructive / mutating** routes (DELETE, PATCH,
                           state-update) so a deleted thread can't be re-targeted
                           by another user via the missing-row code path.
+        request_parameter: Name of the handler parameter carrying FastAPI's
+                            Request when a legacy route calls it ``http_request``.
 
     Usage:
         # Read-style: legacy untracked threads are allowed
@@ -635,7 +980,7 @@ def require_permission(
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            request = kwargs.get("request")
+            request = kwargs.get(request_parameter)
             if request is None:
                 # Unit tests may call decorated route handlers directly — with
                 # or without constructing a FastAPI Request object — and may
@@ -646,11 +991,15 @@ def require_permission(
                     bound = inspect.signature(func).bind_partial(*args, **kwargs)
                 except TypeError:
                     bound = None
-                if bound is not None and "request" in bound.arguments:
-                    request = bound.arguments["request"]
-                elif "request" in inspect.signature(func).parameters:
-                    kwargs["request"] = _make_test_request_stub()
-                    request = kwargs["request"]
+                if bound is not None and request_parameter in bound.arguments:
+                    request = bound.arguments[request_parameter]
+                    if request is None and request_parameter in inspect.signature(func).parameters:
+                        request = _make_test_request_stub()
+                        bound.arguments[request_parameter] = request
+                        args, kwargs = bound.args, bound.kwargs
+                elif request_parameter in inspect.signature(func).parameters:
+                    kwargs[request_parameter] = _make_test_request_stub()
+                    request = kwargs[request_parameter]
                 else:
                     return await func(*args, **kwargs)
 
@@ -717,6 +1066,29 @@ def require_permission(
                         status_code=404,
                         detail=f"Thread {thread_id} not found",
                     )
+
+            # 本地 owner 校验保护会话归属；中央 data_scope 也要覆盖按 ID
+            # 读取和修改的线程/运行资源，否则用户可绕过列表入口访问被策略排除的行。
+            if owner_check and action == "read" and resource in {"threads", "runs"}:
+                # Read behavior is intentionally kept compatible with routes
+                # that enumerate a thread's runs (there is no run ID there).
+                await require_iam_data_scope_for_request(request, auth.user, target=f"{resource}:{action}")
+            elif owner_check and ((resource == "threads" and action in {"write", "delete"}) or (resource == "runs" and action in {"create", "cancel"})):
+                # A new run has no resource ID yet. Existing thread mutations
+                # bind to thread_id; run cancellation binds to the run_id in
+                # the route. The local owner check above still runs first.
+                resource_id = None
+                if resource == "threads":
+                    resource_id = kwargs.get("thread_id")
+                elif action == "cancel":
+                    resource_id = kwargs.get("run_id")
+                await require_iam_data_scope_for_request(
+                    request,
+                    auth.user,
+                    target=f"{resource}:{action}",
+                    action=action,
+                    resource_id=str(resource_id) if resource_id is not None else None,
+                )
 
             return await func(*args, **kwargs)
 

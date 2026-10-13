@@ -1,12 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
+import { AuthShell } from "@/components/auth/auth-shell";
 import { RememberSessionOption } from "@/components/auth/remember-session-option";
 import { Button } from "@/components/ui/button";
-import { FlickeringGrid } from "@/components/ui/flickering-grid";
 import { Input } from "@/components/ui/input";
 import { getCsrfHeaders } from "@/core/api/fetcher";
 import { useAuth } from "@/core/auth/AuthProvider";
@@ -23,12 +22,11 @@ type SetupMode = "loading" | "init_admin" | "change_password" | "unavailable";
 export default function SetupPage() {
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
-  const { theme, resolvedTheme } = useTheme();
   const { t } = useI18n();
   const [mode, setMode] = useState<SetupMode>("loading");
   const [setupStatusAttempt, setSetupStatusAttempt] = useState(0);
 
-  // --- Shared state ---
+  // 共享表单状态，供首次建号与修改首次登录密码两种模式使用。
   const [email, setEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -38,7 +36,7 @@ export default function SetupPage() {
     () => loadRememberLoginPreference().rememberMe,
   );
 
-  // --- Change-password mode only ---
+  // 仅修改首次登录密码模式会使用当前密码。
   const [currentPassword, setCurrentPassword] = useState("");
 
   useEffect(() => {
@@ -47,8 +45,7 @@ export default function SetupPage() {
     if (isAuthenticated && user?.needs_setup) {
       setMode("change_password");
     } else if (!isAuthenticated) {
-      // Check if the system has no users yet. A slow Gateway must not leave the
-      // setup page in an infinite loading state or silently redirect away.
+      // 是否需要创建首个管理员只能由 Gateway 判断；慢响应或失败不能被误当作已初始化。
       setMode("loading");
       void fetchSetupStatus()
         .then((data: { needs_setup?: boolean }) => {
@@ -56,7 +53,7 @@ export default function SetupPage() {
           if (data.needs_setup) {
             setMode("init_admin");
           } else {
-            // System already set up and user is not logged in — go to login
+            // 系统已有账号且当前未登录，回到登录页面。
             router.replace("/login");
           }
         })
@@ -64,7 +61,7 @@ export default function SetupPage() {
           if (!cancelled) setMode("unavailable");
         });
     } else {
-      // Authenticated but needs_setup is false — already set up
+      // 已登录且账号不再需要初始化，直接进入工作台。
       router.replace("/workspace");
     }
 
@@ -73,13 +70,13 @@ export default function SetupPage() {
     };
   }, [isAuthenticated, user, router, setupStatusAttempt]);
 
-  // ── Init-admin handler ─────────────────────────────────────────────
+  // 首次管理员创建：初始化状态由 Gateway 决定，提交仍沿用现有认证接口。
   const handleInitAdmin = async (e: React.SubmitEvent) => {
     e.preventDefault();
     setError("");
 
     if (newPassword !== confirmPassword) {
-      setError("Passwords do not match");
+      setError(t.settings.account.passwordMismatch);
       return;
     }
 
@@ -109,23 +106,23 @@ export default function SetupPage() {
 
       router.push("/workspace");
     } catch {
-      setError("Network error. Please try again.");
+      setError(t.login.networkError);
     } finally {
       setLoading(false);
     }
   };
 
-  // ── Change-password handler ────────────────────────────────────────
+  // 首次登录改密：继续使用 Gateway CSRF token 和现有会话，不另建产品账号流程。
   const handleChangePassword = async (e: React.SubmitEvent) => {
     e.preventDefault();
     setError("");
 
     if (newPassword !== confirmPassword) {
-      setError("Passwords do not match");
+      setError(t.settings.account.passwordMismatch);
       return;
     }
     if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters");
+      setError(t.settings.account.passwordTooShort);
       return;
     }
 
@@ -155,35 +152,35 @@ export default function SetupPage() {
 
       router.push("/workspace");
     } catch {
-      setError("Network error. Please try again.");
+      setError(t.login.networkError);
     } finally {
       setLoading(false);
     }
   };
 
-  const actualTheme = theme === "system" ? resolvedTheme : theme;
-
   if (mode === "loading") {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-muted-foreground text-sm">Loading…</p>
-      </div>
+      <AuthShell>
+        <p className="text-muted-foreground text-center text-sm">
+          {t.setup.loading}
+        </p>
+      </AuthShell>
     );
   }
 
   if (mode === "unavailable") {
     return (
-      <div className="flex min-h-screen items-center justify-center px-4">
-        <div className="w-full max-w-md space-y-4 text-center">
+      <AuthShell>
+        <div className="space-y-5 text-center">
           <div>
-            <h1 className="text-xl font-semibold">
+            <h1 className="text-2xl font-semibold tracking-tight">
               {t.login.serviceUnavailableTitle}
             </h1>
             <p className="text-muted-foreground mt-2 text-sm">
               {t.login.serviceUnavailableDescription}
             </p>
           </div>
-          <div className="flex justify-center gap-3">
+          <div className="flex flex-col justify-center gap-3 sm:flex-row">
             <Button
               type="button"
               onClick={() => {
@@ -202,68 +199,67 @@ export default function SetupPage() {
             </Button>
           </div>
         </div>
-      </div>
+      </AuthShell>
     );
   }
 
-  // ── Admin initialization form ──────────────────────────────────────
+  // 首次安装时创建管理员账号。
   if (mode === "init_admin") {
     return (
-      <div className="bg-background flex min-h-screen items-center justify-center">
-        <FlickeringGrid
-          className="absolute inset-0 z-0 mask-[url(/images/deer.svg)] mask-size-[100vw] mask-center mask-no-repeat md:mask-size-[72vh]"
-          squareSize={4}
-          gridGap={4}
-          color={actualTheme === "dark" ? "white" : "black"}
-          maxOpacity={0.3}
-          flickerChance={0.25}
-        />
-        <div className="border-border/20 bg-background/5 w-full max-w-md space-y-6 rounded-3xl border p-8 backdrop-blur-sm">
-          <div className="text-center">
-            <h1 className="font-serif text-3xl">DeerFlow</h1>
-            <p className="text-muted-foreground mt-2">Create admin account</p>
+      <AuthShell>
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t.setup.adminTitle}
+            </h1>
             <p className="text-muted-foreground mt-1 text-xs">
-              Set up the administrator account to get started.
+              {t.setup.adminDescription}
             </p>
           </div>
-          <form onSubmit={handleInitAdmin} className="space-y-2">
-            <div className="flex flex-col space-y-1">
+          <form onSubmit={handleInitAdmin} className="space-y-5">
+            <div className="flex flex-col gap-2">
               <label htmlFor="email" className="text-sm font-medium">
-                Email
+                {t.login.email}
               </label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                autoComplete="email"
+                placeholder={t.setup.emailPlaceholder}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                className="bg-background/70 h-11 rounded-xl"
                 required
               />
             </div>
-            <div className="flex flex-col space-y-1">
+            <div className="flex flex-col gap-2">
               <label htmlFor="password" className="text-sm font-medium">
-                Password
+                {t.login.password}
               </label>
               <Input
                 id="password"
                 type="password"
-                placeholder="Password (min. 8 characters)"
+                autoComplete="new-password"
+                placeholder={t.setup.adminPasswordPlaceholder}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
+                className="bg-background/70 h-11 rounded-xl"
                 required
                 minLength={8}
               />
             </div>
-            <div className="flex flex-col space-y-1">
+            <div className="flex flex-col gap-2">
               <label htmlFor="confirmPassword" className="text-sm font-medium">
-                Confirm Password
+                {t.setup.confirmPassword}
               </label>
               <Input
                 id="confirmPassword"
                 type="password"
-                placeholder="Confirm password"
+                autoComplete="new-password"
+                placeholder={t.setup.confirmPasswordPlaceholder}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
+                className="bg-background/70 h-11 rounded-xl"
                 required
                 minLength={8}
               />
@@ -272,78 +268,125 @@ export default function SetupPage() {
               checked={rememberMe}
               onCheckedChange={setRememberMe}
             />
-            {error && <p className="ms-1 text-sm text-red-500">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Creating account…" : "Create Admin Account"}
+            {error && (
+              <p
+                role="alert"
+                aria-live="assertive"
+                className="text-sm text-red-500"
+              >
+                {error}
+              </p>
+            )}
+            <Button
+              type="submit"
+              className="shadow-primary/15 h-11 w-full rounded-xl text-sm font-semibold shadow-md"
+              disabled={loading}
+            >
+              {loading ? t.setup.creatingAdmin : t.login.createAdminAccount}
             </Button>
           </form>
         </div>
-      </div>
+      </AuthShell>
     );
   }
 
-  // ── Change-password form (needs_setup after login) ─────────────────
+  // 已有账号首次登录时，要求先补全邮箱并更改临时密码。
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center">
-      <FlickeringGrid
-        className="absolute inset-0 z-0 mask-[url(/images/deer.svg)] mask-size-[100vw] mask-center mask-no-repeat md:mask-size-[72vh]"
-        squareSize={4}
-        gridGap={4}
-        color={actualTheme === "dark" ? "white" : "black"}
-        maxOpacity={0.3}
-        flickerChance={0.25}
-      />
-      <div className="border-border/20 bg-background/5 w-full max-w-md space-y-6 rounded-3xl border p-8 backdrop-blur-sm">
-        <div className="text-center">
-          <h1 className="font-serif text-3xl">DeerFlow</h1>
-          <p className="text-muted-foreground mt-2">
-            Complete admin account setup
-          </p>
+    <AuthShell>
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t.setup.setupTitle}
+          </h1>
           <p className="text-muted-foreground mt-1 text-xs">
-            Set your real email and a new password.
+            {t.setup.setupDescription}
           </p>
         </div>
-        <form onSubmit={handleChangePassword} className="space-y-4">
-          <Input
-            type="email"
-            placeholder="Your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <Input
-            type="password"
-            placeholder="Current password"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            required
-          />
-          <Input
-            type="password"
-            placeholder="New password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            required
-            minLength={8}
-          />
-          <Input
-            type="password"
-            placeholder="Confirm new password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            required
-            minLength={8}
-          />
+        <form onSubmit={handleChangePassword} className="space-y-5">
+          <div className="flex flex-col gap-2">
+            <label htmlFor="setup-email" className="text-sm font-medium">
+              {t.login.email}
+            </label>
+            <Input
+              id="setup-email"
+              type="email"
+              autoComplete="email"
+              placeholder={t.setup.emailPlaceholder}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="bg-background/70 h-11 rounded-xl"
+              required
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="currentPassword" className="text-sm font-medium">
+              {t.setup.currentPassword}
+            </label>
+            <Input
+              id="currentPassword"
+              type="password"
+              autoComplete="current-password"
+              placeholder={t.setup.currentPasswordPlaceholder}
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              className="bg-background/70 h-11 rounded-xl"
+              required
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="newPassword" className="text-sm font-medium">
+              {t.setup.newPassword}
+            </label>
+            <Input
+              id="newPassword"
+              type="password"
+              autoComplete="new-password"
+              placeholder={t.setup.newPasswordPlaceholder}
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="bg-background/70 h-11 rounded-xl"
+              required
+              minLength={8}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="confirmNewPassword" className="text-sm font-medium">
+              {t.setup.confirmNewPassword}
+            </label>
+            <Input
+              id="confirmNewPassword"
+              type="password"
+              autoComplete="new-password"
+              placeholder={t.setup.confirmNewPasswordPlaceholder}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="bg-background/70 h-11 rounded-xl"
+              required
+              minLength={8}
+            />
+          </div>
           <RememberSessionOption
             checked={rememberMe}
             onCheckedChange={setRememberMe}
           />
-          {error && <p className="text-sm text-red-500">{error}</p>}
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Setting up…" : "Complete Setup"}
+          {error && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="text-sm text-red-500"
+            >
+              {error}
+            </p>
+          )}
+          <Button
+            type="submit"
+            className="shadow-primary/15 h-11 w-full rounded-xl text-sm font-semibold shadow-md"
+            disabled={loading}
+          >
+            {loading ? t.setup.savingPassword : t.setup.completeSetup}
           </Button>
         </form>
       </div>
-    </div>
+    </AuthShell>
   );
 }

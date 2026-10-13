@@ -34,12 +34,21 @@ const mocks = rs.hoisted(() => {
     activeProjects: [] as Project[],
     fetchNextTrashPage: rs.fn(),
     restoreMutate: rs.fn(),
+    restorePending: false,
     purgeMutate: rs.fn(),
+    purgePending: false,
     emptyMutate: rs.fn(),
+    emptyPending: false,
+    userPermissions: undefined as string[] | null | undefined,
+    toastError: rs.fn(),
+    toastSuccess: rs.fn(),
     MockTrashNotFoundError,
     MockRestoreConflictError,
   };
 });
+rs.mock("sonner", () => ({
+  toast: { error: mocks.toastError, success: mocks.toastSuccess },
+}));
 
 rs.mock("@/core/trash", () => {
   // Stable identity across renders: the view flattens ``data.pages``.
@@ -64,7 +73,7 @@ rs.mock("@/core/trash", () => {
   return {
     TrashNotFoundError: mocks.MockTrashNotFoundError,
     RestoreConflictError: mocks.MockRestoreConflictError,
-    useInfiniteTrashDocuments: () => {
+    useInfiniteTrashDocuments: (_options?: { enabled?: boolean }) => {
       trashResult.data.pages[0]!.documents = mocks.documents;
       trashResult.data.pages[0]!.total =
         mocks.documentsTotal ?? mocks.documents.length;
@@ -73,15 +82,15 @@ rs.mock("@/core/trash", () => {
     },
     useRestoreDocument: () => ({
       mutate: mocks.restoreMutate,
-      isPending: false,
+      isPending: mocks.restorePending,
     }),
     usePurgeDocument: () => ({
       mutate: mocks.purgeMutate,
-      isPending: false,
+      isPending: mocks.purgePending,
     }),
     useEmptyTrash: () => ({
       mutate: mocks.emptyMutate,
-      isPending: false,
+      isPending: mocks.emptyPending,
     }),
   };
 });
@@ -103,6 +112,12 @@ rs.mock("@/core/projects", () => ({
   useProjects: () => ({
     data: mocks.activeProjects,
     isLoading: false,
+  }),
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: { id: "user-1", permissions: mocks.userPermissions },
   }),
 }));
 
@@ -141,6 +156,10 @@ beforeEach(() => {
   mocks.documentsHasNextPage = false;
   mocks.retentionDays = 30;
   mocks.activeProjects = [];
+  mocks.restorePending = false;
+  mocks.purgePending = false;
+  mocks.emptyPending = false;
+  mocks.userPermissions = undefined;
 });
 
 afterEach(() => {
@@ -149,6 +168,31 @@ afterEach(() => {
 });
 
 describe("TrashView", () => {
+  it("hides cached trash rows when project read is explicitly denied", () => {
+    mocks.userPermissions = ["projects:write"];
+    mocks.documents = [makeTrashDocument()];
+
+    render(<TrashView />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("alert").textContent).toContain("projects:read");
+    expect(screen.queryByText("q3-report.pdf")).toBeNull();
+    expect(screen.queryByTestId("trash-empty-button")).toBeNull();
+  });
+
+  it("keeps trash readable while hiding restore and permanent-delete controls", () => {
+    mocks.userPermissions = ["projects:read"];
+    mocks.documents = [makeTrashDocument()];
+
+    render(<TrashView />, { wrapper: Wrapper });
+
+    expect(screen.getByText("q3-report.pdf")).toBeDefined();
+    expect(screen.queryByRole("button", { name: /Restore/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Delete permanently/ }),
+    ).toBeNull();
+    expect(screen.queryByTestId("trash-empty-button")).toBeNull();
+  });
+
   it("renders rows with the origin project and remaining retention", () => {
     mocks.documents = [makeTrashDocument()];
     render(<TrashView />, { wrapper: Wrapper });
@@ -210,6 +254,48 @@ describe("TrashView", () => {
     );
   });
 
+  it("locks the restore target picker while the retry request is pending", async () => {
+    mocks.documents = [makeTrashDocument()];
+    mocks.activeProjects = [
+      {
+        id: "proj-2",
+        name: "Beta",
+        instructions: "",
+        presentation: {},
+        status: "active",
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+      },
+    ];
+    mocks.restoreMutate.mockImplementation(
+      (
+        input: { projectId?: string },
+        options: { onError?: (error: Error) => void },
+      ) => {
+        if (input.projectId === undefined) {
+          options.onError?.(
+            new mocks.MockTrashNotFoundError("Trash document not found"),
+          );
+        }
+      },
+    );
+    const view = render(<TrashView />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /Restore/ }));
+    expect(await screen.findByRole("dialog")).toBeDefined();
+
+    mocks.restorePending = true;
+    view.rerender(<TrashView />);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+
   it("keeps the row and skips the picker on a content_missing restore conflict", async () => {
     mocks.documents = [makeTrashDocument()];
     mocks.restoreMutate.mockImplementation(
@@ -233,6 +319,75 @@ describe("TrashView", () => {
     // No picker for a conflict — the row simply stays in trash.
     expect(screen.queryByText("Choose a project")).toBeNull();
     expect(screen.getByText("q3-report.pdf")).toBeDefined();
+  });
+
+  it("shows a localized restore failure without exposing backend detail", async () => {
+    mocks.documents = [makeTrashDocument()];
+    mocks.restoreMutate.mockImplementation(
+      (_input: unknown, options: { onError?: (error: Error) => void }) => {
+        options.onError?.(new Error("private storage path and credentials"));
+      },
+    );
+    render(<TrashView />, { wrapper: Wrapper });
+
+    fireEvent.click(screen.getByRole("button", { name: /Restore/ }));
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to restore document",
+      ),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private storage path and credentials",
+    );
+  });
+
+  it("shows a localized permanent-delete failure without exposing backend detail", async () => {
+    mocks.documents = [makeTrashDocument()];
+    mocks.purgeMutate.mockImplementation(
+      (_id: string, options: { onError?: (error: Error) => void }) => {
+        options.onError?.(new Error("private storage path and credentials"));
+      },
+    );
+    render(<TrashView />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /Delete permanently/ }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Delete permanently",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to delete document",
+      ),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private storage path and credentials",
+    );
+  });
+
+  it("shows a localized empty-trash failure without exposing backend detail", async () => {
+    mocks.documents = [makeTrashDocument()];
+    mocks.emptyMutate.mockImplementation(
+      (_input: unknown, options: { onError?: (error: Error) => void }) => {
+        options.onError?.(new Error("private storage path and credentials"));
+      },
+    );
+    render(<TrashView />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByTestId("trash-empty-button"));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Empty trash",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith("Failed to empty trash"),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private storage path and credentials",
+    );
   });
 
   it("requires the irreversible confirmation before purging one document", () => {
@@ -274,6 +429,42 @@ describe("TrashView", () => {
       within(dialog).getByRole("button", { name: "Empty trash" }),
     );
     expect(mocks.emptyMutate).toHaveBeenCalled();
+  });
+
+  it("locks permanent-delete and empty-trash dialogs while their request is pending", () => {
+    mocks.documents = [makeTrashDocument()];
+    const view = render(<TrashView />, { wrapper: Wrapper });
+
+    fireEvent.click(screen.getByRole("button", { name: /Delete permanently/ }));
+    mocks.purgePending = true;
+    view.rerender(<TrashView />);
+    let dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+
+    mocks.purgePending = false;
+    view.rerender(<TrashView />);
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+    fireEvent.click(screen.getByTestId("trash-empty-button"));
+    mocks.emptyPending = true;
+    view.rerender(<TrashView />);
+    dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("paginates: loaded-vs-total plus a Load more that fetches the next page", () => {

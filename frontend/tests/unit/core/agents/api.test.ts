@@ -1,20 +1,16 @@
 /**
  * Tests for the error-classification behaviour of `checkAgentName`.
  *
- * Issue #3041: when the backend returns a non-200 response (e.g. a 500 with
- * a database error, a 422 from misbehaving routing, or any other 4xx/5xx
- * not in the 502/503/504 set), the UI used to swallow the backend detail
- * into a generic "Could not verify name availability" fallback because the
- * page-level catch block only handled `reason === "backend_unreachable"`.
+ * Issue #3041: the API keeps a real response detail distinct from a generated
+ * status-text fallback, while preserving the `backend_unreachable` category
+ * for transport failures and 502/503/504 responses.
  *
- * The fix carries the raw backend detail as `AgentNameCheckError.detail`
- * (distinct from `message`, which always has a non-empty value because
- * `checkAgentName` substitutes a generated fallback when the backend sent
- * no detail). The UI uses `detail` to decide whether to surface a real
- * backend string or fall back to the localised "could not verify" copy.
+ * The typed error may retain the raw response detail for API-level callers,
+ * but the product page maps request failures to localized safe copy and never
+ * renders that detail directly.
  *
- * These tests pin both halves of the contract so a future refactor doesn't
- * silently drop the detail or leak the generated fallback into the UI.
+ * These tests pin API classification and fallback behavior; they do not make
+ * backend detail part of the user-facing presentation contract.
  */
 import { beforeEach, describe, expect, test, rs } from "@rstest/core";
 
@@ -29,8 +25,11 @@ rs.mock("@/core/config", () => ({
 import {
   AgentsApiDisabledError,
   checkAgentName,
+  getAgent,
+  listAgents,
   updateAgent,
 } from "@/core/agents/api";
+import { GatewayApiError } from "@/core/api/errors";
 import { fetch as fetcher } from "@/core/api/fetcher";
 
 const mockedFetch = rs.mocked(fetcher);
@@ -149,6 +148,36 @@ describe("checkAgentName", () => {
     await expect(checkAgentName("deal.agent")).rejects.not.toBeInstanceOf(
       AgentsApiDisabledError,
     );
+  });
+});
+
+describe("getAgent", () => {
+  test("retains a 404 status so the chat route can show a not-found state", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(404, { detail: "Agent not found" }),
+    );
+
+    const request = getAgent("missing-agent");
+    await expect(request).rejects.toBeInstanceOf(GatewayApiError);
+    await expect(request).rejects.toMatchObject({
+      status: 404,
+      message: "Agent not found",
+    });
+  });
+
+  test("forwards query cancellation signals for list and detail reads", async () => {
+    const signal = new AbortController().signal;
+    mockedFetch
+      .mockResolvedValueOnce(jsonResponse(200, { agents: [] }))
+      .mockResolvedValueOnce(jsonResponse(200, { name: "researcher" }));
+
+    await listAgents({ signal });
+    await getAgent("researcher", { signal });
+
+    expect(mockedFetch).toHaveBeenNthCalledWith(1, "/api/agents", { signal });
+    expect(mockedFetch).toHaveBeenNthCalledWith(2, "/api/agents/researcher", {
+      signal,
+    });
   });
 });
 

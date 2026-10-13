@@ -10,6 +10,7 @@ from typing import Any
 
 from deerflow_extension_api import (
     EXTENSION_TASK_STORE_KEY,
+    AdminActionEvent,
     CompactionEvent,
     ExtensionData,
     SystemModelRequest,
@@ -306,6 +307,33 @@ async def notify_task_stop(
             outcome,
         ),
         info.task_id,
+        timeout,
+    )
+
+
+async def notify_admin_action(
+    extensions: LoadedExtensions,
+    event: AdminActionEvent,
+    *,
+    timeout: float | None = 5.0,
+) -> None:
+    """Await product observers for a completed Gateway admin action.
+
+    Account routes run on the serving loop while an extension may own async
+    resources on the registered notification loop. Dispatching through the
+    same bridge keeps the public hook independent from Gateway internals.
+    """
+    if not extensions.admin_action_observers:
+        logger.warning(
+            "No admin-action audit observer is registered for %s; product audit was not recorded",
+            event.action,
+        )
+        return
+    await _notify_each_on_extension_loop(
+        extensions.admin_action_observers,
+        "on_admin_action",
+        lambda observer: observer.on_admin_action(event),
+        event.action,
         timeout,
     )
 

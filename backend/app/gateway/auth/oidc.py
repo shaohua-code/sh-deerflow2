@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode, urlsplit
 
 import httpx
 import jwt
@@ -35,6 +35,7 @@ class OIDCMetadata:
     token_endpoint: str
     userinfo_endpoint: str | None
     jwks_uri: str
+    revocation_endpoint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,39 @@ class OIDCIdentity:
     email_verified: bool
     name: str | None
     claims: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class OIDCAuthenticationResult:
+    """Verified identity plus backend-only tokens returned by the code flow.
+
+    The Gateway can persist tokens in an encrypted server-side vault without
+    putting them in the browser session or Agent runtime context. Token fields
+    are excluded from the generated representation so accidental object
+    logging cannot reveal credentials.
+    """
+
+    identity: OIDCIdentity
+    access_token: str | None = field(default=None, repr=False)
+    refresh_token: str | None = field(default=None, repr=False)
+    access_token_expires_in: int | None = None
+    refresh_token_expires_in: int | None = None
+
+    def __repr__(self) -> str:
+        return "OIDCAuthenticationResult(identity=<redacted>, tokens=<redacted>)"
+
+
+@dataclass(frozen=True)
+class OIDCTokenRefreshResult:
+    """Backend-only token response returned by a refresh-token grant."""
+
+    access_token: str = field(repr=False)
+    expires_in: int
+    refresh_token: str | None = field(default=None, repr=False)
+    refresh_expires_in: int | None = None
+
+    def __repr__(self) -> str:
+        return "OIDCTokenRefreshResult(tokens=<redacted>)"
 
 
 class OIDCError(Exception):
@@ -62,7 +96,7 @@ class OIDCValidationError(OIDCError):
 
 
 class OIDCUserInfoMismatch(OIDCError):
-    """UserInfo sub does not match ID token sub."""
+    """UserInfo sub is missing or does not match the ID token sub."""
 
 
 # ── Service ────────────────────────────────────────────────────────────────
@@ -137,6 +171,7 @@ class OIDCService:
             token_endpoint=overrides.get("token_endpoint") or data["token_endpoint"],
             userinfo_endpoint=overrides.get("userinfo_endpoint") or data.get("userinfo_endpoint"),
             jwks_uri=overrides.get("jwks_uri") or data["jwks_uri"],
+            revocation_endpoint=overrides.get("revocation_endpoint") or data.get("revocation_endpoint"),
         )
 
     # ── Authorization URL ──────────────────────────────────────────────────
@@ -215,6 +250,118 @@ class OIDCService:
             raise OIDCError(f"Token exchange failed: HTTP {exc.response.status_code} — {body}") from exc
         except httpx.RequestError as exc:
             raise OIDCError(f"Token exchange failed: {exc}") from exc
+
+    async def refresh_tokens(
+        self,
+        metadata: OIDCMetadata,
+        client_id: str,
+        client_secret: str | None,
+        refresh_token: str,
+        auth_method: str = "client_secret_post",
+    ) -> OIDCTokenRefreshResult:
+        """Rotate an OIDC token pair without logging provider response bodies.
+
+        Refresh responses can contain replacement credentials. Unlike the
+        interactive code exchange, this method is used during authorization
+        checks, so errors must not include response text that might echo tokens.
+        """
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise OIDCError("OIDC refresh token is unavailable")
+
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if auth_method == "client_secret_basic" and client_secret:
+            import base64
+
+            creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
+            headers["Authorization"] = f"Basic {creds}"
+        elif auth_method == "client_secret_post" and client_secret:
+            data["client_secret"] = client_secret
+
+        try:
+            response = await self._http.post(metadata.token_endpoint, data=data, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise OIDCError(f"OIDC token refresh failed: HTTP {exc.response.status_code}") from None
+        except (httpx.RequestError, ValueError):
+            raise OIDCError("OIDC token refresh failed") from None
+
+        if not isinstance(payload, dict):
+            raise OIDCError("OIDC token refresh response is invalid")
+        access_token = payload.get("access_token")
+        expires_in = payload.get("expires_in")
+        rotated_refresh_token = payload.get("refresh_token")
+        refresh_expires_in = payload.get("refresh_expires_in")
+        if not isinstance(access_token, str) or not access_token or type(expires_in) is not int or expires_in <= 0:
+            raise OIDCError("OIDC token refresh response is incomplete")
+        if rotated_refresh_token is not None and (not isinstance(rotated_refresh_token, str) or not rotated_refresh_token):
+            raise OIDCError("OIDC token refresh response contains an invalid refresh token")
+        if refresh_expires_in is not None and (type(refresh_expires_in) is not int or refresh_expires_in <= 0):
+            raise OIDCError("OIDC token refresh response contains an invalid refresh lifetime")
+
+        return OIDCTokenRefreshResult(
+            access_token=access_token,
+            expires_in=expires_in,
+            refresh_token=rotated_refresh_token,
+            refresh_expires_in=refresh_expires_in,
+        )
+
+    async def revoke_token(
+        self,
+        metadata: OIDCMetadata,
+        client_id: str,
+        client_secret: str | None,
+        token: str,
+        token_type_hint: str,
+        auth_method: str = "client_secret_post",
+    ) -> None:
+        """Revoke one backend-held token without exposing credentials in errors.
+
+        RFC 7009 requires TLS for token revocation. Provider metadata can be
+        configured by an operator, so validate the endpoint here as well as
+        relying on discovery. An absent optional endpoint is a no-op.
+        """
+        endpoint = metadata.revocation_endpoint
+        if endpoint is None:
+            return
+        if not isinstance(token, str) or not token:
+            raise OIDCError("OIDC token revocation token is unavailable")
+        if token_type_hint not in {"access_token", "refresh_token"}:
+            raise OIDCError("OIDC token revocation type hint is unsupported")
+
+        try:
+            parsed_endpoint = urlsplit(endpoint)
+            if parsed_endpoint.scheme != "https" or not parsed_endpoint.hostname or parsed_endpoint.port == 0 or parsed_endpoint.username is not None or parsed_endpoint.password is not None or parsed_endpoint.fragment:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise OIDCError("OIDC token revocation endpoint must use HTTPS") from None
+
+        data = {"token": token, "token_type_hint": token_type_hint, "client_id": client_id}
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if auth_method == "client_secret_basic":
+            if not client_secret:
+                raise OIDCError("OIDC client credentials are unavailable for token revocation")
+            import base64
+
+            form_client_id = quote_plus(client_id, safe="")
+            form_client_secret = quote_plus(client_secret, safe="")
+            creds = base64.b64encode(f"{form_client_id}:{form_client_secret}".encode()).decode("ascii")
+            headers["Authorization"] = f"Basic {creds}"
+        elif auth_method == "client_secret_post":
+            if not client_secret:
+                raise OIDCError("OIDC client credentials are unavailable for token revocation")
+            data["client_secret"] = client_secret
+        elif auth_method != "none":
+            raise OIDCError("OIDC token revocation client authentication method is unsupported")
+
+        try:
+            response = await self._http.post(endpoint, data=data, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise OIDCError(f"OIDC token revocation failed: HTTP {exc.response.status_code}") from None
+        except httpx.RequestError:
+            raise OIDCError("OIDC token revocation failed") from None
 
     # ── JWKS loading ───────────────────────────────────────────────────────
 
@@ -354,7 +501,7 @@ class OIDCService:
         except httpx.RequestError as exc:
             raise OIDCError(f"UserInfo fetch failed: {exc}") from exc
 
-        if userinfo.get("sub") and userinfo["sub"] != expected_sub:
+        if userinfo.get("sub") != expected_sub:
             raise OIDCUserInfoMismatch("UserInfo sub does not match ID token sub")
 
         return userinfo
@@ -372,10 +519,13 @@ class OIDCService:
         code_verifier: str | None = None,
         nonce: str | None = None,
         auth_method: str = "client_secret_post",
-    ) -> OIDCIdentity:
+    ) -> OIDCAuthenticationResult:
         """Orchestrate the full OIDC callback: token exchange, ID token validation, userinfo.
 
-        Returns a normalized ``OIDCIdentity``.
+        Returns a normalized identity and backend-only token material. Callers
+        must keep the token fields server-side and encrypt them before
+        persistence; never serialize this result into a response, cookie, or
+        Agent run configuration.
         """
         token_response = await self.exchange_code(
             metadata=metadata,
@@ -412,19 +562,44 @@ class OIDCService:
             except OIDCError as exc:
                 logger.warning("OIDC userinfo fetch failed (continuing with ID token): %s", exc)
 
-        # Merge userinfo into claims (userinfo takes precedence for email)
+        # Merge profile claims from UserInfo, while keeping identity and tenant
+        # boundaries from the already validated ID Token. The IAM authorization
+        # adapter uses tenant_id to choose the authorization domain, so a
+        # UserInfo-only tenant value must never become that trusted context.
         merged = {**claims, **userinfo}
+        merged["sub"] = claims["sub"]
+        if "tenant_id" in claims:
+            merged["tenant_id"] = claims["tenant_id"]
+        else:
+            merged.pop("tenant_id", None)
 
         email = merged.get("email") or ""
         email_verified = merged.get("email_verified") is True
 
-        return OIDCIdentity(
-            provider=provider_id,
-            subject=claims["sub"],
-            email=email,
-            email_verified=email_verified,
-            name=merged.get("name"),
-            claims=merged,
+        access_expires_in = token_response.get("expires_in")
+        refresh_expires_in = token_response.get("refresh_expires_in")
+        return OIDCAuthenticationResult(
+            identity=OIDCIdentity(
+                provider=provider_id,
+                subject=claims["sub"],
+                email=email,
+                email_verified=email_verified,
+                name=merged.get("name"),
+                claims=merged,
+            ),
+            access_token=access_token if isinstance(access_token, str) and access_token else None,
+            refresh_token=(
+                token_response.get("refresh_token")
+                if isinstance(token_response.get("refresh_token"), str)
+                and token_response.get("refresh_token")
+                else None
+            ),
+            access_token_expires_in=(
+                access_expires_in if type(access_expires_in) is int and access_expires_in >= 0 else None
+            ),
+            refresh_token_expires_in=(
+                refresh_expires_in if type(refresh_expires_in) is int and refresh_expires_in >= 0 else None
+            ),
         )
 
 

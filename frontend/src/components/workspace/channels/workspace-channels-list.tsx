@@ -19,6 +19,12 @@ import {
   useConnectChannelProvider,
 } from "@/core/channels/hooks";
 import {
+  canManageChannelRuntime,
+  canReadChannels,
+  canWriteChannels,
+} from "@/core/channels/permissions";
+import { getChannelMutationFailureMessage } from "@/core/channels/mutation-errors";
+import {
   closeConnectWindow,
   openConnectUrl,
   prepareConnectWindow,
@@ -30,6 +36,7 @@ import {
 } from "@/core/channels/provider-state";
 import type { ChannelProvider } from "@/core/channels/types";
 import { useI18n } from "@/core/i18n/hooks";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { cn } from "@/lib/utils";
 
 import { ChannelProviderIcon } from "./channel-provider-icon";
@@ -54,7 +61,11 @@ function getProviderUnavailableReason(
 export function WorkspaceChannelsList() {
   const { open: isSidebarOpen } = useSidebar();
   const { t } = useI18n();
-  const { enabled, providers, isLoading, error } = useChannelProviders();
+  const { user } = useAuth();
+  const canRead = canReadChannels(user);
+  const canWrite = canWriteChannels(user);
+  const canManageRuntime = canManageChannelRuntime(user);
+  const { enabled, providers, isLoading, error } = useChannelProviders(canRead);
   const connectMutation = useConnectChannelProvider();
   const configureMutation = useConfigureChannelProvider();
   const [setupProvider, setSetupProvider] = useState<ChannelProvider | null>(
@@ -66,6 +77,11 @@ export function WorkspaceChannelsList() {
     provider: ChannelProvider,
     preparedWindow?: Window | null,
   ) => {
+    if (!canWrite) {
+      closeConnectWindow(preparedWindow ?? null);
+      toast.error(t.channels.writePermissionRequired);
+      return;
+    }
     const connectWindow =
       preparedWindow !== undefined
         ? preparedWindow
@@ -82,11 +98,9 @@ export function WorkspaceChannelsList() {
         closeConnectWindow(connectWindow);
         toast.success(result.instruction);
       })
-      .catch((error) => {
+      .catch(() => {
         closeConnectWindow(connectWindow);
-        toast.error(
-          error instanceof Error ? error.message : t.channels.unavailable,
-        );
+        toast.error(getChannelMutationFailureMessage("connect", t.channels));
       });
   };
 
@@ -107,7 +121,7 @@ export function WorkspaceChannelsList() {
     );
   }
 
-  if (error || !enabled || visibleProviders.length === 0) {
+  if (!canRead || error || !enabled || visibleProviders.length === 0) {
     return null;
   }
 
@@ -116,7 +130,9 @@ export function WorkspaceChannelsList() {
       <SidebarGroupLabel>{t.sidebar.channels}</SidebarGroupLabel>
       <SidebarMenu>
         {visibleProviders.map((provider) => {
-          const canEditRuntimeConfig = providerCanEditRuntimeConfig(provider);
+          const runtimeConfigAvailable = providerCanEditRuntimeConfig(provider);
+          const canEditRuntimeConfig =
+            runtimeConfigAvailable && canManageRuntime;
           const isConnected =
             !provider.unavailable_reason &&
             provider.connection_status === "connected";
@@ -125,7 +141,13 @@ export function WorkspaceChannelsList() {
               connectMutation.variables === provider.provider) ||
             (configureMutation.isPending &&
               configureMutation.variables?.provider === provider.provider);
-          const canConnect = providerCanConnect(provider);
+          const canConnect = providerCanConnect(provider) && canWrite;
+          const needsRuntimeConfig =
+            providerNeedsRuntimeConfig(provider) ||
+            (isConnected && runtimeConfigAvailable);
+          const canOperate = needsRuntimeConfig
+            ? canEditRuntimeConfig
+            : canConnect;
           const unavailableReason = getProviderUnavailableReason(provider, t);
 
           return (
@@ -146,19 +168,37 @@ export function WorkspaceChannelsList() {
                     "h-8 w-24 px-2 text-xs",
                     isConnected && "gap-1",
                   )}
-                  disabled={isPending}
-                  title={unavailableReason}
+                  disabled={isPending || !canOperate}
+                  title={
+                    needsRuntimeConfig && !canEditRuntimeConfig
+                      ? t.channels.adminPermissionRequired
+                      : !canWrite && providerCanConnect(provider)
+                        ? t.channels.writePermissionRequired
+                        : unavailableReason
+                  }
                   onClick={() => {
                     if (
                       providerNeedsRuntimeConfig(provider) ||
-                      (isConnected && canEditRuntimeConfig)
+                      (isConnected && runtimeConfigAvailable)
                     ) {
+                      if (!canEditRuntimeConfig) {
+                        toast.error(t.channels.adminPermissionRequired);
+                        return;
+                      }
                       setSetupProvider(provider);
                       return;
                     }
 
+                    if (!canWrite) {
+                      toast.error(t.channels.writePermissionRequired);
+                      return;
+                    }
                     if (!canConnect) {
-                      toast.error(unavailableReason ?? t.channels.unavailable);
+                      toast.error(
+                        !canWrite
+                          ? t.channels.writePermissionRequired
+                          : (unavailableReason ?? t.channels.unavailable),
+                      );
                       return;
                     }
 
@@ -189,6 +229,10 @@ export function WorkspaceChannelsList() {
           }
         }}
         onSubmit={(provider, values) => {
+          if (!canEditRuntimeConfig) {
+            toast.error(t.channels.adminPermissionRequired);
+            return;
+          }
           const connectWindow =
             provider.auth_mode === "deep_link" ? prepareConnectWindow() : null;
           void configureMutation
@@ -196,16 +240,21 @@ export function WorkspaceChannelsList() {
             .then((updated) => {
               setSetupProvider(null);
               if (providerCanConnect(updated)) {
+                if (!canWrite) {
+                  closeConnectWindow(connectWindow);
+                  toast.success(t.channels.runtimeConfigSaved);
+                  return;
+                }
                 startConnect(updated, connectWindow);
                 return;
               }
               closeConnectWindow(connectWindow);
               toast.success(t.channels.connected);
             })
-            .catch((error) => {
+            .catch(() => {
               closeConnectWindow(connectWindow);
               toast.error(
-                error instanceof Error ? error.message : t.channels.unavailable,
+                getChannelMutationFailureMessage("configure", t.channels),
               );
             });
         }}

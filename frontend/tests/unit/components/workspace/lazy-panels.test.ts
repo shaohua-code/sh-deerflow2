@@ -23,7 +23,10 @@ describe("interaction-only bundle boundaries", () => {
     const dialog = read(
       "src/components/workspace/settings/settings-dialog.tsx",
     );
-    expect(dialog.match(/dynamic\(/g)).toHaveLength(7);
+    // The two self-owned product settings pages stay lazy with the core pages.
+    expect(dialog.match(/dynamic\(/g)).toHaveLength(9);
+    expect(dialog).toContain("ProductPreferencesPage");
+    expect(dialog).toContain("ProductAdminPage");
     expect(dialog).not.toMatch(
       /import \{ \w+SettingsPage \} from "@\/components\/workspace\/settings\//,
     );

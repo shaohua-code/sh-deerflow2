@@ -1,5 +1,13 @@
 ### Model Factory (`packages/harness/deerflow/models/factory.py`)
 
+Central IAM-enabled Gateway runs attach a server-bound callback to each model
+profile at this shared factory boundary. It rechecks exact profile `model:use`
+before every provider dispatch, covering auxiliary title/summary/evaluator and
+subagent models as well as the lead agent. The run context is memory-only;
+never serialize its vault capability into RunnableConfig, checkpoints, or
+logs. Standalone callers without a Gateway run context keep their existing
+integration boundary. A denial must stop before the provider is invoked.
+
 Request-admission waits follow the next scheduled admission and configured
 interval, capped at 50 ms; the cap must not become a minimum poll interval that
 limits high-RPM throughput. Local `AdmissionError` is structurally non-retriable

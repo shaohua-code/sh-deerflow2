@@ -7,6 +7,6 @@ between the ORM row and the auth module's pydantic ``User`` class.
 This keeps the harness package free of any dependency on app code.
 """
 
-from deerflow.persistence.user.model import UserRow
+from deerflow.persistence.user.model import IamOidcTokenVaultRow, UserPreferenceRow, UserRow
 
-__all__ = ["UserRow"]
+__all__ = ["IamOidcTokenVaultRow", "UserPreferenceRow", "UserRow"]

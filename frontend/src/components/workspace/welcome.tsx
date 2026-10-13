@@ -1,18 +1,14 @@
 "use client";
 
+import { Sparkles } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo } from "react";
 
 import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
-import { AuroraText } from "../ui/aurora-text";
-
-let waved = false;
-
 function WelcomeDescription({ children }: { children: string }) {
   return (
-    <p className="max-w-full text-wrap break-words whitespace-pre-line">
+    <p className="text-muted-foreground max-w-2xl text-sm leading-6 text-pretty sm:text-base sm:leading-7">
       {children}
     </p>
   );
@@ -27,46 +23,31 @@ export function Welcome({
 }) {
   const { t } = useI18n();
   const searchParams = useSearchParams();
-  const isUltra = useMemo(() => mode === "ultra", [mode]);
-  const colors = useMemo(() => {
-    if (isUltra) {
-      return ["#efefbb", "#e9c665", "#e3a812"];
-    }
-    return ["var(--color-foreground)"];
-  }, [isUltra]);
-  useEffect(() => {
-    waved = true;
-  }, []);
+  const isSkillMode = searchParams.get("mode") === "skill";
+
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-full flex-col items-center justify-center gap-2 px-4 py-4 text-center sm:px-8",
+        "mx-auto flex w-full max-w-3xl flex-col items-center justify-center gap-4 px-4 py-5 text-center sm:px-8 sm:py-7",
         className,
       )}
     >
-      <div className="max-w-full text-2xl font-bold">
-        {searchParams.get("mode") === "skill" ? (
-          `✨ ${t.welcome.createYourOwnSkill} ✨`
-        ) : (
-          <div className="flex max-w-full flex-wrap items-center justify-center gap-2">
-            <div className={cn("inline-block", !waved ? "animate-wave" : "")}>
-              {isUltra ? "🚀" : "👋"}
-            </div>
-            <AuroraText colors={colors}>{t.welcome.greeting}</AuroraText>
-          </div>
-        )}
+      <div className="border-primary/15 bg-primary/[0.06] text-primary inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold">
+        <Sparkles className="size-3.5" />
+        {isSkillMode
+          ? t.welcome.createYourOwnSkill
+          : mode === "ultra"
+            ? "Ultra"
+            : t.welcome.workspaceLabel}
       </div>
-      {searchParams.get("mode") === "skill" ? (
-        <div className="text-muted-foreground max-w-full text-sm">
-          <WelcomeDescription>
-            {t.welcome.createYourOwnSkillDescription}
-          </WelcomeDescription>
-        </div>
-      ) : (
-        <div className="text-muted-foreground max-w-full text-sm">
-          <WelcomeDescription>{t.welcome.description}</WelcomeDescription>
-        </div>
-      )}
+      <h1 className="max-w-3xl text-3xl leading-tight font-semibold tracking-[-0.045em] text-balance sm:text-4xl lg:text-[2.75rem]">
+        {isSkillMode ? t.welcome.createYourOwnSkill : t.welcome.greeting}
+      </h1>
+      <WelcomeDescription>
+        {isSkillMode
+          ? t.welcome.createYourOwnSkillDescription
+          : t.welcome.description}
+      </WelcomeDescription>
     </div>
   );
 }

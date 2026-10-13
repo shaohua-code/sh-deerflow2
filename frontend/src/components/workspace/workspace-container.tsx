@@ -12,18 +12,18 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
+import { getProductCopy } from "@/product/copy";
+import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
-import { GithubIcon } from "./github-icon";
-import { Tooltip } from "./tooltip";
 // Workspace sections that have an index route (/workspace/<section>/page.tsx)
 // and can therefore be linked to from the breadcrumb.
 const LINKABLE_SECTIONS: Record<string, true> = {
   agents: true,
   chats: true,
   "scheduled-tasks": true,
+  files: true,
 };
 
 export function WorkspaceContainer({
@@ -43,7 +43,8 @@ export function WorkspaceHeader({
   children,
   ...props
 }: React.ComponentProps<"header">) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
+  const productCopy = getProductCopy(locale);
   const pathname = usePathname();
   const segments = useMemo(() => {
     const parts = pathname?.split("/") || [];
@@ -60,14 +61,18 @@ export function WorkspaceHeader({
       {...props}
     >
       <div className="flex min-w-0 items-center gap-2 px-2 sm:px-4">
-        <SidebarTrigger className="md:hidden" />
+        <WorkspaceSidebarTrigger className="md:hidden" />
         <Breadcrumb>
           <BreadcrumbList>
             {segments?.[0] && (
-              <BreadcrumbItem className="hidden md:block">
+              <BreadcrumbItem
+                className={
+                  pathname === "/workspace" ? undefined : "hidden md:block"
+                }
+              >
                 <BreadcrumbLink asChild>
                   <Link href={`/${segments[0]}`}>
-                    {nameOfSegment(segments[0], t)}
+                    {nameOfSegment(segments[0], t, productCopy)}
                   </Link>
                 </BreadcrumbLink>
               </BreadcrumbItem>
@@ -79,12 +84,12 @@ export function WorkspaceHeader({
                   {segments[1] && LINKABLE_SECTIONS[segments[1]] ? (
                     <BreadcrumbLink asChild>
                       <Link href={`/${segments[0]}/${segments[1]}`}>
-                        {nameOfSegment(segments[1], t)}
+                        {nameOfSegment(segments[1], t, productCopy)}
                       </Link>
                     </BreadcrumbLink>
                   ) : (
                     <BreadcrumbPage>
-                      {nameOfSegment(segments[1], t)}
+                      {nameOfSegment(segments[1], t, productCopy)}
                     </BreadcrumbPage>
                   )}
                 </BreadcrumbItem>
@@ -98,18 +103,6 @@ export function WorkspaceHeader({
             )}
           </BreadcrumbList>
         </Breadcrumb>
-      </div>
-      <div className="pr-4">
-        <Tooltip content={t.workspace.githubTooltip}>
-          <a
-            href="https://github.com/bytedance/deer-flow"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="opacity-75 transition hover:opacity-100"
-          >
-            <GithubIcon className="size-6" />
-          </a>
-        </Tooltip>
       </div>
     </header>
   );
@@ -136,9 +129,15 @@ export function WorkspaceBody({
 function nameOfSegment(
   segment: string | undefined,
   t: ReturnType<typeof useI18n>["t"],
+  productCopy: ReturnType<typeof getProductCopy>,
 ) {
   if (!segment) return t.common.home;
   if (segment === "workspace") return t.breadcrumb.workspace;
   if (segment === "chats") return t.breadcrumb.chats;
+  if (segment === "projects") return t.projects.title;
+  if (segment === "files") return productCopy.filesTitle;
+  if (segment === "agents") return t.sidebar.agents;
+  if (segment === "scheduled-tasks") return t.sidebar.scheduledTasks;
+  if (segment === "capabilities") return t.capabilities.title;
   return segment[0]?.toUpperCase() + segment.slice(1);
 }

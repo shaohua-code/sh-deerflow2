@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from app.gateway.authz import require_permission
 from app.gateway.deps import is_admin_user, require_admin_user
 from deerflow.config.app_config import get_app_config
 from deerflow.persistence.managed_subagents import (
@@ -161,13 +162,19 @@ def _catalog(include_system_prompt: bool) -> SubagentsListResponse:
 
 
 @router.get("", response_model=SubagentsListResponse, summary="List Subagents")
+@require_permission("subagents", "read")
 async def list_subagents(request: Request) -> SubagentsListResponse:
     """List the runtime catalog; prompts remain visible only to admins."""
     include_system_prompt = await is_admin_user(request)
+    # A local Gateway admin also needs the Central IAM admin grant to receive
+    # deployment-wide system prompts.
+    auth = getattr(request.state, "auth", None)
+    include_system_prompt = include_system_prompt and auth is not None and auth.has_permission("subagents", "admin")
     return await asyncio.to_thread(_catalog, include_system_prompt)
 
 
 @router.post("", response_model=SubagentResponse, status_code=201, summary="Create Managed Subagent")
+@require_permission("subagents", "admin")
 async def create_managed_subagent(request: Request, body: ManagedSubagentCreateRequest) -> SubagentResponse:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     try:
@@ -193,6 +200,7 @@ async def create_managed_subagent(request: Request, body: ManagedSubagentCreateR
 
 
 @router.put("/{name}", response_model=SubagentResponse, summary="Update Managed Subagent")
+@require_permission("subagents", "admin")
 async def update_managed_subagent(name: str, request: Request, body: ManagedSubagentUpdateRequest) -> SubagentResponse:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     name = _validate_path_name(name)
@@ -229,6 +237,7 @@ async def update_managed_subagent(name: str, request: Request, body: ManagedSuba
 
 
 @router.delete("/{name}", status_code=204, summary="Delete Managed Subagent")
+@require_permission("subagents", "admin")
 async def delete_managed_subagent(name: str, request: Request) -> None:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     name = _validate_path_name(name)

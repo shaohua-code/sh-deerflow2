@@ -1,3 +1,113 @@
+## 2026-10-13 Central IAM B04 context/Gateway services 聚焦核验
+
+- `test_context_compaction.py` 和 `test_gateway_services.py` 离线聚焦回归 **212 passed**；没有修改代码/测试，也未连接目标数据库、IAM 或 Provider。
+- 隔离 `DEER_FLOW_HOME` 与 pytest basetemp 已清理。全量未重跑，仍是此前 17,004/186/349/3/5 快照。
+## 2026-10-13 Central IAM B04 extension runtime 测试桩修复
+
+- extension task runtime 聚焦模块发现一个 FastAPI Request 假对象缺少 `state`；为测试桩补齐 state，未修改 Gateway runtime。**15 passed**；Ruff check/format 通过，临时目录已清理。
+- 未重跑完整 suite，最近完整结果仍是修正前 17,004/186/349/3/5。`uv`、`WinError 10106` 和其余失败待分类。
+## 2026-10-13 Central IAM B04 DNS 与 PAT scope 归因
+
+- FastCRW 离线 fetch 测试改用确定的公网 DNS 结果，生产 SSRF 检查保持不变；FastCRW + thread 路由 **142 passed、1 warning**。
+- 修正 PAT 契约测试：PAT scopes 是明确的 16 项 allowlist 子集，不等同于完整 Gateway permission catalog；API/Gateway 文档已对齐个人 Agent 和 memory 的显式方法/路径授权。PAT runtime 只改注释。PAT auth/repository/vault **63 passed、1 warning**。
+- 全量未重跑，最近完整结果仍为修正前 17,004/186/349/3/5。缺 `uv`、`WinError 10106` 和其余失败仍待处理；Ruff check/format 通过，临时目录已清理。未运行迁移、真实 IAM/Provider 或 quota enforcement。
+## 2026-10-13 Central IAM B04 Windows Gateway 测试桩失败归因
+
+- 修复三个定向测试文件中复现的 7 项 Windows 失败：deploy 子进程输出显式使用 UTF-8 replacement 解码；Gateway checkpoint/run-wait 假 Request 补齐 `state`。未修改 DeerFlow 生产源码。
+- `test_gateway_startup.py`、`test_gateway_checkpoint_mode.py`、`test_thread_regenerate_prepare.py`：**45 passed、1 warning**；Ruff check/format 通过，隔离测试和缓存目录已删除。
+- 未重跑全量，最近全量仍为修正前 17,004/186/349/3/5。缺 `uv`、live-policy `WinError 10106` 和其他失败仍待处理；未运行 IAM migration、真实 IAM/Provider 或 quota enforcement。
+## 2026-10-13 Central IAM B04 Windows Studio 测试后续
+
+- 定位 5 个 Studio setup error：子进程沿用 GBK 默认 locale，而锁定依赖按默认编码打开 UTF-8 OpenAPI 资产。测试子进程现设 `PYTHONUTF8=1`；启动诊断使用 replacement 解码，避免日志编码再次遮蔽真实错误。
+- 持久化重启回归改为在旧服务运行期间等待 in-memory runtime 周期写盘，再启动修复版本。
+- Studio route 模块 **6 passed**，Ruff check/format 通过，临时根目录已清理。修正后尚未重跑全量；缺 `uv`、`WinError 10106` 和剩余套件失败仍未解决。
+
+## 2026-10-13 Central IAM B04 全量离线后端复跑
+
+- Windows Python 3.12 全量运行 35:00：**17,004 passed、186 failed、349 skipped、3 deselected、5 errors、99 warnings**；失败与错误共 191 项，套件未通过。
+- 新增 3 个 Windows 条件跳过的 POSIX launcher 测试。已知环境/诊断阻塞包括缺少 `uv`、子进程 `WinError 10106`、以及 5 个 Studio setup errors 的启动日志 UTF-8 解码失败（遮蔽服务启动根因）；其他失败仍未全部归因。
+- 隔离 pytest 临时根目录已删除；未执行 migration、真实 IAM/Provider 或 quota enforcement。
+
+## 2026-10-13 Central IAM owner-scoped 技能清理与 Lark Windows 回归
+
+- `UserScopedSkillStorage` 与 `GatewayOwnerDataDeleter` 现实现 owner-scoped 自定义技能清理：只删除本人 custom packages、历史和私人状态，保留全局 legacy/integration 技能及用户开关；在投影锁中重建本人技能视图，并仅刷新本人的 prompt cache。该 capability 尚未暴露到公开 extension-api 或产品数据任务/API/UI。
+- 最新完整离线套件仍是修改前快照 **17,007 passed、191 failed、346 skipped、3 deselected**。浏览器模块 **87 passed、1 skipped**；Lark broker、user-scoped storage 和 owner deleter **76 passed、6 skipped**；pnpm/checkpointer/store **3/3 passed**。其中三个 POSIX `/bin/sh` 启动器用例在 Windows 条件跳过，本轮没有在 Linux 运行。
+- Windows fake CLI 测试改为受控模拟，localhost 拒绝测试清除系统代理。Ruff check/format 通过，pytest 临时目录已清理。缺少 `uv`、live-policy subprocess `WinError 10106` 仍阻塞；未运行迁移、真实 IAM/Provider 或 quota enforcement。
+
+## 2026-10-13 Central IAM B04 全量失败归因与 Windows 测试稳定性
+
+- 最新完整离线后端快照为 **17,007 passed、191 failed、346 skipped、3 deselected**（39:06）。其后固定公网 DNS 夹具后，browser automation/browserless 模块 **87 passed、1 skipped**。修正 Windows pnpm 测试的 `.cmd` 大小写假设、将并发 singleton 测试等待阈值从 3 秒提高到 10 秒后，pnpm/checkpointer/store 三项定向回归 **3/3 通过**；生产 singleton 代码未变。
+- 已确认环境阻塞：extension-manager 安装测试找不到 `uv`；live-policy 子进程遇到 Windows `WinError 10106`。checkpointer 并发测试隔离重跑通过。完整套件尚未在后续测试调整后重跑，其余失败需继续逐项分类。
+- Ruff check/format 通过，pytest 临时目录已清理。未运行数据库迁移、真实 IAM/Provider 请求或 quota enforcement。
+
+## 2026-10-13 Central IAM 测试夹具同步与 B04 失败归因
+
+- 将 DeerFlow 六个失败归因模块的测试双替身同步到当前可信 auth context、权限集、OIDC identity、请求 state、Agent 删除共享 helper 与定时运行 callback 契约；本轮未改生产逻辑。
+- 验证：六模块 **301 passed、3 skipped、0 failed**；6 个变更测试文件 Ruff check/format 通过。上一轮完整离线后端 **16,896 passed、302 failed、346 skipped、3 deselected**，早于夹具同步；最新测试树尚未重跑完整套件。guidance 预算检查 1/1、MCP config secrets 195 项通过。测试临时目录均已验证删除。
+- 未运行 IAM migration、数据库写入、真实 IAM/Provider 调用或 quota enforcement；B04 全量失败归因和目标环境验收仍开放。
+
+## 2026-10-13 Central IAM Windows 文档路径回归修复
+
+- DeerFlow 在 Windows 超长路径场景改用项目内稳定的 documents/.short/<digest> 物理别名，同时保留逻辑 stored_relpath 和旧路径兼容；未改数据库 schema。
+- 聚焦回归 65 passed、2 skipped；Windows blocking-I/O 全套 140 passed、3 skipped、0 failed。9 个变更 Python 文件 Ruff check/format 通过，临时测试产物已清理。
+- 路径修复后的完整离线结果与后续测试夹具复测见前文较新的 2026-10-13 B04 记录。完整套件失败归因及真实 IAM/Provider 验收仍开放；未运行迁移或 live 请求，quota enforcement 保持关闭。
+## 2026-10-12 Central IAM 模型结果不确定时保留预留
+
+- 模型调用抛错或 callback 关闭时缺少终态用量，不再按零用量结算；IAM reservation 保留至 10 分钟到期后由管理员核对。仅确认 Provider 未被调用时允许释放。
+- 用量/outbox/memory/boundary 聚焦检查 33/33 通过，Ruff check/format 通过。隔离全量后端：16,775 通过、419 失败、346 跳过、3 deselected；阻塞 I/O：114 通过、28 失败、1 跳过。失败归因与真实 IAM/Provider 验收待完成，quota enforcement 保持关闭。
+
+## 2026-10-12 Central IAM Provider 路径审计
+
+- 静态审查仓内 DeerFlow 内置生产 Python 源码：共享模型工厂、Gateway 单次模型调用和 DeerMem 直连 `init_chat_model()` 均位于 LangChain usage callback 管道；Codex Responses 自定义 Provider 继承 `BaseChatModel`、经共享工厂创建并返回用量 metadata。外部扩展动态加载的 Provider 未穷尽。
+- IAM 幂等 `request_id` 按 LangChain invocation 生成；Codex 内部 HTTP 重试仍合并在一次预留/结算中，失败/重试请求的 Provider 计费语义尚未核实。
+- 本轮只读源码审计；未运行测试、构建、Provider 请求、数据库迁移或 live IAM 检查。目标验收前 quota enforcement 保持关闭。
+
+## 2026-10-12 Windows 项目文档长文件名兼容
+
+- 项目文档保留原始显示名；Windows 下完整物理路径超过安全长度时改用短磁盘文件名，转换格式后缀保留，内容 MIME 仍按显示名判断，旧的 `original/{name}` 布局继续可读。
+- 补充 255 UTF-8 字节文件名上传后的内容下载回归断言。
+
+## 2026-10-12 Central IAM 模型调用授权
+
+- 统一模型工厂在 Gateway Agent run 的每次 provider 调用前校验精确模型档案 `model:use`，覆盖标题、摘要、评估器和子 Agent 等辅助模型。
+- DeerMem 后台模型路径在外呼前重新核验当前本地用户/vault 会话、`memory:read` 与 `memory:write` 本人范围及精确模型权限。由 Gateway 启动时注入回调，保持 Harness 不导入 `app.*`。
+- 定向授权回归 28/28、Harness 分层边界回归 1/1 通过。Python readabilipy fallback 修复后保留安全文章链接/图片目标，既有 web-fetch 回归 50/50、Ruff 通过。修复前 Windows 隔离全量后端为 16,750 通过、442 失败、345 跳过、3 deselected；阻塞 I/O 为 116 通过、26 失败、1 跳过。修复后未重跑全量，其他失败尚未逐项归因；临时测试产物已清理。未执行 IAM migration 或真实 IAM/Provider E2E。
+
+## 2026-10-11 GitHub webhook 生产签名门禁
+
+- `DEER_FLOW_ALLOW_UNVERIFIED_GITHUB_WEBHOOKS` 在显式 production 环境强制失效；未配置 `GITHUB_WEBHOOK_SECRET` 时启动不挂载入口，运行时也拒绝未签名投递。
+- 新增 production 回归。浏览器与 webhook 完整聚焦测试 76/76 通过，覆盖 data_scope 拒绝与授权服务故障关闭；公网 URL SSRF 用例使用固定 DNS 结果，Ruff check/format 通过。
+
+## 2026-10-11 Central IAM 浏览器实时流鉴权
+
+- Gateway 在查 thread 或访问保留浏览器 session 前，要求 `threads:read/write` 路由授权及当前 thread 的读写 owner/self data_scope；已验签本地 JWT `sid` 传给请求级中央 IAM resolver。
+- 本地 owner 和 Origin 校验继续生效；权限拒绝或授权服务不可用时，在浏览器运行时访问前关闭连接。没有新增 migration、角色 grant、UI 改动或上游登出撤销请求。
+- 浏览器与 webhook 路由测试 76/76 通过；公网 URL SSRF 用例使用固定 DNS 结果，不依赖外网。Ruff check/format 通过，真实 IAM/WebSocket E2E 尚未完成。
+
+## 2026-10-11 Central IAM 个人偏好授权
+
+- 偏好浏览器 API 增加 Central IAM `preferences:read/write` 路由权限和匹配的已验证主体 owner/self data_scope，并确保拒绝发生在偏好仓储访问前。
+- 新增 IAM migration `0030_deerflow_preference_permissions`，仅登记 `deerflow.preference.read/write`，不自动授予角色；配置样例增加两条映射。
+- 新增权限不足和 IAM scope 拒绝先于存储访问的回归；`tests/test_user_preferences.py` **19/19 通过**，两个 Python 文件 Ruff check/format 通过。
+- 未改变 UI 交互、运行配置或数据库。真实 IAM 授权、迁移和浏览器 E2E 仍待完成。
+
+## 2026-10-11 runtime 镜像复验
+
+- dev 镜像已生成，一次性容器通过 uv 环境导入 deerflow.authz.iam_deerflow。
+- 默认 runtime 镜像未生成：Docker Hub Python manifest 与 GHCR uv 匿名 token 请求返回 EOF，pull=false 仍失败；uv locked dry-run 通过且 backend/uv.lock 未改动。
+- 待 registry 可达或配置镜像源后重试；本轮未启动服务或数据库。
+
+## 2026-10-11 Docker build context 安全与镜像核验
+
+- 将 config.yaml、extensions_config.json、备份副本和所有 .env* 变体排除在 build context 外；这些本机文件可能含 Provider/MCP 凭证。
+- Docker daemon 在客户端退出后仍生成镜像 iam-deerflow-package-check:20261011（sha256:f2203cacf14d7a324dadcaa4d803145fcd9fd48129a9e9f15751e4beb4947456），一次性 uv 环境容器导入 deerflow.authz.iam_deerflow 通过；完整服务启动和真实 IAM 验收仍待完成。
+- 未启动或修改任何服务和数据库；待 registry、缓存或镜像源可用后再复验。
+
+## 2026-10-11 IAM 模型用量回归复核
+
+- 后端 venv 聚焦回归：`test_model_factory.py`、`test_iam_model_usage_callback.py`、`test_iam_model_usage.py`、`test_worker_iam_credentials.py`，**110 项通过、1 条既有 warning**（37.47 秒）。
+- 仅使用 mock/隔离 fixture；未访问真实 IAM、Provider 或开发数据库。持久结算 outbox、进程崩溃恢复和线上验收仍未完成；配额执行保持关闭。
+
 # 更新日志
 
 本文件记录 DeerFlow 的所有重要变更。
@@ -5,9 +115,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本规范](https://semver.org/lang/zh-CN/)。
 
-[English](./CHANGELOG.md) | 中文
+[English](CHANGELOG.md) | 中文
 
 ## [未发布]
+
+### 安全
+
+- **Central IAM 模型用量回调（2026-10-11）：** run-scoped ContextVar 将可选 callback 传给模型工厂，由工厂按可信 DeerFlow 配置名绑定到每个 LangChain model instance，Provider 部署别名无法选择其它 IAM 模型 UUID。每次调用在 Provider 前 reserve，拒绝时 fail closed；结束按同一 request ID settle/report。通过 vault token 请求 `/api/v1/auth/me` 解析 IAM UUID 用户，OIDC `sub` 不作 UUID 使用。Prompt/响应只在内存估算，不发送给 IAM 或写日志。`model_usage.enabled` 默认关闭，每个映射模型必须显式配置输出预留上限，服务 key 只存 API Secret Manager。callback 回归 8/8（含 async manager 拒绝传播、alias 归属与 close 清理）、client+callback+vault 组合 15/15、完整 model factory+usage 组合回归 110/110、Ruff/format 通过；持久结算恢复、自定义 Provider 和真实联调待完成，配额继续关闭。
+
+- Console 聚合接口按响应内容逐项校验资源权限与数据范围：stats 要求 runs/threads/agents 读取权限和范围，跨线程运行记录还要求 thread read，usage 要求 run read。范围检查在 SQL 查询前执行，保留本地用户过滤。Console 路由回归 25/25、两个修改 Python 文件 Ruff 检查通过；未新增 migration 或自动授予角色。
+- OIDC Discovery 现在保留可选 `revocation_endpoint`，并增加 RFC 7009 撤销请求客户端：强制 HTTPS，支持 Basic、POST secret 和 public client 认证，异常不包含 token 或 Provider 响应正文。Gateway 登出仍只删除本地 vault 会话；向外部 issuer 发送服务端 token 的行为需部署方明确批准后才能接入。OIDC/vault mock 回归 41/41 通过，未请求真实 IAM。
+- 被动 memory queue 在真正调用 `apply_changes/save` 前通过 Gateway serving loop 重载 active owner 和身份匹配的加密 OIDC vault session，并重新校验 `memory:read/write` exact owner/self data_scope；revision 冲突重试也逐次重新判权。queue 不保存 IAM capability；缺失/撤销授权、loop 不可用或 30 秒超时均拒绝持久化。Updater/data-scope/commit callback 定向回归 109/109 通过，6 个变更 Python 文件 Ruff check/format 通过。
+- Agent prompt 记忆注入、四个 memory tools、after-agent 被动入队和 summarization flush 在 MemoryManager 访问前分别校验 Central IAM read/write/delete 和精确 owner/self data_scope；local user ID 与已验签 runtime 身份相同、IAM subject/tenant 与所有 scope 分支匹配才允许访问；宽范围及服务故障拒绝。相关定向回归 181/181 通过，12 个 Python 文件 Ruff/format 通过；后台 commit-time 二次检查见上方新条目，未包含在这些回归中。
+
+- 定时任务 API 读取/写入前检查中央 IAM 本人数据范围；后台派发入队及队列启动前重新核验 active 用户、当前 grant/data_scope 和匹配的 OIDC vault session。授权失效时暂停任务并取消排队 occurrence；手动触发映射为 403/503。短期 capability 仅存在于本次 Agent run 内存上下文，不保存到调度记录或 checkpoint。调度、vault、路由与授权 resolver 组合回归 126/126 通过。
 
 本节累积面向 **2.1.0** 里程碑（[里程碑 2](https://github.com/bytedance/deer-flow/milestone/2)）的工作。
 
@@ -82,6 +203,7 @@
   N 不小于 `scheduler.min_once_delay_seconds`（默认 60 秒），不大于 30 天。
 
 #### 认证
+- **认证：** OIDC 首次自动开户固定为普通用户；`admin_emails` 为兼容旧配置保留但不再生效，邮箱不授予管理员角色。既有账号不会因登录而自动改角色。服务端 IAM token/tenant 保管与在线权限检查仍待完成。
 - **认证：** 新增用于程序化 API 访问的个人访问令牌（PAT）：
   `POST/GET/DELETE /api/v1/auth/pats` 用于管理令牌（仅展示一次，以 SHA-256
   摘要存储）；默认拒绝的路由策略只允许会话/run 生命周期路由，并进一步受令牌的
@@ -396,6 +518,10 @@
   有益，否则主智能体默认直接执行。([#4384])
 
 ### 修复
+
+- **Docker：** 根目录 .dockerignore 排除 Python pytest/ruff/mypy/hypothesis 缓存，避免构建上下文读取容器生成且权限受限的目录；DeerFlow gateway dev 镜像现可在此 Windows Docker Desktop 工作区成功构建。
+- **网关：** 项目/资料/回收站写入口在副作用前检查匹配的 `projects:*` 与 `threads:read/write` 范围；owner-checked 线程 `write/delete`、运行 `create/cancel` 也在本地归属校验后检查 IAM data_scope。运行取消使用现有 run ID，创建操作不传尚不存在的 ID。项目/线程/运行/反馈/文件/浏览器/MCP 路由综合选择 532 项通过，鉴权测试 101/101，Ruff 检查通过；1 项公网 DNS 测试因断网容器而排除。
+
 
 - **中间件：** 循环检测不再中断正在分段读取文件的智能体。此前 `read_file` 调用按 200 行分桶作为
   键，因此任何短于一个桶的读取都会与相邻读取塌缩到同一个键：连续五次 40 行读取会哈希成相同值并
@@ -2217,3 +2343,18 @@ DeerFlow 2.0 是围绕"超级智能体"框架的彻底重写，核心包含子�
 [#5431]: https://github.com/bytedance/deer-flow/pull/5431
 [#5447]: https://github.com/bytedance/deer-flow/pull/5447
 [#5469]: https://github.com/bytedance/deer-flow/pull/5469
+## 2026-10-11 Central IAM 模型用量待核对
+
+- IAM 现会在 DeerFlow 调用 Provider 前持久化每次额度预留，配额拦截关闭时也照常记录。10 分钟后进入管理员核对队列；不会自动按预留上限收费或自动释放，未核对 Token 继续占用保守 TPM。
+- IAM 管理台支持按 Provider 证据补记实测/估算用量，或确认 Provider 从未被调用后释放；处理理由与结果写入审计。DeerFlow outbox 重试已提交的账目，IAM 预留覆盖 outbox 提交崩溃窗口并等待人工核对。
+- migration `0031_model_usage_reconciliation` 尚未应用到开发数据库。隔离后端/前端验证、数据库迁移和真实 IAM/Provider 验收完成前，继续关闭配额拦截。
+## 2026-10-12 Central IAM DeerMem 后台模型用量
+
+- 为 DeerMem 直接 `init_chat_model()` 的 timer 路径增加 Gateway 注入的单次用量 callback。调用前在 Gateway loop 重载活动本地用户及匹配 OIDC vault 会话，并固定服务端模型档案；callback 只附加到当前 invocation。
+- Harness 在终态回调后、扩展 observer 接收配置前移除并关闭 callback；debounce queue 不保存 IAM 凭证/capability。启用计量但无法 admission 时拒绝 Provider 外呼，关闭计量时沿用原有无计量行为。
+- DeerFlow backend 隔离 Windows Python 3.12 环境下现有 memory commit 与 IAM usage callback 测试 **20/20 通过**，Harness boundary **1/1 通过**；短随机测试目录已删除，6 个变更 Python 文件 Ruff check/format 通过。未运行全量测试、migration、真实 IAM/Provider 或 runtime 镜像检查。
+## 2026-10-13 Central IAM B04 迁移/bootstrap 测试夹具修正
+
+- `test_persistence_bootstrap.py` 与 `test_persistence_bootstrap_regression.py` 的旧 SQLite 库现在只创建 `_BASELINE_TABLE_NAMES`，让后续 Alembic revision 创建 `iam_model_usage_outbox` 等后加表；未改生产 bootstrap/runtime。
+- 迁移/bootstrap 相关五个聚焦模块 **62 passed**；两测试文件 Ruff check/format-check 通过。首次因隔离 basetemp 父目录不存在而有 22 个 setup errors，创建后完整复跑通过；临时 DB/pytest/cache 目录已删除。完整 suite 与目标数据库迁移仍未验证。
+

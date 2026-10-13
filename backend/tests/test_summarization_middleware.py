@@ -444,6 +444,7 @@ def test_memory_flush_hook_preserves_agent_scoped_memory(monkeypatch: pytest.Mon
     manager = MagicMock()
     monkeypatch.setattr("deerflow.agents.memory.summarization_hook.get_memory_config", lambda: MemoryConfig(enabled=True))
     monkeypatch.setattr("deerflow.agents.memory.summarization_hook.get_memory_manager", lambda: manager)
+    monkeypatch.setattr("deerflow.agents.memory.summarization_hook.is_memory_scope_authorized_sync", lambda *args, **kwargs: True)
 
     memory_flush_hook(
         SummarizationEvent(
@@ -463,6 +464,7 @@ def test_memory_flush_hook_passes_runtime_user_id(monkeypatch: pytest.MonkeyPatc
     manager = MagicMock()
     monkeypatch.setattr("deerflow.agents.memory.summarization_hook.get_memory_config", lambda: MemoryConfig(enabled=True))
     monkeypatch.setattr("deerflow.agents.memory.summarization_hook.get_memory_manager", lambda: manager)
+    monkeypatch.setattr("deerflow.agents.memory.summarization_hook.is_memory_scope_authorized_sync", lambda *args, **kwargs: True)
 
     memory_flush_hook(
         SummarizationEvent(
@@ -476,6 +478,25 @@ def test_memory_flush_hook_passes_runtime_user_id(monkeypatch: pytest.MonkeyPatc
 
     manager.add_nowait.assert_called_once()
     assert manager.add_nowait.call_args.kwargs["user_id"] == "alice"
+
+
+def test_memory_flush_hook_does_not_enqueue_when_iam_scope_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("deerflow.agents.memory.summarization_hook.get_memory_config", lambda: MemoryConfig(enabled=True))
+    monkeypatch.setattr("deerflow.agents.memory.summarization_hook.is_memory_scope_authorized_sync", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "deerflow.agents.memory.summarization_hook.get_memory_manager",
+        lambda: pytest.fail("memory manager must not be accessed after scope denial"),
+    )
+
+    memory_flush_hook(
+        SummarizationEvent(
+            messages_to_summarize=tuple(_messages()[:2]),
+            preserved_messages=(),
+            thread_id="main",
+            agent_name="researcher",
+            runtime=_runtime(thread_id="main", agent_name="researcher", user_id="alice"),
+        )
+    )
 
 
 def test_stale_user_peer_is_compressed_not_rescued() -> None:

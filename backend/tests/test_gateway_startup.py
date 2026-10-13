@@ -86,6 +86,8 @@ def test_deploy_waits_for_gateway_readiness_before_success(tmp_path: Path) -> No
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert result.returncode == 0, result.stderr
@@ -111,6 +113,8 @@ def test_deploy_failure_prints_gateway_diagnostics_and_never_claims_success(tmp_
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert result.returncode != 0

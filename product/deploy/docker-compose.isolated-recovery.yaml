@@ -1,0 +1,21 @@
+# 只用于同一主机上的隔离恢复演练；完整演练更建议使用另一台主机。
+# Compose project 名称会隔离网络和命名卷，但上游显式 container_name 不会自动改名。
+# 因此每个固定容器名都使用恢复专属前缀，避免与正在运行的产品容器冲突。
+services:
+  redis:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-redis"
+
+  nginx:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-nginx"
+
+  frontend:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-frontend"
+
+  gateway:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-gateway"
+
+  provisioner:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-provisioner"
+
+  postgres:
+    container_name: "${RECOVERY_STACK_NAME:?Set RECOVERY_STACK_NAME in the isolated recovery .env}-postgres"

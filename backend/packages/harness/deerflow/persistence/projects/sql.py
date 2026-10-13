@@ -100,13 +100,23 @@ class ProjectRepository:
         *,
         status: ProjectStatus | None = None,
         user_id: str | None | _AutoSentinel = AUTO,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[dict]:
         resolved_user_id = resolve_user_id(user_id, method_name="ProjectRepository.list")
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
         stmt = select(ProjectRow).order_by(ProjectRow.created_at.asc(), ProjectRow.id.asc())
         if resolved_user_id is not None:
             stmt = stmt.where(ProjectRow.user_id == resolved_user_id)
         if status is not None:
             stmt = stmt.where(ProjectRow.status == status)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset:
+            stmt = stmt.offset(offset)
         async with self._sf() as session:
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]

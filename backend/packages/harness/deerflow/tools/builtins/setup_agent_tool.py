@@ -6,6 +6,7 @@ from langgraph.types import Command
 
 from deerflow.config.agents_config import SOUL_FILENAME, validate_agent_name
 from deerflow.config.paths import get_paths
+from deerflow.authz.route_permissions import missing_runtime_route_permissions
 from deerflow.persistence.agents import get_agent_store
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.tools.types import Runtime
@@ -48,6 +49,24 @@ def setup_agent(
         )
 
     agent_name: str | None = runtime.context.get("agent_name") if runtime.context else None
+
+    # The Gateway's HTTP agent routes are not involved in bootstrap writes:
+    # this tool persists directly to the configured agent store. Enforce the
+    # same permissions from the Gateway's server-owned run snapshot.
+    required_permissions = ("agents:read", "agents:write") if agent_name else ("agents:admin",)
+    missing_permissions = missing_runtime_route_permissions(runtime, required_permissions)
+    if missing_permissions:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"Error: this operation requires {', '.join(missing_permissions)}.",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                ]
+            }
+        )
 
     try:
         agent_name = validate_agent_name(agent_name)

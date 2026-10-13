@@ -2,6 +2,7 @@
 
 from deerflow.authz.adapter import GuardrailAuthorizationAdapter
 from deerflow.authz.enforcement import filter_tools_by_authorization
+from deerflow.authz.iam_model_usage import IamModelQuotaExceeded, IamModelUsageClient, IamModelUsageError
 from deerflow.authz.principal import build_principal_from_context, normalize_authz_attributes
 from deerflow.authz.provider import AuthorizationProvider, AuthzDecision, AuthzReason, AuthzRequest, Principal
 from deerflow.authz.rbac import RbacAuthorizationProvider
@@ -15,6 +16,9 @@ __all__ = [
     "AuthzRequest",
     "AuthorizationProvider",
     "GuardrailAuthorizationAdapter",
+    "IamModelQuotaExceeded",
+    "IamModelUsageClient",
+    "IamModelUsageError",
     "Principal",
     "RbacAuthorizationProvider",
     "apply_tool_authorization",

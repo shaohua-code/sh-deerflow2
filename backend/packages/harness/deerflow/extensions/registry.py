@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from deerflow_extension_api import (
+    AdminActionObserver,
     AgentAssemblyObserver,
     ContextCompactionObserver,
     ExtensionData,
@@ -48,6 +49,7 @@ class LoadedExtensions:
     # _freeze_compaction_sources runs an O(context-size) hashing pass one frame
     # earlier and has to make the same test itself.
     context_compaction_observers: tuple[tuple[str, ContextCompactionObserver], ...] = ()
+    admin_action_observers: tuple[tuple[str, AdminActionObserver], ...] = ()
     services: tuple[tuple[str, ExtensionService], ...] = ()
     routers: tuple[tuple[str, Any], ...] = ()
 
@@ -75,6 +77,7 @@ class ExtensionRegistry(ExtensionRegistryContract):
         self._system_model_observers: list[_Entry] = []
         self._agent_assembly_observers: list[_Entry] = []
         self._context_compaction_observers: list[_Entry] = []
+        self._admin_action_observers: list[_Entry] = []
         self._services: list[_Entry] = []
         self._routers: list[_Entry] = []
         self._current_source: str | None = None
@@ -109,6 +112,9 @@ class ExtensionRegistry(ExtensionRegistryContract):
     def context_compaction_observer(self, observer: ContextCompactionObserver) -> None:
         self._context_compaction_observers.append((self._source(), observer))
 
+    def admin_action_observer(self, observer: AdminActionObserver) -> None:
+        self._admin_action_observers.append((self._source(), observer))
+
     def service(self, service: ExtensionService) -> None:
         self._services.append((self._source(), service))
 
@@ -135,12 +141,13 @@ class ExtensionRegistry(ExtensionRegistryContract):
             self._system_model_observers,
             self._agent_assembly_observers,
             self._context_compaction_observers,
+            self._admin_action_observers,
             self._services,
             self._routers,
         ):
             bucket[:] = [entry for entry in bucket if entry[0] != source]
 
-    def mark(self) -> tuple[int, int, int, int, int, int, int]:
+    def mark(self) -> tuple[int, int, int, int, int, int, int, int]:
         """Snapshot bucket lengths so one install() can be undone positionally."""
         return (
             len(self._middlewares),
@@ -148,11 +155,12 @@ class ExtensionRegistry(ExtensionRegistryContract):
             len(self._system_model_observers),
             len(self._agent_assembly_observers),
             len(self._context_compaction_observers),
+            len(self._admin_action_observers),
             len(self._services),
             len(self._routers),
         )
 
-    def rollback_to(self, mark: tuple[int, int, int, int, int, int, int]) -> None:
+    def rollback_to(self, mark: tuple[int, int, int, int, int, int, int, int]) -> None:
         """Undo every registration made since ``mark``.
 
         Positional rather than source-keyed: two specs may legitimately share
@@ -166,6 +174,7 @@ class ExtensionRegistry(ExtensionRegistryContract):
                 self._system_model_observers,
                 self._agent_assembly_observers,
                 self._context_compaction_observers,
+                self._admin_action_observers,
                 self._services,
                 self._routers,
             ),
@@ -182,6 +191,7 @@ class ExtensionRegistry(ExtensionRegistryContract):
             system_model_observers=tuple(self._system_model_observers),
             agent_assembly_observers=tuple(self._agent_assembly_observers),
             context_compaction_observers=tuple(self._context_compaction_observers),
+            admin_action_observers=tuple(self._admin_action_observers),
             services=tuple(self._services),
             routers=tuple(self._routers),
             has_middleware_contributors=bool(self._middlewares),

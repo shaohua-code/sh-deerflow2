@@ -1,15 +1,15 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import deerflow.utils.llm_text as llm_text
 from app.gateway.authz import require_permission
 from app.gateway.deps import get_config
+from app.gateway.one_shot_model import run_authorized_one_shot_model
 from deerflow.config.app_config import AppConfig
 from deerflow.config.suggestions_config import DEFAULT_MAX_SUGGESTIONS, MAX_SUGGESTIONS_LIMIT
-from deerflow.utils.oneshot_llm import run_oneshot_llm
 from deerflow.utils.thread_id import ThreadId
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,8 @@ async def generate_suggestions(
     user_content = f"Conversation Context:\n{conversation}\n\nGenerate {n} follow-up questions"
 
     try:
-        raw = await run_oneshot_llm(
+        raw = await run_authorized_one_shot_model(
+            request=request,
             system_instruction=system_instruction,
             user_content=user_content,
             run_name="suggest_agent",
@@ -143,6 +144,8 @@ async def generate_suggestions(
         cleaned = [s.replace("\n", " ").strip() for s in suggestions if s.strip()]
         cleaned = cleaned[:n]
         return SuggestionsResponse(suggestions=cleaned)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to generate suggestions: thread_id=%s err=%s", thread_id, exc)
         return SuggestionsResponse(suggestions=[])

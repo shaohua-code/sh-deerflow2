@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import { PromptInputProvider } from "@/components/ai-elements/prompt-input";
 import { InputBox } from "@/components/workspace/input-box";
@@ -102,6 +108,25 @@ afterEach(() => {
 });
 
 describe("InputBox agent skill draft hydration", () => {
+  it("resets the highlighted suggestion when the query narrows the list", () => {
+    renderComposer({
+      agentSkillsLoading: false,
+      agentSkillNames: ["research"],
+    });
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/" } });
+    const initialOptions = screen.getAllByRole("option");
+    expect(initialOptions.length).toBeGreaterThan(1);
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+
+    fireEvent.change(textarea, { target: { value: "/research" } });
+    const filteredOptions = screen.getAllByRole("option");
+    expect(filteredOptions).toHaveLength(1);
+    expect(filteredOptions[0]?.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("waits for the agent scope before restoring a saved skill chip", async () => {
     window.sessionStorage.setItem(
       draftKey,

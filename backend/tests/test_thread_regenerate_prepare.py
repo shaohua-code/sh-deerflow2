@@ -227,7 +227,7 @@ def test_run_wait_readers_return_materialized_final_values() -> None:
         status=RunStatus.success,
         error=None,
     )
-    request = SimpleNamespace()
+    request = SimpleNamespace(state=SimpleNamespace())
     body = thread_runs.RunCreateRequest(
         assistant_id="lead-agent",
         config={"configurable": {"thread_id": "thread-1"}},
@@ -285,7 +285,7 @@ def test_run_wait_readers_preserve_terminal_error_without_checkpoint() -> None:
         status=RunStatus.error,
         error="run failed before checkpoint",
     )
-    request = SimpleNamespace()
+    request = SimpleNamespace(state=SimpleNamespace())
     body = thread_runs.RunCreateRequest(config={"configurable": {"thread_id": "thread-1"}})
 
     async def _scenario() -> tuple[dict, dict]:
@@ -330,7 +330,7 @@ def test_run_wait_readers_preserve_terminal_error_when_accessor_builder_fails(ro
         status=RunStatus.error,
         error="run failed before checkpoint",
     )
-    request = SimpleNamespace()
+    request = SimpleNamespace(state=SimpleNamespace())
     body = thread_runs.RunCreateRequest(config={"configurable": {"thread_id": "thread-1"}})
 
     async def _scenario() -> dict:

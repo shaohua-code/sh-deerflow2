@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.gateway.authz import AuthContext
 from app.gateway.routers import subagents as router
 from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
 from deerflow.config.sandbox_config import SandboxConfig
@@ -17,7 +18,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def _request(role: str):
-    return SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(system_role=role)))
+    user = SimpleNamespace(system_role=role, id=f"test-{role}")
+    permissions = ["subagents:read"]
+    if role == "admin":
+        permissions.append("subagents:admin")
+    auth = AuthContext(user=user, permissions=permissions)
+    return SimpleNamespace(state=SimpleNamespace(user=user, auth=auth))
 
 
 @pytest.fixture(autouse=True)

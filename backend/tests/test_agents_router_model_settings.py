@@ -9,6 +9,8 @@ unknown ``model`` is rejected before it reaches the runtime.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -16,9 +18,12 @@ from fastapi import HTTPException
 from app.gateway.routers.agents import (
     AgentCreateRequest,
     AgentUpdateRequest,
+    UserProfileUpdateRequest,
     create_agent_endpoint,
+    delete_agent,
     get_agent,
     update_agent,
+    update_user_profile,
 )
 from deerflow.config.agents_api_config import load_agents_api_config_from_dict
 from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
@@ -155,3 +160,44 @@ async def test_allowed_subagents_round_trip_and_explicit_null_clears(_agent_env)
 
     unrestricted = await update_agent("delegator", AgentUpdateRequest(allowed_subagents=None))
     assert unrestricted.allowed_subagents is None
+
+
+async def test_agent_and_profile_mutations_audit_metadata_only(_agent_env, monkeypatch) -> None:
+    audit = AsyncMock()
+    monkeypatch.setattr("app.gateway.routers.agents.notify_action_audit", audit)
+    # 此用例只验证审计元数据；直接调用路由时显式使用测试认证桩，
+    # 真实请求的权限拒绝由 test_agents_route_permissions.py 单独覆盖。
+    http_request = SimpleNamespace(_deerflow_test_bypass_auth=True)
+
+    await create_agent_endpoint(
+        AgentCreateRequest(name="audited-agent", description="PRIVATE DESCRIPTION", soul="PRIVATE SOUL"),
+        http_request=http_request,
+    )
+    await update_agent(
+        "audited-agent",
+        AgentUpdateRequest(description="UPDATED PRIVATE DESCRIPTION", soul="UPDATED PRIVATE SOUL"),
+        http_request=http_request,
+    )
+    await update_user_profile(
+        UserProfileUpdateRequest(content="PRIVATE USER PROFILE"),
+        http_request=http_request,
+    )
+    await delete_agent("audited-agent", http_request=http_request)
+
+    assert [call.kwargs for call in audit.await_args_list] == [
+        {"action": "custom_agent.create", "resource_type": "custom_agent", "resource_id": "audited-agent"},
+        {"action": "custom_agent.update", "resource_type": "custom_agent", "resource_id": "audited-agent"},
+        {"action": "user_profile.update", "resource_type": "user_profile", "resource_id": None},
+        {"action": "custom_agent.delete", "resource_type": "custom_agent", "resource_id": "audited-agent"},
+    ]
+    assert all(call.args[0] is http_request for call in audit.await_args_list)
+    assert not any(
+        private_value in str(audit.await_args_list)
+        for private_value in (
+            "PRIVATE DESCRIPTION",
+            "PRIVATE SOUL",
+            "UPDATED PRIVATE DESCRIPTION",
+            "UPDATED PRIVATE SOUL",
+            "PRIVATE USER PROFILE",
+        )
+    )

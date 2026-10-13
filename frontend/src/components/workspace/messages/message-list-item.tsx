@@ -40,6 +40,8 @@ import {
   resolveArtifactURL,
   resolveMessageImageURL,
 } from "@/core/artifacts/utils";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import { extractCitationSources } from "@/core/citations/sources";
 import { readConversationReferences } from "@/core/conversation-references";
 import { useI18n } from "@/core/i18n/hooks";
@@ -335,12 +337,8 @@ function MessageImage({
 }
 
 function HumanMessageText({ content }: { content: string }) {
-  // `parseSlashSkillReference` is a pure regex gate (no data subscription), so
-  // the overwhelmingly common plain-text human message never subscribes to the
-  // skills query. Only a message that literally looks like a `/skill …`
-  // activation mounts `HumanSlashSkillText`, which owns the `useSkills()`
-  // lookup. This keeps a skill-enabled toggle from re-rendering every human
-  // turn — only the few slash-candidate turns react to catalog changes.
+  // 普通文本只做正则判断，不订阅技能目录；只有看起来像 `/skill …` 的消息
+  // 才挂载下方查询组件。该查询仍按 skills:read 授权，撤权时隐藏旧目录。
   const reference = useMemo(() => parseSlashSkillReference(content), [content]);
 
   if (!reference) {
@@ -351,7 +349,8 @@ function HumanMessageText({ content }: { content: string }) {
 }
 
 function HumanSlashSkillText({ content }: { content: string }) {
-  const { skills } = useSkills();
+  const { user } = useAuth();
+  const { skills } = useSkills(hasPermission(user, PERMISSIONS.SKILLS_READ));
   const slashSkill = resolveSlashSkillDisplay(content, skills);
 
   if (!slashSkill) {
@@ -545,6 +544,7 @@ function MessageContent_({
           <div className="bg-background border-border flex w-full min-w-0 flex-col gap-2 rounded-lg border p-2 shadow-sm">
             <Textarea
               autoFocus
+              aria-label={t.common.editMessageContent}
               className="min-h-24 resize-y"
               disabled={editState.disabled}
               value={editState.draft}

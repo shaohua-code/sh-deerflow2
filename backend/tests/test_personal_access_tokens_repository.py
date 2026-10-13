@@ -88,11 +88,31 @@ def test_validate_scopes_deduplicates_and_rejects_unknown():
         validate_scopes([])
 
 
-def test_pat_scopes_stay_aligned_with_route_permissions():
-    """PAT scopes are exactly the authz route permissions — fail on drift."""
+def test_pat_scopes_are_an_explicit_subset_of_route_permissions():
+    """New Gateway permissions must not silently widen the PAT scope surface."""
     from app.gateway.authz import _ALL_PERMISSIONS
 
-    assert PAT_ALLOWED_SCOPES == frozenset(_ALL_PERMISSIONS)
+    assert PAT_ALLOWED_SCOPES <= frozenset(_ALL_PERMISSIONS)
+    assert PAT_ALLOWED_SCOPES == frozenset(
+        {
+            "threads:read",
+            "threads:write",
+            "threads:delete",
+            "runs:create",
+            "runs:read",
+            "runs:cancel",
+            "projects:read",
+            "projects:write",
+            "projects:delete",
+            "agents:read",
+            "agents:write",
+            "agents:delete",
+            "memory:read",
+            "memory:write",
+            "memory:delete",
+            "memory:admin",
+        }
+    )
 
 
 # ── Repository ────────────────────────────────────────────────────────────

@@ -1,0 +1,105 @@
+# 自有产品前端接入点
+
+这里放产品专属的品牌、文案、导航与页面组合代码。修改 DeerFlow 通用聊天、流式响应、权限 hook、UI 基础组件时，优先保留在原模块并只从产品层组合，降低后续同步上游时的冲突。
+
+## 前端开发从哪里开始
+
+| 需求                         | 文件 / 目录                                                                                                                | 说明                                                                                                                                                                                                                                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 修改产品默认名、简称、简介   | `brand.ts`                                                                                                                 | 源码品牌与首屏 metadata 回退；`sourceUrl` 只作为开源来源链接                                                                                                                                                                                                                            |
+| 更新运行时产品名             | `public-brand.tsx`、`api.ts`、`hooks.ts`、`document-title.tsx`                                                             | 公开接口仅返回名称；首页、登录和初始化页同步浏览器标签，Gateway 不可用时按页面语言回退源码品牌，并在 Next metadata 改写标题后恢复；认证工作台用 bootstrap 缓存即时更新                                                                                                                  |
+| 调整默认/服务端功能开关      | `features.ts`、`hooks.ts`                                                                                                  | 默认值作为 bootstrap 降级；登录后覆盖总览卡片和侧栏入口，仅控制展示，不能当权限控制                                                                                                                                                                                                     |
+| 调整工作台主导航             | `navigation.ts`、`components/workspace/workspace-nav-chat-list.tsx`                                                        | 自有目录维护路由、图标、活跃匹配、产品开关和已核实的读取权限；能力中心对技能、MCP 和飞书操作按 Gateway 权限明确拒绝状态禁用入口并显示说明；Gateway 能力缺失时由 renderer 展示本地化不可用提示，不能把 UI 开关当作授权                                                                   |
+| 请求自有产品配置             | `api.ts`、`hooks.ts`、`settings-hooks.ts`                                                                                  | `/api/product/v1` DTO 与 TanStack Query；复用带登录 Cookie / CSRF 的 API fetcher，读写当前用户偏好及品牌配置                                                                                                                                                                            |
+| 搜索整个工作空间的文件       | `api.ts`、`file-center-page.tsx`、Gateway 扩展 `/files`                                                                    | 每次进入或刷新时读取一次最多 10,000 条 owner-scoped 元数据；搜索和 50 条分页在浏览器完成，服务端限制扫描数量并明确报告不完整结果；列表标明上传/Agent 产物/工作区/项目资料来源和更新时间；后台刷新时保留当前列表，失败提示本地化且可重试；组件按登录用户 ID 重建，切换账号立即丢弃旧目录 |
+| 调整自定义智能体目录加载状态 | `components/workspace/agents/agent-gallery.tsx`、`core/agents/hooks.ts`、`workspace-home.tsx`、双语 locale 与 DOM 回归测试 | 区分 Gateway 读取错误和成功返回的空目录；能力探测失败时总览保留通往重试页的入口，但不读取未知状态下的 Agent 目录；错误时不展示异常 detail，也不暗示现有智能体已被删除                                                                                                                   |
+| 修改中英文首页和总览文案     | `copy.ts`                                                                                                                  | 使用 `getProductCopy(locale)` 获取同一结构的语言版本；首页主视觉、预览卡片和信任说明也必须从这里读取，避免在 JSX 中散落双语字面量；中文界面优先采用“智能体”等中文产品术语，后台 Agent ID、API 和路由保持原样                                                                            |
+| 调整定时任务列表与筛选状态   | app/workspace/scheduled-tasks/page.tsx、core/i18n/locales/{zh-CN,en-US,types}.ts                                           | 首次读取失败提供重试；后台刷新失败保留已有列表；空列表和无匹配筛选分别说明；筛选按钮暴露当前选中状态                                                                                                                                                                                    |
+| 公开页和认证页语言切换       | `components/locale-switcher.tsx`、`copy.ts`                                                                                | 中文/English 共用控件写入 locale Cookie 并同步文档 `lang`；若 Next 根布局水合时重写语言属性，会恢复当前页面语言；服务端页面刷新当前路由，认证页更新现有 `I18nProvider`                                                                                                                  |
+| 重做公开首页                 | `landing-page.tsx`                                                                                                         | 产品自有页面；入口仍由 `app/page.tsx` 提供路由                                                                                                                                                                                                                                          |
+| 重做登录后总览               | `workspace-home.tsx`                                                                                                       | 最近会话/运行状态要求 `threads:read`，最近文件还要求 `projects:read`，Agent 目录要求 `agents:read`，新建对话和快捷启动要求 `runs:create`；显式撤权时停查、隐藏并清理对应缓存；其余数据按用户分区，刷新失败保留本人上次成功结果；最近文件最多 5 项，静态演示不加载个人数据；快捷入口按启用项数量自适应排布 |
+| 调整聊天欢迎与输入操作名称   | `components/workspace/{welcome.tsx,input-box.tsx}`、`core/i18n/locales/`                                                   | 欢迎徽标使用当前语言；发送、发送中、停止生成和无权停止状态提供明确的无障碍名称，不修改生成式 `PromptInputSubmit` 基础组件或发送/停止流程                                                                                                                                                |
+| 生成会话分享链接             | `thread-share-url.ts`                                                                                                      | 使用浏览器当前实例 origin；自托管和本地会话不能跳到 DeerFlow 官方演示站                                                                                                                                                                                                                 |
+| 修改品牌图形                 | `brand-mark.tsx`                                                                                                           | 复用 `app/icon.svg` 的 F 与绿点图形，修改时同步检查页面标志和浏览器图标                                                                                                                                                                                                                 |
+| 调整工作台侧栏入口           | `workspace-sidebar-trigger.tsx`                                                                                            | 所有页面共用的侧栏触发器适配层；根据桌面/移动状态提供双语可访问名称，不修改上游生成组件                                                                                                                                                                                                 |
+| 查看实际运行的引擎/扩展版本  | `components/workspace/settings/about-settings-page.tsx`、`api.ts`                                                          | About 页区分前端构建版本与 Gateway 返回的扩展/引擎版本；版本接口仅返回非敏感分发版本，失败时不影响页面其余内容                                                                                                                                                                          |
+| 调整记忆设置页读取状态       | `components/workspace/settings/memory-settings-page.tsx`、`core/memory/{api,hooks}.ts`、`core/i18n/locales/`               | 首次加载失败时提供重试；后台刷新失败时保留上次成功的数据并显示本地化提示；缓存按用户 ID 隔离，撤权/切账号时清除旧数据；API 携带预期用户 ID 防止共享 Cookie 切换账号后误读写；权限和存储归属仍由 Gateway 校验                                                                       |
+| 调整子智能体目录与写入状态   | `components/workspace/settings/subagent-settings-page.tsx`、`core/subagents/hooks.ts`、`core/i18n/locales/`                | 首次读取失败可重试；后台刷新失败保留目录；创建、更新/启停和删除失败使用本地化安全提示，不展示任意 Gateway detail；管理员权限和目录数据来源仍由 Gateway 决定                                                                                                                             |
+| 调整自定义 Agent 写入提示    | `app/workspace/agents/new/page.tsx`、`components/workspace/agents/`、Agent 双语 locale                                     | 创建请求、设置保存和删除失败使用本地化文案，不在 toast 中暴露 Gateway 异常；身份归属和写权限仍由现有 Gateway API 决定                                                                                                                                                                   |
+| 调整渠道设置页读取状态       | `components/workspace/settings/channels-settings-page.tsx`、`core/channels/hooks.ts`、`core/i18n/locales/`                 | 渠道提供方和连接状态需要同时有成功快照才展示旧目录；加载失败可一起重试；连接、保存配置和断开失败使用本地化安全提示，不透传 Gateway 异常；不改变渠道权限与操作接口                                                                                                                       |
+| 调整管理员页面刷新失败状态   | `components/workspace/settings/product-admin-page.tsx`、`core/i18n/locales/`                                               | 账号、配置和审计在后台刷新失败时保留上次成功数据；每个面板显示双语提示和重试入口；首次加载错误、管理员权限和 Gateway 数据来源语义保持不变                                                                                                                                               |
+| 调整项目详情与设置页         | `core/projects/api.ts`、`app/workspace/projects/[id]/page.tsx`、`core/i18n/locales/`                                       | 设置按项目信息、可用状态和独立危险区分组，窄屏下表单操作纵向排列；详情错误保留 HTTP 状态；写操作失败使用本地化文案，指令长度 422 显示当前配置上限；API detail 仅供诊断，不直接展示                                                                                                      |
+| 调整侧栏项目创建与会话归属   | `components/workspace/projects-section.tsx`、`move-to-project-menu.tsx`、`recent-chat-list.tsx`、双语 locale               | 创建项目和移动会话失败时只展示本地化操作提示，不将 Gateway 异常 detail 放入 toast；维护错误回归测试，操作归属和 API 权限仍由 Gateway 决定                                                                                                                                               |
+| 修改关于页产品介绍           | `components/workspace/settings/about-content.ts`                                                                           | 按 locale 输出双语产品说明；中英文都保留 DeerFlow 来源链接和 MIT 许可声明                                                                                                                                                                                                               |
+| 修改聊天与流式交互           | `core/threads/`、`components/workspace/chats/`                                                                             | 属于上游核心高冲突区；先看目录内的 `AGENTS.md` 和现有契约                                                                                                                                                                                                                               |
+| 调整工作区紧凑/舒适密度      | `workspace-density-boundary.tsx`、`styles/globals.css`                                                                     | 边界位于认证后的 `/workspace` 公共布局，覆盖聊天和详情路由；CSS 不改生成控件                                                                                                                                                                                                            |
+| 修改登录 / 初始化外观        | `app/(auth)/login/`、`app/(auth)/setup/`                                                                                   | 外观可自定义，Cookie、CSRF、回跳地址和认证状态机要复用                                                                                                                                                                                                                                  |
+
+## 代码边界
+
+- 文件中心把整次目录读取失败与部分来源覆盖不足分开呈现：前者显示可重试错误卡片，后者只拼接实际存在的双语告警原因；仅在曾成功取得目录快照后，刷新失败才提示“当前目录可能未包含最近的文件变更”，即使快照是零条也成立；空目录判断仍把失败视为“未知/可能不完整”，不得误报为没有文件。
+- 渠道设置页和工作台侧栏共用 `core/channels/mutation-errors.ts`；写操作失败只显示本地化安全提示，Gateway 原始异常不会进入 toast。provider 状态响应中的运维说明仍按现有流程展示。
+- 回收站未知操作异常使用本地化安全提示；恢复冲突和原项目不可用仍由稳定错误类型分别处理，不向界面透传服务端 `detail`。
+- 记忆页的导入、导出、清空和事实写操作失败使用双语操作提示，不透传记忆后端详情；加载失败时仍按首次错误/缓存刷新错误分别呈现。
+- 项目侧栏创建项目、把会话移动到项目以及新建项目后的归属操作失败使用现有双语安全提示；未知异常详情只留给诊断日志，不直接展示给用户。
+- 会话侧栏重命名、置顶和删除失败均显示双语本地化提示；删除异常仍保留在诊断日志中，toast 不透传服务端 detail。
+- Artifact 保存保留运行中和版本冲突的专用恢复提示；其他保存异常只在诊断日志记录，不向用户 toast 暴露 Gateway detail。
+- 自定义 Agent 保存、设置修改与删除失败使用双语安全提示；自定义 Agent 的 owner 和管理员权限不由前端文案替代。
+- 后台任务和子智能体批处理的列表/详情读取失败仅显示本地化状态；任务条目自身的执行错误仍显示为业务结果，两类错误不可混淆。
+- 后台任务取消、批处理控制和条目重试失败使用双语安全提示；异常详情仅用于诊断，不拼接到 toast。
+- 定时任务创建、修改、暂停、恢复、触发和删除失败使用对应的双语提示；Gateway 异常仅记录供排查，不向 toast 暴露。
+- 子智能体设置页的创建、更新/启停和删除失败使用双语安全提示；服务端 detail 仅供诊断，不显示在 toast 中。
+- 项目详情的重命名、归档、恢复、删除和指令保存失败均使用本地化提示；`ProjectAPIError` 保留 Gateway HTTP 状态供页面区分 404/422，但 `message` 可能包含内部 detail，不得直接显示给用户。指令 422 使用服务端公布的字节上限提示。
+- 项目文件架的上传、移入回收站、附加到会话和保存会话文件失败均使用对应双语文案；未知 API detail 不直接进入 toast，内容缺失状态仍以 Gateway 列表 DTO 为准。
+- 页面调用现有的 `core/*` hook 和 API；不要让浏览器直连数据库或沙箱文件目录。
+- 会话、事件和产物以 Gateway 返回结果为准，不在产品层另存第二份聊天正文。
+- 前台账号 JSON 导出可用文件目录的单次有界请求发现最多 10,000 条元数据；Gateway 整体再限制工作区目录扫描，附件下载仍逐项走 owner-check URL。调整上限时同步核对 API 参数、Gateway 文件数/目录数预算和 `data-export.test.ts`，并始终保留 `partial` 范围说明。
+- API 的权限由 Gateway 决定；隐藏按钮不能阻止用户直接调用 API。
+- Bootstrap 暂时不可用时，工作台使用本地默认品牌与入口；配置 DTO 只缓存产品展示字段，不把用户身份放进共享查询缓存。
+- 未登录页面只能读取 `/api/product/v1/public-brand` 的 `name` / `name_zh`；Gateway 匿名 allowlist 与扩展严格响应 DTO 必须同步，不能向公开响应添加 feature flags、用户/管理员身份或扩展配置。前端匿名请求不携带 Cookie，错误时留在源码品牌，不触发登录重定向。
+- `workspace-query-boundary.tsx` 按认证用户 ID 重建工作台 QueryClient 与整棵工作台组件树；`components/query-client-provider.tsx` 的缓存归 Provider 实例所有，不再由模块单例在公开预览、文件查看器与工作台之间共享。即使上游页面仍有未按用户分区的旧查询键，账号切换也会先卸载旧账号缓存和未提交草稿。Gateway 的 owner 校验仍是数据隔离的权威边界。
+- 用户偏好查询缓存还以已认证用户 ID 分区；页面中的草稿、删除确认词和任务状态也按 user ID 重建；写操作完成后重新向 Gateway 读取权威值。
+- 个人数据删除先读取认证后的 `GET /api/product/v1/data-capabilities`，严格验证七个 `deletion_scopes` 布尔值；能力查询按用户 ID 分区，未登录和静态演示不发请求。只有成功且非刷新/错误的支持范围可进入确认，不支持的范围提供双语说明；读取失败可重试，不向页面暴露后台配置。弹窗打开后能力刷新、失效或被撤回会暂停输入与提交，保留确认草稿并解释原因。导出入口不依赖此删除能力查询，创建删除任务的 POST 仍以 Gateway 当前校验为准。
+- 个人数据导出/删除按所选范围复用 Gateway 的有效 route grants；映射维护在 `data-job-permissions.ts`，显式缺权时禁用相应入口并说明权限。会话导出还需要 `runs:read`，组合账号导出汇总所有子范围读取权，文件范围同时检查线程和项目权限。前端只负责交互提示，扩展 API 在创建任务以及读取详情、取消、下载制品时重新校验当前权限。
+- 账号设置页的密码表单和导出进度也是用户私有状态，内容组件以认证用户 ID 为生命周期边界；身份切换时卸载旧表单并由清理逻辑中止旧导出。
+- 个人数据任务的制品下载通过 `AbortSignal` 绑定页面生命周期；开始下载时禁用其他制品按钮，关闭页面或切换账号会终止在途请求。
+- 管理设置草稿、账号/审计/配置查询缓存及启用/停用账号确认绑定当前管理员 ID；管理员切换时不展示旧账号缓存，并丢弃旧操作者的未提交编辑和操作意图。迟到的 mutation 结果只更新发起请求时的账号分区；后端仍需重新验证管理员权限。
+- 会话发送、人工确认回复、目标续跑和重新生成按 Gateway 的 `runs:create` 明确拒绝状态禁用；带项目的新会话和分支会话分别检查实际调用的 `threads:write` 路由。缺权提示同时说明所需权限，未解析状态保持兼容，停止运行继续独立按 `runs:cancel` 判断。
+- 技能目录由 `core/skills/hooks.ts` 统一读取，技能中心、聊天输入建议和历史 `/skill` 消息都按 `skills:read` 停查并隐藏/清理旧缓存；读取请求携带 AbortSignal，撤权后终止在途请求。技能中心“新建技能”实际启动一个对话运行，需要 `runs:create`；档案上传、技能启停和导出沿用各自的 Gateway 权限，不能把创建运行权限套到这些独立动作上。
+- 频道目录在 `channels:read` 明确拒绝时停止查询并隐藏缓存；创建或断开当前用户连接按 `channels:write` 控制，运行时凭据编辑和全局删除按 `channels:admin` 与系统管理员角色控制。Provider 查询只返回密码字段掩码。保存配置后若没有连接权限，不会继续发起连接。
+- 浏览器存储的 `deerflow.*` key 可能承载已有用户状态。改 key 时先确认旧键能否证明账号归属；能证明时再实现安全迁移，不做简单全文替换。产物面板旧 v1 键只含 URL、无法确认 owner，因此保留原键但不自动读取或迁移；新 v2 键按账号与 URL 分区。
+- 项目资料附加到会话后的待发送附件也使用按账号与 thread ID 分区的 v2 sessionStorage 键。旧的 thread-only 键无法证明 owner，保留但不自动读取或迁移；用户需要在项目资料页重新附加该文件。
+- 避免修改 `components/ui/` 和 `components/ai-elements/` 中生成的组件，优先通过组合、variants 和 CSS 变量扩展。
+- `deerflow_*` 元数据字段、REST 路由、SSE 事件和 Python 包名是与引擎协作的协议标识，可以继续保留在自有产品中。
+
+## 新增产品页面
+
+1. 在现有 `app/workspace/` 路由树增加路由文件，URL 和认证布局沿用现有约定。
+2. 页面主体实现放在 `product/`，或由产品组件组合通用 workspace 组件。
+3. 页面状态至少覆盖加载、空状态、无权限、服务错误和部分失败。
+4. 若需要新的业务 API，先在后端自有扩展中定义带版本号的契约；不要临时向上游内部 router 塞产品数据。
+5. 给负责产品接缝的组件和数据转换补中文注释，解释身份来源、状态权威方和升级时不可随意改动的约束。
+
+自有 Gateway 接口的扩展源码位于仓库根目录 `product/backend-extension/`。当前已有 bootstrap、按用户隔离的偏好存储、事务审计和带版本保护的管理员品牌/界面开关配置。`settings/product-preferences-page.tsx` 与 `settings/product-admin-page.tsx` 是对应界面。产品偏好 API 的读取要求 `preferences:read`，保存和删除要求 `preferences:write`；明确拒绝时不读取或展示旧缓存，保存入口禁用，后端扩展仍按 Gateway principal 校验授权和 owner。`file-center-page.tsx` 通过自有 `/api/product/v1/files` 接口读取每位用户独立的持久元数据快照，目录首次访问、超过 5 分钟或手动刷新时才调用 Gateway 有界扫描（最多 10,000 条）。搜索和 50 条一页的翻页在产品数据库结果上完成，切换页面不重复扫描 Gateway 存储。目录覆盖当前用户的线程上传、线程输出、会话工作区和项目文档；达到上限或部分来源不可用时页面提示结果可能不完整。数据库只保存文件元数据，不保存正文或宿主路径；刷新失败时保留旧快照并显示陈旧状态，30 秒内重复刷新会告知用户稍后再试。目录读取要求 `threads:read + projects:read`，权限撤销会停止请求并清除页面快照；删除对话上传要求 `threads:delete`，删除项目资料要求 `projects:delete`。文件删除仍先走 Gateway 的 owner 检查路由，随后调用产品 API 清除本人快照中的缓存行，避免陈旧文件重新出现；工作区和输出文件没有删除操作。账号设置可以生成前台一次性 JSON 导出，导出身份由现有 Gateway API 校验，失败资源会列在包内；数据分多次读取，不是同一时刻的事务快照，也不含凭据和可恢复 checkpoint，附件总量最多 100 MiB。
+
+个人偏好页还提供持久化后台数据任务：可以导出或删除当前用户的 Flow Desk 偏好，也可以删除当前用户的自建 Agent 定义及其 SOUL/同目录记忆，或单独导出 Gateway 可见的会话摘要和消息页、项目元数据、计划任务定义、自建 Agent、当前记忆后端的 owner view 或受支持文件。会话、项目、计划任务、Agent、记忆和文件包始终标记为部分导出，并展示排除范围；Agent 删除保留部署级 Agent 与没有自建定义的独立记忆目录；计划任务删除保留运行历史和会话内容。以上都是窄范围操作，不代表全账号擦除。任务历史每页读取 20 条，`GET /data-jobs` 使用 `has_more` 提供准确的后续页提示；旧版服务端没有此字段时，前端按满页判断是否允许继续翻页。查看历史时仍轮询第一页的活动任务，避免用户重复提交。创建导出任务时全部范围保持互斥，但只在 `useMutation().variables` 指向的目标按钮显示提交进度，其他按钮保留范围名称以免混淆。需要运维在可信 `plugins[].config.data_jobs.enabled` 配置中启用。前端只有在 data-jobs 端点返回 HTTP 404 时才提示功能未开放；网络故障或 503 显示读取失败并保留重试入口，避免把网关故障误判为配置问题。失败任务通过 `product/data-job-failure.ts` 把后端稳定 `error_code` 映射成中英文操作提示；只有明确归类为暂时错误或范围暂不可用的失败导出允许用户创建同范围的新任务，原失败记录保留；删除任务不提供重试，大小限制、完整性和未知错误也不显示重试按钮。新增或升级错误码时先核对后端实际枚举，并覆盖未知码回退测试，不得展示异常正文或原始错误字符串。完整账号级导出、删除编排、跨存储索引及备份恢复仍待实施，因此现有入口不代表全量数据可迁移或可恢复。
+
+数据任务创建前，前端会把当前账号的一条未确认提交（任务类别、scope、幂等键）保存在账号分区的 `sessionStorage`；网络结果不确定时页面提供同键重试入口，重载不会自动重放。可验证任务响应返回后清理恢复记录；浏览器存储不可用时失败关闭，不发送无法恢复的新写请求。删除确认短语不会进入浏览器持久存储。服务端行为和限制见根目录 `contracts/product/data-management.v1.md`。
+
+导出过程会在账号页提示资源收集、对话历史、文件内容和数据包生成阶段；历史与文件阶段根据已知项目数或文件数显示进度。该任务只在当前浏览器页面运行，离开页面会中断，不会创建服务端可恢复作业。
+
+公开首页由 `landing-page.tsx` 实现；`tests/unit/product/landing-page.dom.test.tsx` 固定检查中英文品牌标题、工作空间入口和 MIT 来源声明。窄屏顶部只保留品牌和语言切换，进入工作空间的主入口留在首屏正文，避免重复按钮挤压品牌名；`sm` 及以上宽度恢复顶部快捷入口。更新品牌或首页关键入口时同步维护这组回归和 `tests/e2e/landing.spec.ts` 的断点检查。
+
+未登录用户可在公开首页、登录和初始化页面直接切换中文/English；文档与博客页的桌面语言入口位于顶栏，移动端入口位于导航菜单。服务端页面使用 locale Cookie 重新生成当前语言页面，认证页更新已有语言上下文，避免重载正在填写的表单。
+
+智能体操作按 Gateway 有效权限显示：明确缺少 `agents:read` 时停止读取并隐藏缓存，创建需要 `agents:read`、`agents:write` 与 `runs:create`，设置保存需要 `agents:write`，删除需要 `agents:delete`。直接打开智能体聊天页时也按 `agents:read` 停止详情请求、清理旧缓存并显示权限提示。新建 Agent 的 `setup_agent` 和聊天内 `update_agent` 会直接写 Agent store，因此 Gateway 将认证权限快照仅放在运行时 context，Harness 工具重新验证；快照不进入可持久化的 `configurable`。未知权限状态保留旧 Gateway 兼容行为，API 与 owner 校验仍由 Gateway 决定。
+
+设置弹窗从侧栏、菜单或深链收到新的目标分区时，统一走未保存草稿拦截；保留编辑会把共享入口状态恢复到当前分区，确认丢弃后才进入新分区。不要通过更换内容容器的 React `key` 来重置表单状态。管理员权限撤销时立即隐藏并卸载管理页内容。
+
+记忆设置按 `memory:read` 控制目录读取与导出，按 `memory:write` 控制事实编辑和 JSON 导入，按 `memory:delete` 控制事实删除和清空；缺少读取权限时不请求接口，也不展示 React Query 缓存。子智能体目录按 `subagents:read` 控制读取；明确撤权时取消请求并清除缓存。自定义智能体设置也按该读取权限显示目录和绑定控件；无权读取时禁用绑定编辑，保存其他字段时省略 `allowed_subagents`，以保留服务器已有范围。管理操作还要求本地管理员角色与 `subagents:admin`。仅隐藏/禁用界面操作用于解释权限，Gateway 每次请求仍重新检查权限。
+
+登录工作台的账户偏好同步会分别检查 `preferences:read` 与 `preferences:write`：只读授权只发送 GET，只写授权只发送 PATCH，两项都被拒绝时不请求 Gateway。权限缺失时保留用户分区的浏览器缓存与本地交互，不代表已跨设备同步；权限字段未提供时保留旧版 Gateway 的兼容行为。
+
+项目权限映射集中在 `core/projects/permissions.ts`。项目列表、详情和资料读取按 `projects:read` 控制并屏蔽撤权后的缓存；创建项目需要读写权限，设置修改与资料上传按 `projects:write`，项目或资料删除按 `projects:delete`。项目会话列表、附加资料、保存会话文件和新建会话还要按实际 Gateway 路由检查 `threads:read`、`threads:write` 与 `runs:create`。服务端项目限制 `/api/projects/config` 同样要求 `projects:read`，调用 hook 时显式传权限；撤权会取消请求并清除配置缓存，旧 Gateway 未提供接口时继续使用服务端默认上限。回收站读取、恢复和永久删除分别按项目读取、写入和删除权限处理。未知权限状态继续兼容旧 Gateway；这些 UI 检查只解释操作权限，Gateway owner check 与 IAM data scope 才是授权边界。
+
+定时任务入口依据 Gateway 的 `/api/scheduled-tasks` 路由矩阵：读取任务需要 `threads:read`；创建和编辑需要 `threads:write + runs:create`；暂停需要 `threads:write`；恢复和手动触发还需要 `runs:create`；删除需要 `threads:delete`；运行历史需要 `threads:read + runs:read`。侧栏允许读取或创建权限组合进入页面，便于只有创建权的用户建立任务；页面会为这类用户隐藏任务列表，保留新建表单。自定义智能体选项另按 `agents:read` 获取。复用现有会话时 Gateway 再检查 `threads:read`、`threads:write` 与用户数据范围；前端权限只控制请求入口和提示，Gateway 始终负责最终授权。

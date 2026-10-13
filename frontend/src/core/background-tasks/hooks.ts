@@ -8,60 +8,100 @@ import {
   fetchBackgroundTask,
   fetchBackgroundTasks,
 } from "./api";
+import type { BackgroundTaskDetail } from "./types";
 import {
   isActiveBackgroundTask,
   shouldPollBackgroundTaskDetail,
 } from "./types";
 
-export const backgroundTasksQueryKey = (threadId: string) =>
-  ["background-tasks", threadId] as const;
+export const backgroundTasksQueryKey = (
+  threadId: string,
+  cacheScope?: string,
+) => ["background-tasks", threadId, cacheScope] as const;
 
-export const backgroundTaskQueryKey = (threadId: string, taskId: string) =>
-  [...backgroundTasksQueryKey(threadId), taskId] as const;
+export const backgroundTaskQueryKey = (
+  threadId: string,
+  taskId: string,
+  cacheScope?: string,
+) => [...backgroundTasksQueryKey(threadId, cacheScope), taskId] as const;
+
+type CancelBackgroundTaskVariables = {
+  threadId: string;
+  taskId: string;
+  cacheScope?: string;
+  enabled: boolean;
+};
 
 export function useBackgroundTasks(
   threadId: string,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; cacheScope?: string } = {},
 ) {
-  return useQuery({
-    queryKey: backgroundTasksQueryKey(threadId),
+  const active = options.enabled !== false && Boolean(threadId);
+  const query = useQuery({
+    queryKey: backgroundTasksQueryKey(threadId, options.cacheScope),
     queryFn: () => fetchBackgroundTasks(threadId),
-    enabled: options.enabled !== false && Boolean(threadId),
+    enabled: active,
     refetchInterval: (query) =>
       query.state.data?.some(isActiveBackgroundTask) ? 3000 : 15000,
     refetchIntervalInBackground: false,
   });
+  // TanStack Query retains data while disabled; never expose it after access
+  // is revoked or the consumer changes to another account.
+  return active ? query : { ...query, data: undefined };
 }
 
 export function useBackgroundTask(
   threadId: string,
   taskId: string,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; cacheScope?: string } = {},
 ) {
-  return useQuery({
-    queryKey: backgroundTaskQueryKey(threadId, taskId),
+  const active =
+    options.enabled !== false && Boolean(threadId) && Boolean(taskId);
+  const query = useQuery({
+    queryKey: backgroundTaskQueryKey(threadId, taskId, options.cacheScope),
     queryFn: () => fetchBackgroundTask(threadId, taskId),
-    enabled: options.enabled !== false && Boolean(threadId) && Boolean(taskId),
+    enabled: active,
     refetchInterval: (query) =>
       query.state.data && shouldPollBackgroundTaskDetail(query.state.data)
         ? 3000
         : false,
     refetchIntervalInBackground: false,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
-export function useCancelBackgroundTask(threadId: string) {
+export function useCancelBackgroundTask(
+  threadId: string,
+  options: { enabled?: boolean } = {},
+) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  return useMutation({
-    mutationFn: (taskId: string) => cancelBackgroundTask(threadId, taskId),
-    onSuccess: (task) => {
+  return useMutation<
+    BackgroundTaskDetail,
+    Error,
+    CancelBackgroundTaskVariables
+  >({
+    mutationFn: (variables) => {
+      if (
+        options.enabled === false ||
+        !variables.enabled ||
+        !variables.threadId
+      ) {
+        throw new Error("Task cancellation is not permitted.");
+      }
+      return cancelBackgroundTask(variables.threadId, variables.taskId);
+    },
+    onSuccess: (task, variables) => {
       queryClient.setQueryData(
-        backgroundTaskQueryKey(threadId, task.task_id),
+        backgroundTaskQueryKey(
+          variables.threadId,
+          task.task_id,
+          variables.cacheScope,
+        ),
         task,
       );
       queryClient.setQueryData(
-        backgroundTasksQueryKey(threadId),
+        backgroundTasksQueryKey(variables.threadId, variables.cacheScope),
         (current: unknown) =>
           Array.isArray(current)
             ? current.map((item) =>
@@ -75,11 +115,16 @@ export function useCancelBackgroundTask(threadId: string) {
             : current,
       );
       void queryClient.invalidateQueries({
-        queryKey: backgroundTasksQueryKey(threadId),
+        queryKey: backgroundTasksQueryKey(
+          variables.threadId,
+          variables.cacheScope,
+        ),
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.backgroundTasks.cancelFailed}: ${error.message}`);
+      // 原始 API 异常保留在 mutation 状态中，用户提示使用本地化安全文案。
+      console.error("Failed to cancel background task:", error);
+      toast.error(t.backgroundTasks.cancelFailed);
     },
   });
 }

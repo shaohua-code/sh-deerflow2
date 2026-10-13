@@ -94,6 +94,7 @@ import {
   HumanInputCard,
   type HumanInputSubmitResult,
 } from "./human-input-card";
+import { submitHumanInputWithRecovery } from "./human-input-submit";
 import { MarkdownContent } from "./markdown-content";
 import { MessageGroup } from "./message-group";
 import { MessageListItem } from "./message-list-item";
@@ -683,25 +684,25 @@ export function MessageList({
 
   const handleSubmitHumanInput = useCallback(
     async (request: HumanInputRequest, response: HumanInputResponse) => {
+      if (!onSubmitHumanInput) {
+        return false;
+      }
       setPendingHumanInputRequestIds((previous) => {
         const next = new Set(previous);
         next.add(request.request_id);
         return next;
       });
 
-      try {
-        const result = await onSubmitHumanInput?.(request, response);
-        if (result === false) {
-          clearPendingHumanInput(request.request_id);
-        }
-        return result;
-      } catch (error) {
-        clearPendingHumanInput(request.request_id);
-        toast.error(error instanceof Error ? error.message : String(error));
-        return false;
-      }
+      return submitHumanInputWithRecovery(
+        () => onSubmitHumanInput(request, response),
+        () => clearPendingHumanInput(request.request_id),
+        (error) => {
+          console.error("Failed to submit human input response", error);
+          toast.error(t.humanInput.submitFailed);
+        },
+      );
     },
-    [clearPendingHumanInput, onSubmitHumanInput],
+    [clearPendingHumanInput, onSubmitHumanInput, t.humanInput.submitFailed],
   );
 
   const latestAssistantGroupId = useMemo(() => {

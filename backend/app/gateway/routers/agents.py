@@ -5,10 +5,12 @@ import logging
 import re
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from deerflow.agents.memory.manager import get_memory_manager
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.agent_deletion import delete_agent_with_memory_cancel
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.agents_config import (
     AgentConfig,
@@ -212,13 +214,15 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
     summary="List Custom Agents",
     description="List all custom agents available in the agents directory, including their soul content.",
 )
-async def list_agents() -> AgentsListResponse:
+@require_permission("agents", "read", request_parameter="http_request")
+async def list_agents(http_request: Request = None) -> AgentsListResponse:
     """List all custom agents.
 
     Returns:
         List of all custom agents with their metadata and soul content.
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:read")
 
     user_id = get_effective_user_id()
 
@@ -241,7 +245,8 @@ async def list_agents() -> AgentsListResponse:
     summary="Check Agent Name",
     description="Validate an agent name and check if it is available (case-insensitive).",
 )
-async def check_agent_name(name: str) -> dict:
+@require_permission("agents", "read", request_parameter="http_request")
+async def check_agent_name(name: str, http_request: Request = None) -> dict:
     """Check whether an agent name is valid and not yet taken.
 
     Args:
@@ -254,6 +259,7 @@ async def check_agent_name(name: str) -> dict:
         HTTPException: 422 if the name is invalid.
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:read")
     _validate_agent_name(name)
     normalized = _normalize_agent_name(name)
     user_id = get_effective_user_id()
@@ -274,7 +280,8 @@ async def check_agent_name(name: str) -> dict:
     summary="Get Custom Agent",
     description="Retrieve details and SOUL.md content for a specific custom agent.",
 )
-async def get_agent(name: str) -> AgentResponse:
+@require_permission("agents", "read", request_parameter="http_request")
+async def get_agent(name: str, http_request: Request = None) -> AgentResponse:
     """Get a specific custom agent by name.
 
     Args:
@@ -287,6 +294,7 @@ async def get_agent(name: str) -> AgentResponse:
         HTTPException: 404 if agent not found.
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:read")
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
     user_id = get_effective_user_id()
@@ -312,7 +320,9 @@ async def get_agent(name: str) -> AgentResponse:
     summary="Create Custom Agent",
     description="Create a new custom agent with its config and SOUL.md.",
 )
-async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
+@require_permission("agents", "write", request_parameter="http_request")
+@require_permission("agents", "read", request_parameter="http_request")
+async def create_agent_endpoint(request: AgentCreateRequest, http_request: Request = None) -> AgentResponse:
     """Create a new custom agent.
 
     Args:
@@ -325,6 +335,8 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
         HTTPException: 409 if agent already exists, 422 if name is invalid.
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:read")
+    await require_iam_data_scope_for_request(http_request, None, target="agents:write", action="write")
     _validate_agent_name(request.name)
     _validate_model_exists(request.model)
     normalized_name = _normalize_agent_name(request.name)
@@ -356,7 +368,11 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
         return _agent_config_to_response(agent_cfg, include_soul=True, user_id=user_id)
 
     try:
-        return await asyncio.to_thread(_create_agent)
+        response = await asyncio.to_thread(_create_agent)
+        if http_request is not None:
+            # 审计只记录稳定 Agent ID 与动作码，不写入 SOUL、描述或模型配置。
+            await notify_action_audit(http_request, action="custom_agent.create", resource_type="custom_agent", resource_id=normalized_name)
+        return response
     except AgentExistsError:
         raise HTTPException(status_code=409, detail=f"Agent '{normalized_name}' already exists")
     except Exception as e:
@@ -370,7 +386,9 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
     summary="Update Custom Agent",
     description="Update an existing custom agent's config and/or SOUL.md.",
 )
-async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
+@require_permission("agents", "write", request_parameter="http_request")
+@require_permission("agents", "read", request_parameter="http_request")
+async def update_agent(name: str, request: AgentUpdateRequest, http_request: Request = None) -> AgentResponse:
     """Update an existing custom agent.
 
     Args:
@@ -384,6 +402,8 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
         HTTPException: 404 if agent not found.
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:read")
+    await require_iam_data_scope_for_request(http_request, None, target="agents:write", action="write")
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
     user_id = get_effective_user_id()
@@ -468,7 +488,8 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
 
         # Persist config (when changed) and/or soul (when provided) off the
         # event loop. A no-change PATCH commits nothing and re-reads current state.
-        if updated is not None or request.soul is not None:
+        changed = updated is not None or request.soul is not None
+        if changed:
 
             def _update_agent() -> None:
                 get_agent_store().update(name, updated, request.soul, user_id=user_id)
@@ -482,7 +503,11 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
             refreshed_cfg = load_agent_config(name, user_id=user_id)
             return _agent_config_to_response(refreshed_cfg, include_soul=True, user_id=user_id)
 
-        return await asyncio.to_thread(_refresh)
+        response = await asyncio.to_thread(_refresh)
+        if changed and http_request is not None:
+            # 更新审计仅携带稳定 ID；Agent 文本和运行参数留在用户数据存储中。
+            await notify_action_audit(http_request, action="custom_agent.update", resource_type="custom_agent", resource_id=name)
+        return response
 
     except HTTPException:
         raise
@@ -507,9 +532,10 @@ class UserProfileUpdateRequest(BaseModel):
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Get User Profile",
-    description="Read the global USER.md file that is injected into all custom agents.",
+    description="Read the deployment-wide USER.md file injected into all custom agents; requires agents:admin.",
 )
-async def get_user_profile() -> UserProfileResponse:
+@require_permission("agents", "admin", request_parameter="http_request")
+async def get_user_profile(http_request: Request = None) -> UserProfileResponse:
     """Return the current USER.md content.
 
     Returns:
@@ -532,9 +558,10 @@ async def get_user_profile() -> UserProfileResponse:
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Update User Profile",
-    description="Write the global USER.md file that is injected into all custom agents.",
+    description="Update the deployment-wide USER.md file injected into all custom agents; requires agents:admin.",
 )
-async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileResponse:
+@require_permission("agents", "admin", request_parameter="http_request")
+async def update_user_profile(request: UserProfileUpdateRequest, http_request: Request = None) -> UserProfileResponse:
     """Create or overwrite the global USER.md.
 
     Args:
@@ -550,6 +577,9 @@ async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileR
         paths.base_dir.mkdir(parents=True, exist_ok=True)
         paths.user_md_file.write_text(request.content, encoding="utf-8")
         logger.info(f"Updated USER.md at {paths.user_md_file}")
+        if http_request is not None:
+            # USER.md 可能含个人信息，审计事件不得复制其正文或摘要。
+            await notify_action_audit(http_request, action="user_profile.update", resource_type="user_profile", resource_id=None)
         return UserProfileResponse(content=request.content or None)
     except Exception as e:
         logger.error(f"Failed to update user profile: {e}", exc_info=True)
@@ -562,7 +592,8 @@ async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileR
     summary="Delete Custom Agent",
     description="Delete a custom agent and all its files (config, SOUL.md, memory).",
 )
-async def delete_agent(name: str) -> None:
+@require_permission("agents", "delete", request_parameter="http_request")
+async def delete_agent(name: str, http_request: Request = None) -> None:
     """Delete a custom agent.
 
     Args:
@@ -573,6 +604,7 @@ async def delete_agent(name: str) -> None:
             shared copy exists (suggesting the migration script).
     """
     _require_agents_api_enabled()
+    await require_iam_data_scope_for_request(http_request, None, target="agents:delete", action="delete")
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
     user_id = get_effective_user_id()
@@ -599,6 +631,8 @@ async def delete_agent(name: str) -> None:
         )
 
     logger.info(f"Deleted agent '{name}'")
+    if http_request is not None:
+        await notify_action_audit(http_request, action="custom_agent.delete", resource_type="custom_agent", resource_id=name)
 
 
 def _delete_agent_with_memory_cancel(name: str, user_id: str | None) -> AgentDeleteOutcome:
@@ -609,35 +643,4 @@ def _delete_agent_with_memory_cancel(name: str, user_id: str | None) -> AgentDel
     rmtree; post-success cancel covers work enqueued mid-delete. A rejected
     delete may still drop buffered work; that update is re-fed on the next turn.
     """
-    store = get_agent_store()
-    _cancel_pending_memory_for_agent(name, user_id)
-    outcome = store.delete(name, user_id=user_id)
-    if outcome == "deleted":
-        _cancel_pending_memory_for_agent(name, user_id)
-    return outcome
-
-
-def _cancel_pending_memory_for_agent(name: str, user_id: str | None) -> None:
-    """Best-effort cancel of buffered memory extraction for one agent scope.
-
-    Always attempts cancellation even if memory is currently disabled: settings
-    are hot-reloadable and disabling does not destroy an already-live queue.
-    Failure must never fail agent deletion: a dropped update is re-fed on the
-    next conversation turn per the queue contract.
-
-    Callers must run this off the event loop (blocking config/manager I/O).
-    """
-    try:
-        cancelled = get_memory_manager().cancel_by_agent(name, user_id=user_id)
-        if cancelled:
-            logger.info(
-                "Cancelled %d pending memory update(s) for agent '%s'",
-                cancelled,
-                name,
-            )
-    except Exception:
-        logger.warning(
-            "Failed to cancel pending memory updates for agent '%s' (non-fatal)",
-            name,
-            exc_info=True,
-        )
+    return delete_agent_with_memory_cancel(get_agent_store(), name, user_id)

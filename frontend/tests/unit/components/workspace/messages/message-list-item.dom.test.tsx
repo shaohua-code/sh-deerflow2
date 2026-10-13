@@ -1,6 +1,6 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { MessageListItem } from "@/components/workspace/messages/message-list-item";
 import { I18nContext } from "@/core/i18n/context";
@@ -45,7 +45,14 @@ function renderRow(
   {
     showCopyButton,
     isLoading = false,
-  }: { showCopyButton: boolean; isLoading?: boolean },
+    canEdit = false,
+    onEditAndRegenerate,
+  }: {
+    showCopyButton: boolean;
+    isLoading?: boolean;
+    canEdit?: boolean;
+    onEditAndRegenerate?: (replacementText: string) => void;
+  },
 ) {
   return render(
     withI18n(
@@ -54,6 +61,8 @@ function renderRow(
         threadId="thread-1"
         showCopyButton={showCopyButton}
         isLoading={isLoading}
+        canEdit={canEdit}
+        onEditAndRegenerate={onEditAndRegenerate}
       />,
     ),
   );
@@ -65,6 +74,20 @@ afterEach(() => {
 });
 
 describe("MessageListItem copy-data derivation guard", () => {
+  it("names the editable message draft", () => {
+    renderRow(makeMessage("human"), {
+      showCopyButton: true,
+      canEdit: true,
+      onEditAndRegenerate: rs.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit and rerun" }));
+
+    expect(
+      screen.getByRole("textbox", { name: "Message text to edit" }),
+    ).toBeTruthy();
+  });
+
   it("derives no copy data for an assistant row that never renders the toolbar", () => {
     const message = makeMessage("ai");
 

@@ -81,25 +81,42 @@ def _fit_utf8_bytes(text: str, budget: int) -> str:
     return encoded[:budget].decode("utf-8", errors="ignore")
 
 
-def claim_unique_filename(name: str, seen: set[str]) -> str:
+def _fit_filename_bytes(name: str, budget: int) -> str:
+    """Fit a filename within a UTF-8 byte budget while keeping its extension when possible."""
+    stem, suffix = Path(name).stem, Path(name).suffix
+    suffix_bytes = len(suffix.encode("utf-8"))
+    if suffix_bytes >= budget:
+        fitted = _fit_utf8_bytes(name, budget)
+    else:
+        fitted = f"{_fit_utf8_bytes(stem, budget - suffix_bytes)}{suffix}"
+    if fitted in {"", ".", ".."}:
+        raise ValueError("Filename byte budget is too small to keep a safe basename")
+    return fitted
+
+
+def claim_unique_filename(name: str, seen: set[str], *, max_bytes: int = _MAX_FILENAME_BYTES) -> str:
     """Generate a unique filename by appending ``_N`` suffix on collision.
 
     Automatically adds the returned name to *seen* so callers don't need to.
 
-    The deduplicated name stays within the 255-byte filename limit that
-    :func:`normalize_filename` enforces: when appending ``_N`` (plus the
-    preserved extension) would exceed it, the stem is truncated on a UTF-8
-    boundary to make room. Otherwise a maximum-length upload that collides
-    would produce a name the filesystem (and a later ``normalize_filename``
-    call on the write path) rejects.
+    The claimed name stays within ``max_bytes`` (capped at the 255-byte
+    component limit that :func:`normalize_filename` enforces). A caller may
+    provide a lower budget when the full path has a stricter platform limit.
+    When appending ``_N`` (plus the preserved extension) would exceed the
+    budget, the stem is truncated on a UTF-8 boundary to make room.
 
     Args:
         name: Candidate filename.
         seen: Set of filenames already claimed (mutated in place).
+        max_bytes: Maximum UTF-8 bytes allowed for the claimed filename.
 
     Returns:
         A filename not present in *seen* (already added to *seen*).
     """
+    max_bytes = min(max_bytes, _MAX_FILENAME_BYTES)
+    if max_bytes < 1:
+        raise ValueError("Filename byte budget must be positive")
+    name = _fit_filename_bytes(name, max_bytes)
     if name not in seen:
         seen.add(name)
         return name
@@ -107,11 +124,14 @@ def claim_unique_filename(name: str, seen: set[str]) -> str:
     counter = 1
     while True:
         tag = f"_{counter}"
-        budget = _MAX_FILENAME_BYTES - len(tag.encode("utf-8")) - len(suffix.encode("utf-8"))
+        tag_bytes = len(tag.encode("utf-8"))
+        if tag_bytes >= max_bytes:
+            raise ValueError(f"Could not create a unique filename within {max_bytes} bytes")
+        budget = max_bytes - tag_bytes - len(suffix.encode("utf-8"))
         if budget < 1:
             # Pathological suffix that leaves no room for a stem; keep the
             # unique tag and fit the rest (stem + suffix tail) around it.
-            candidate = _fit_utf8_bytes(stem + suffix, _MAX_FILENAME_BYTES - len(tag.encode("utf-8"))) + tag
+            candidate = _fit_utf8_bytes(stem + suffix, max_bytes - tag_bytes) + tag
         else:
             candidate = f"{_fit_utf8_bytes(stem, budget)}{tag}{suffix}"
         if candidate not in seen:

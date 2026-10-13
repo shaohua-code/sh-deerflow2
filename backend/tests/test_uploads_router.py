@@ -93,6 +93,48 @@ def test_upload_and_list_response_models_expose_size_as_int(tmp_path):
     assert result.files[0].size == len(b"hello uploads")
 
 
+def test_list_thread_output_files_is_owner_scoped_and_reports_truncation(tmp_path):
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "first.txt").write_text("first", encoding="utf-8")
+    (output_dir / "second.txt").write_text("second", encoding="utf-8")
+    paths = MagicMock()
+    paths.sandbox_outputs_dir.return_value = output_dir
+
+    async def run_file_io_inline(function, *args):
+        return function(*args)
+
+    with (
+        patch.object(uploads, "get_paths", return_value=paths),
+        patch.object(uploads, "get_effective_user_id", return_value="user-123"),
+        patch.object(uploads, "run_file_io", side_effect=run_file_io_inline),
+    ):
+        result = asyncio.run(
+            call_unwrapped(
+                uploads.list_thread_output_files,
+                "thread-local",
+                request=MagicMock(),
+                limit=1,
+            )
+        )
+
+    assert result.count == 2
+    assert result.truncated is True
+    assert [file.filename for file in result.files] == ["first.txt"]
+    assert result.files[0].size == len(b"first")
+    assert result.files[0].artifact_url == ("/api/threads/thread-local/artifacts/mnt/user-data/outputs/first.txt")
+    paths.sandbox_outputs_dir.assert_called_once_with("thread-local", user_id="user-123")
+
+
+def test_list_thread_output_files_denies_foreign_thread(tmp_path):
+    app = make_authed_test_app(owner_check_passes=False)
+    app.include_router(uploads.router)
+
+    response = TestClient(app).get("/api/threads/foreign-thread/uploads/outputs")
+
+    assert response.status_code == 404
+
+
 def test_upload_openapi_schema_exposes_file_size_as_integer():
     upload_schema = uploads.UploadResponse.model_json_schema()
     list_schema = uploads.UploadListResponse.model_json_schema()
@@ -169,12 +211,23 @@ def test_upload_files_deduplicates_max_length_filenames_without_failing_the_batc
 
     assert result.success is True
     assert len(result.files) == 3
+    first_name = result.files[1].filename
     deduped_name = result.files[2].filename
-    assert deduped_name != max_length_name
+    assert first_name != deduped_name
+    if os.name == "nt":
+        # Product-owned ingestion shortens long names to fit Windows' full
+        # path limit; the original display name remains available in metadata.
+        assert first_name != max_length_name
+        assert result.files[1].original_filename == max_length_name
+        assert result.files[2].original_filename == max_length_name
+    else:
+        assert first_name == max_length_name
+        assert result.files[1].original_filename is None
     assert deduped_name.endswith("_1.txt")
+    assert len(first_name.encode("utf-8")) <= 255
     assert len(deduped_name.encode("utf-8")) <= 255
     assert (thread_uploads_dir / "innocent.txt").read_bytes() == b"kept"
-    assert (thread_uploads_dir / max_length_name).read_bytes() == b"first"
+    assert (thread_uploads_dir / first_name).read_bytes() == b"first"
     assert (thread_uploads_dir / deduped_name).read_bytes() == b"second"
 
 
@@ -445,9 +498,12 @@ def test_upload_files_fails_before_writing_when_non_local_sandbox_unavailable(tm
         patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
     ):
-        with pytest.raises(RuntimeError, match="sandbox unavailable"):
+        with pytest.raises(HTTPException) as exc_info:
             asyncio.run(call_unwrapped(uploads.upload_files, "thread-aio", request=MagicMock(), files=[file], config=SimpleNamespace()))
 
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "File upload failed due to an internal error."
+    assert "sandbox unavailable" not in exc_info.value.detail
     assert list(thread_uploads_dir.iterdir()) == []
     assert file.read_calls == []
     provider.acquire.assert_not_called()
@@ -474,6 +530,51 @@ def test_upload_files_rejects_too_many_files_before_writing(tmp_path):
     assert list(thread_uploads_dir.iterdir()) == []
     assert files[0].read_calls == []
     assert files[1].read_calls == []
+
+
+@pytest.mark.parametrize(
+    ("error_kind", "private_detail"),
+    [
+        ("unexpected", "conversion failed at /srv/private/report.pdf"),
+        ("http", "private sandbox path /mnt/tenant-42"),
+    ],
+)
+def test_upload_files_hides_internal_error_details(error_kind, private_detail):
+    class FailingUploadService:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def open(self):
+            pass
+
+        async def ingest_chunks(self, *_args, **_kwargs):
+            if error_kind == "http":
+                raise HTTPException(status_code=500, detail=private_detail)
+            raise RuntimeError(private_detail)
+
+        async def cleanup_written(self):
+            pass
+
+        async def aclose(self):
+            pass
+
+    with (
+        patch.object(uploads, "ThreadUploadIngestionService", FailingUploadService),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        asyncio.run(
+            call_unwrapped(
+                uploads.upload_files,
+                "thread-aio",
+                request=MagicMock(),
+                files=[UploadFile(filename="report.pdf", file=BytesIO(b"pdf-bytes"))],
+                config=SimpleNamespace(),
+            )
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "File upload failed due to an internal error."
+    assert private_detail not in exc_info.value.detail
 
 
 def test_upload_files_releases_partial_lease_when_acquired_sandbox_is_missing(tmp_path):
@@ -669,6 +770,9 @@ def test_upload_files_does_not_sync_non_local_sandbox_when_conversion_fails(tmp_
             asyncio.run(call_unwrapped(uploads.upload_files, "thread-aio", request=MagicMock(), files=[file], config=SimpleNamespace()))
 
     assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "File upload failed due to an internal error."
+    assert "report.pdf" not in exc_info.value.detail
+    assert "conversion failed" not in exc_info.value.detail
     provider.acquire.assert_not_called()
     provider.acquire_async.assert_awaited_once_with("thread-aio", user_id="owner-upload")
     assert provider.get.call_count == 2
@@ -947,6 +1051,25 @@ def test_delete_uploaded_file_removes_generated_markdown_companion(tmp_path):
     assert result == {"success": True, "message": "Deleted report.pdf"}
     assert not (thread_uploads_dir / "report.pdf").exists()
     assert not (thread_uploads_dir / "report.md").exists()
+
+
+def test_delete_uploaded_file_hides_internal_error_details():
+    private_detail = "Failed to remove /srv/private/report.pdf: disk failure"
+
+    with patch.object(uploads, "run_file_io", side_effect=OSError(private_detail)):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                call_unwrapped(
+                    uploads.delete_uploaded_file,
+                    "thread-aio",
+                    "report.pdf",
+                    request=MagicMock(),
+                )
+            )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "File deletion failed due to an internal error."
+    assert private_detail not in exc_info.value.detail
 
 
 def test_auto_convert_documents_enabled_defaults_to_false_on_config_errors():

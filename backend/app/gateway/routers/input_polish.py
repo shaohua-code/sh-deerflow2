@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 import deerflow.utils.llm_text as llm_text
 from app.gateway.authz import require_permission
 from app.gateway.deps import get_config
+from app.gateway.one_shot_model import run_authorized_one_shot_model
 from deerflow.config.app_config import AppConfig
-from deerflow.utils.oneshot_llm import run_oneshot_llm
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,6 @@ async def polish_input(
     request: Request,
     config: AppConfig = Depends(get_config),
 ) -> InputPolishResponse:
-    del request  # Required by the auth decorator.
-
     if not config.input_polish.enabled:
         raise HTTPException(status_code=404, detail="Input polishing is disabled")
 
@@ -85,7 +83,8 @@ async def polish_input(
 
     model_name = config.input_polish.model_name
     try:
-        raw = await run_oneshot_llm(
+        raw = await run_authorized_one_shot_model(
+            request=request,
             system_instruction=_build_system_instruction(),
             user_content=_build_user_content(text, body.locale),
             run_name="input_polish",
@@ -94,6 +93,8 @@ async def polish_input(
             thread_id=body.thread_id,
         )
         rewritten = _clean_rewritten_text(raw)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to polish input: thread_id=%s err=%s", body.thread_id, exc)
         raise HTTPException(status_code=503, detail="Failed to polish input") from exc

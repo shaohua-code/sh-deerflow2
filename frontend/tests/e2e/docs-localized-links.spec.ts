@@ -87,12 +87,15 @@ test.describe("Localized documentation links", () => {
 
     await expect(
       page.getByRole("link", { name: "Question? Give us feedback" }),
-    ).toHaveAttribute("href", /github\.com\/bytedance\/deer-flow\/issues\/new/);
+    ).toHaveAttribute(
+      "href",
+      /github\.com\/shaohua-code\/sh-deerflow2\/issues\/new/,
+    );
     await expect(
       page.getByRole("link", { name: "Edit this page" }),
     ).toHaveAttribute(
       "href",
-      "https://github.com/bytedance/deer-flow/tree/main/frontend/src/content/en/application/quick-start.mdx",
+      "https://github.com/shaohua-code/sh-deerflow2/tree/main/frontend/src/content/en/application/quick-start.mdx",
     );
   });
 });

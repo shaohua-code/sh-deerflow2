@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, rs } from "@rstest/core";
+import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   cleanup,
@@ -22,6 +22,25 @@ rs.mock("next/navigation", () => ({
   usePathname: () => "/workspace",
   useSearchParams: () => new URLSearchParams(),
   useParams: () => ({}),
+}));
+const mocks = rs.hoisted(() => ({
+  pinThread: rs.fn(),
+  renameThread: rs.fn(),
+  toastError: rs.fn(),
+}));
+rs.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
+rs.mock("@/core/threads/archive", () => ({
+  useArchiveThread: () => ({ mutate: rs.fn(), isPending: false }),
+}));
+rs.mock("@/core/threads/hooks", () => ({
+  useDeleteThread: () => ({
+    mutateAsync: rs.fn(async () => undefined),
+    isPending: false,
+    isError: false,
+  }),
+  useMoveThreadToProject: () => ({ mutate: rs.fn() }),
+  usePinThread: () => ({ mutate: mocks.pinThread }),
+  useRenameThread: () => ({ mutate: mocks.renameThread }),
 }));
 
 function makeUser(permissions: string[] | undefined): User {
@@ -74,7 +93,59 @@ afterEach(() => {
   cleanup();
 });
 
+beforeEach(() => {
+  mocks.pinThread.mockReset();
+  mocks.renameThread.mockReset();
+  mocks.toastError.mockReset();
+});
+
 describe("ThreadSidebarItem delete-menu gating (threads:delete)", () => {
+  it("exposes the rename field by its localized accessible name", async () => {
+    renderItem(makeUser(["threads:read", "threads:write"]));
+    await openRowMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    expect(screen.getByRole("textbox", { name: "Rename" })).toBeTruthy();
+  });
+
+  it("uses localized copy for rename failures without exposing server details", async () => {
+    renderItem(makeUser(["threads:read", "threads:write"]));
+    await openRowMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Rename" }), {
+      target: { value: "Updated title" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, options] = mocks.renameThread.mock.calls[0] as [
+      unknown,
+      { onError: (error: Error) => void },
+    ];
+    options.onError(new Error("private update detail"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith("Failed to rename thread.");
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private update detail");
+  });
+
+  it("uses localized copy for pin failures without exposing server details", async () => {
+    renderItem(makeUser(["threads:read", "threads:write"]));
+    await openRowMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pin chat" }));
+
+    const [, options] = mocks.pinThread.mock.calls[0] as [
+      unknown,
+      { onError: (error: Error) => void },
+    ];
+    options.onError(new Error("private metadata backend detail"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to update pinned chat",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private metadata backend detail",
+    );
+  });
+
   it("offers Delete for a role holding threads:delete", async () => {
     renderItem(makeUser(["threads:read", "threads:delete"]));
     await openRowMenu();

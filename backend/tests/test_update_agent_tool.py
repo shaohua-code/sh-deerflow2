@@ -165,6 +165,19 @@ def test_update_agent_requires_at_least_one_field(tmp_path, patched_paths):
     assert msg.status == "error"
 
 
+def test_update_agent_respects_explicit_gateway_agent_write_denial(tmp_path, patched_paths):
+    agent_dir = _seed_agent(tmp_path)
+    runtime = _runtime()
+    runtime.context["route_permissions"] = ["agents:read", "runs:create"]
+
+    result = update_agent.func(runtime=runtime, soul="new soul")
+
+    message = result.update["messages"][0]
+    assert message.status == "error"
+    assert "agents:write" in message.content
+    assert (agent_dir / "SOUL.md").read_text(encoding="utf-8") == "old soul"
+
+
 def test_update_agent_rejects_unknown_model(tmp_path, patched_paths, stub_app_config):
     """Copilot review: model must be validated against configured models before
     being persisted; otherwise _resolve_model_name silently falls back to the

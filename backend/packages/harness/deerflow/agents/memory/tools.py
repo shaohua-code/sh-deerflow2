@@ -18,9 +18,11 @@ overrides those ops (DeerMem does; noop inherits the raises -> errors).
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 
 from langchain.tools import tool
 
+from deerflow.agents.memory.authorization import is_memory_scope_authorized_sync
 from deerflow.agents.memory.manager import get_memory_manager
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.tools.types import Runtime
@@ -44,6 +46,17 @@ def _resolve_scope(runtime: Runtime | None = None) -> tuple[str | None, str]:
 
 def _memory_content_key(content: str) -> str:
     return content.strip().casefold()
+
+
+def _authorization_error(runtime: Runtime | None, user_id: str, actions: Sequence[str]) -> str | None:
+    context = getattr(runtime, "context", None)
+    if is_memory_scope_authorized_sync(
+        context if isinstance(context, Mapping) else None,
+        local_user_id=user_id,
+        actions=actions,
+    ):
+        return None
+    return json.dumps({"error": "Memory authorization denied"})
 
 
 @tool("memory_search", parse_docstring=True)
@@ -71,6 +84,9 @@ def memory_search_tool(
     """
     agent_name, user_id = _resolve_scope(runtime)
     try:
+        authorization_error = _authorization_error(runtime, user_id, ("read",))
+        if authorization_error is not None:
+            return authorization_error
         results = get_memory_manager().search(
             query,
             top_k=limit,
@@ -112,6 +128,9 @@ def memory_add_tool(
     """
     agent_name, user_id = _resolve_scope(runtime)
     try:
+        authorization_error = _authorization_error(runtime, user_id, ("read", "write"))
+        if authorization_error is not None:
+            return authorization_error
         normalized_content = content.strip()
         if not normalized_content:
             return json.dumps({"error": "empty content"})
@@ -184,6 +203,9 @@ def memory_update_tool(
     """
     agent_name, user_id = _resolve_scope(runtime)
     try:
+        authorization_error = _authorization_error(runtime, user_id, ("read", "write"))
+        if authorization_error is not None:
+            return authorization_error
         manager = get_memory_manager()
         try:
             manager.update_fact(
@@ -222,6 +244,9 @@ def memory_delete_tool(runtime: Runtime, fact_id: str) -> str:
     """
     agent_name, user_id = _resolve_scope(runtime)
     try:
+        authorization_error = _authorization_error(runtime, user_id, ("read", "delete"))
+        if authorization_error is not None:
+            return authorization_error
         manager = get_memory_manager()
         try:
             manager.delete_fact(fact_id, agent_name=agent_name, user_id=user_id)

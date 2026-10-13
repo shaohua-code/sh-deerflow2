@@ -34,6 +34,7 @@ import dataclasses
 import json
 import logging
 import os
+import shutil
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
@@ -388,6 +389,62 @@ class UserScopedSkillStorage(LocalSkillStorage):
     def get_user_custom_root(self) -> Path:
         """Host path to this user's custom skills root directory."""
         return self._user_custom_root
+
+    def purge_custom_skills(self) -> int:
+        """Remove this user's custom packages, history, and custom state.
+
+        Shared legacy and integration skills are global resources, so their
+        per-user enabled preferences are retained. The projection mutation
+        lock makes the delete and user-view rebuild one atomic authorization
+        change for sandbox consumers.
+        """
+        shared_names: set[str] = set()
+        for shared_root in (self._global_custom_root, self._integrations_root):
+            if not shared_root.is_dir():
+                continue
+            for current_root, dir_names, file_names in os.walk(shared_root, followlinks=True):
+                dir_names[:] = sorted(name for name in dir_names if not name.startswith("."))
+                if SKILL_MD_FILE in file_names:
+                    shared_names.add(Path(current_root).name)
+                    dir_names.clear()
+
+        purged_names: set[str] = set()
+        with self._skill_projection_mutation():
+            custom_root = self._user_custom_root
+            if custom_root.is_dir() and not custom_root.is_symlink():
+                history_root = custom_root / ".history"
+                if history_root.is_dir() and not history_root.is_symlink():
+                    for history_file in history_root.iterdir():
+                        if history_file.is_file() and history_file.suffix == ".jsonl":
+                            try:
+                                purged_names.add(self.validate_skill_name(history_file.stem))
+                            except ValueError:
+                                continue
+
+                for package_dir in custom_root.iterdir():
+                    if package_dir.name == ".history" or package_dir.name.startswith("."):
+                        continue
+                    if package_dir.is_dir() or package_dir.is_symlink():
+                        try:
+                            purged_names.add(self.validate_skill_name(package_dir.name))
+                        except ValueError:
+                            continue
+                shutil.rmtree(custom_root)
+            elif custom_root.is_symlink() or custom_root.is_file():
+                # Unlink a malformed root symlink itself; never follow it into
+                # another user's or operator-managed directory.
+                custom_root.unlink()
+
+            states = self._read_skill_states()
+            purged_names.update(name for name in states if name not in shared_names)
+            remaining_states = {name: value for name, value in states.items() if name in shared_names}
+            if states != remaining_states or (not remaining_states and self._skill_states_file.exists()):
+                if remaining_states:
+                    self._write_skill_states(remaining_states)
+                else:
+                    self._skill_states_file.unlink(missing_ok=True)
+
+        return len(purged_names)
 
     def get_integrations_root(self) -> Path:
         """Host path to the global managed integration skills root directory."""

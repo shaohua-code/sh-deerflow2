@@ -842,7 +842,7 @@ def test_decorator_default_annotation_and_return_annotation_all_use_enclosing_sc
 def test_pep695_type_parameter_bound_is_never_treated_as_definition_time_eager(tmp_path: Path) -> None:
     """PEP 695 type-parameter bounds are lazily evaluated, not definition-time code.
 
-    CPython compiles a `type_params` bound (`T` in `def helper[T: <bound>](...)`)
+    CPython compiles a `type_params` bound (`T` in `def helper[T: <bound>](.)`)
     into its own hidden, lazily-invoked function: it only runs if and when
     something accesses `T.__bound__` (e.g. a type checker or `typing` runtime
     introspection), never as part of executing the `def` statement itself --

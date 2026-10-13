@@ -21,6 +21,8 @@ likewise prefix the target with `bash`. This keeps documented `make` commands
 working when a source archive, `core.fileMode=false`, or a non-POSIX filesystem
 does not preserve executable bits.
 
+`bump_version.sh` 调用标准库脚本 `version_bump.py`，先校验 backend、frontend 和 Helm Chart 的全部版本字段，再开始写入；缺字段、重复字段、非法 SemVer 都必须在修改任何版本源前报错。重复传入当前版本应无改动。根目录契约测试位于 `tests/test_version_bump.py`；不要把这条本地同步命令改成自动打 tag 或推送自有 `origin`。
+
 Host-side pnpm calls must go through `scripts/pnpm.py`. With native Windows
 Python (`os.name == "nt"`), it checks `pnpm.cmd` before the generic `pnpm`
 lookup, which uses `PATH`/`PATHEXT` and may select an `.exe` or `.bat` in the
@@ -49,6 +51,10 @@ without weakening its own check, then become effective for later changes after
 it is part of the trusted base. Preapproved digests must be code-reviewed in
 that first change; after the corresponding file revision lands, promote the
 consumed digest to `file_sha256` and remove it from the preapproval list.
+
+## Flow Desk 发布清单
+
+`verify_release_manifest.py` 使用 Python 标准库检查已填写 JSON 发布记录的结构和格式；它不会连接 GitHub、Git、镜像仓库、服务器或数据库。清单应固定记录 Flow Desk commit、官方 DeerFlow tag/commit、部署镜像摘要、配置 schema/模板哈希、两条迁移流及发布验收结果。首期发布六项检查都必须标为 `passed` 并附本地证据引用，包含升级兼容和隔离备份恢复。没有迁移时明确填写 `none`。不得在清单或证据引用中写入密钥、服务器地址、用户数据或包含凭据的 URL。校验成功只代表结构和必填字段完整，不证明 commit、镜像、测试结果或恢复结论真实。定向契约测试位于 `tests/test_release_manifest.py`。
 
 ## Backend Static Analysis Commands
 
@@ -121,7 +127,7 @@ other than a `self.`/`cls.` attribute or an already-traced name) kills its
 alias instead of leaving it traceable, so a stale alias from an earlier
 assignment cannot keep exposing an unrelated same-named method after the
 variable is reassigned to something else; the assignment's right-hand side is
-always analyzed against the alias state as it stood *before* this kill-or-add
+always analyzed against the alias state as it stood _before_ this kill-or-add
 update, matching Python's own evaluate-then-bind order, so
 `client = client.flush()` still resolves that call against `client`'s prior
 (pre-reassignment) alias instead of the state after it's gone. `if`/`else`
@@ -132,7 +138,7 @@ depends on which branch is textually `body` vs. `orelse`. This branch
 isolation is deliberately scoped to `ast.If` only; `ast.Try`/`ast.Match` have
 different, more complex control-flow semantics and keep the older unisolated
 traversal. Finally, a function's decorators and parameter defaults are
-analyzed in the *enclosing* scope rather than the new function's own, and
+analyzed in the _enclosing_ scope rather than the new function's own, and
 parameter/return annotations get the same enclosing-scope treatment unless
 the module postpones annotation evaluation (`from __future__ import
 annotations`), in which case they are skipped entirely, in either scope —
@@ -183,6 +189,7 @@ deterministic scope step before routing each candidate to a fix and/or a
 `tests/blocking_io/` runtime anchor.
 
 Regression tests related to Docker/provisioner behavior:
+
 - `tests/test_docker_sandbox_mode_detection.py` (mode detection from `config.yaml`)
 - `tests/test_provisioner_kubeconfig.py` (kubeconfig file/directory handling)
 - `tests/test_provisioner_request_threading.py` (keeps provisioner sandbox CRUD
@@ -190,6 +197,7 @@ Regression tests related to Docker/provisioner behavior:
   Starlette worker pool instead of on the ASGI event loop)
 
 Blocking-IO runtime gate (`tests/blocking_io/`):
+
 - Wraps every item under `tests/blocking_io/` with a strict Blockbuster
   context scoped to `app.*` and `deerflow.*` (see
   `tests/support/detectors/blocking_io_runtime.py`). Any sync blocking IO
@@ -232,9 +240,11 @@ Blocking-IO runtime gate (`tests/blocking_io/`):
   hard-fail.
 
 Boundary check (harness → app import firewall):
+
 - `tests/test_harness_boundary.py` — ensures `packages/harness/deerflow/` never imports from `app.*`
 
 Memory backend async boundary:
+
 - `MemoryMiddleware.aafter_agent` calls `MemoryManager.aadd`; network-backed
   managers must override their `a*` methods to offload or use native async I/O.
 - The mem0 backend requires an HTTPS `base_url` by default because requests
@@ -264,3 +274,7 @@ bounded, drop-oldest frame queue. WebSocket clients that request
 The legacy no-parameter protocol still base64-encodes frames into JSON at the
 Gateway boundary for backward compatibility. Unknown `frame_format` values
 receive a JSON error and close code 1008.
+
+## DeerFlow 上游源码树比较
+
+`compare_upstream_trees.py` 只读取两个本地 Git 仓库中已提交的 tree，对比路径、文件模式、对象类型与对象 ID，并把 Markdown 报告写到标准输出。它不会检出文件、访问网络、改写 remote 或修改工作区。没有共同祖先时，可将自有仓库和隔离的官方克隆分别作为 `--local-repo`、`--upstream-repo` 输入；比较结果只列差异，不能自动判断哪一侧内容应保留。公开契约测试位于 `tests/test_upstream_tree_comparison.py`，不需要临时文件。

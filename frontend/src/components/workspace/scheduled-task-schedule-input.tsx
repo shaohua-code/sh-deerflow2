@@ -276,7 +276,11 @@ export function ScheduledTaskScheduleInput({
             value={preset}
             onValueChange={(v) => changePreset(v as CronPreset)}
           >
-            <SelectTrigger className="w-full" data-testid="schedule-preset">
+            <SelectTrigger
+              className="w-full"
+              data-testid="schedule-preset"
+              aria-label={labels.preset.label}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -411,6 +415,7 @@ export function ScheduledTaskScheduleInput({
             <SelectTrigger
               className="w-36"
               data-testid="schedule-interval-unit"
+              aria-label={labels.fields.intervalUnit}
             >
               <SelectValue />
             </SelectTrigger>
@@ -437,7 +442,11 @@ export function ScheduledTaskScheduleInput({
       )}
 
       <Select value={timezone} onValueChange={setTimezone}>
-        <SelectTrigger className="w-full" data-testid="schedule-timezone">
+        <SelectTrigger
+          className="w-full"
+          data-testid="schedule-timezone"
+          aria-label={labels.fields.timezone}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

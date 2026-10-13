@@ -7,6 +7,7 @@ import { getBackendBaseURL } from "../config";
 
 export interface UploadedFileInfo {
   filename: string;
+  original_filename?: string;
   size: number;
   path: string;
   virtual_path: string;
@@ -31,10 +32,35 @@ export interface ListFilesResponse {
   count: number;
 }
 
+/** Output files are read-only artifacts, separate from user-uploaded inputs. */
+export interface ThreadOutputFileInfo {
+  filename: string;
+  size: number;
+  modified: number;
+  artifact_url: string;
+}
+
+export interface ThreadOutputFileListResponse {
+  files: ThreadOutputFileInfo[];
+  count: number;
+  truncated: boolean;
+}
+
 export interface UploadLimits {
   max_files: number;
   max_file_size: number;
   max_total_size: number;
+}
+
+/** 保留 HTTP 状态码，让页面选择本地化且安全的提示文案。 */
+export class UploadRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "UploadRequestError";
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -112,6 +138,11 @@ async function readErrorDetail(
   response: Response,
   fallback: string,
 ): Promise<string> {
+  // Gateway 的 5xx 详情可能含宿主路径或存储信息，只留在服务端日志中，不能展示给用户。
+  if (response.status >= 500) {
+    return fallback;
+  }
+
   const error = (await response.json().catch(() => null)) as unknown;
   if (!isRecord(error)) {
     return fallback;
@@ -142,7 +173,10 @@ export async function uploadFiles(
   );
 
   if (!response.ok) {
-    throw new Error(await readErrorDetail(response, "Upload failed"));
+    throw new UploadRequestError(
+      response.status,
+      await readErrorDetail(response, "Upload failed"),
+    );
   }
 
   return response.json();
@@ -185,6 +219,24 @@ export async function listUploadedFiles(
 }
 
 /**
+ * List generated files for an owned thread. Gateway verifies thread ownership;
+ * output artifacts remain read-only until the host provides a delete contract.
+ */
+export async function listThreadOutputFiles(
+  threadId: string,
+  limit = 200,
+): Promise<ThreadOutputFileListResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  const response = await fetch(
+    `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/uploads/outputs?${query.toString()}`,
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to list generated files (${response.status})`);
+  }
+  return (await response.json()) as ThreadOutputFileListResponse;
+}
+
+/**
  * Delete an uploaded file
  */
 export async function deleteUploadedFile(
@@ -200,7 +252,10 @@ export async function deleteUploadedFile(
   );
 
   if (!response.ok) {
-    throw new Error(await readErrorDetail(response, "Failed to delete file"));
+    throw new UploadRequestError(
+      response.status,
+      await readErrorDetail(response, "Failed to delete file"),
+    );
   }
 
   return response.json();

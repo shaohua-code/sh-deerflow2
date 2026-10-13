@@ -95,6 +95,10 @@ export async function staticApiResponse(
       // There is no additional durable history or live token usage to fetch.
       if (/^threads\/[^/]+\/messages\/page$/.test(path)) {
         data = { data: [], has_more: false, next_before_seq: null };
+      } else if (/^threads\/[^/]+\/uploads\/(list|outputs)$/.test(path)) {
+        data = path.endsWith("/outputs")
+          ? { files: [], count: 0, truncated: false }
+          : { files: [], count: 0 };
       } else if (/^threads\/[^/]+\/token-usage$/.test(path)) {
         data = null;
       } else if (

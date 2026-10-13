@@ -376,6 +376,9 @@ def _make_upload_app(monkeypatch, provider, *, fail_closed: bool = True):
         "deerflow.authz.sandbox_authz.resolve_authorization_provider",
         lambda config: provider,
     )
+    # This test isolates the sandbox gate; route-level data scope should use
+    # the same local RBAC provider instead of trying to resolve external IAM.
+    monkeypatch.setattr("app.gateway.authz._get_cached_route_provider", lambda _config: provider)
 
     app = make_authed_test_app()
     app.include_router(uploads_router.router)
@@ -580,7 +583,10 @@ def test_artifact_sandbox_sync_skipped_when_denied(monkeypatch, tmp_path):
 
     artifact_path = tmp_path / "note.txt"
     artifact_path.write_bytes(b"before")
-    request = type("R", (), {})()  # simple object; only passed through to mocked helpers
+    request = SimpleNamespace(
+        state=SimpleNamespace(auth_source=None, iam_authz_attributes=None),
+        headers={},
+    )
 
     import asyncio
     import hashlib

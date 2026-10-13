@@ -108,6 +108,32 @@ class FileAgentStore(AgentStore):
         agents.sort(key=lambda a: a.name)
         return agents
 
+    def list_owned(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[str, AgentConfig, str | None]]:
+        """Page only files under the owner's directory, excluding shared agents."""
+        root = _ac.get_paths().user_agents_dir(user_id)
+        if not root.exists():
+            return []
+        # Sort names before paging so retries use deterministic ordering.
+        entries = [entry for entry in sorted(root.iterdir()) if entry.is_dir() and (entry / "config.yaml").is_file()]
+        rows: list[tuple[str, AgentConfig, str | None]] = []
+        for entry in entries[offset : offset + limit]:
+            try:
+                with (entry / "config.yaml").open(encoding="utf-8") as handle:
+                    data: dict[str, Any] = yaml.safe_load(handle) or {}
+                config = parse_agent_config(data, entry.name)
+                soul_path = entry / SOUL_FILENAME
+                soul = soul_path.read_text(encoding="utf-8").strip() if soul_path.is_file() else None
+                rows.append((user_id, config, soul or None))
+            except Exception as exc:  # noqa: BLE001 — one broken Agent must not hide valid rows
+                logger.warning("Skipping owned agent '%s/%s': %s", user_id, entry.name, exc)
+        return rows
+
     def list_all(self) -> list[tuple[str, AgentConfig]]:
         result: list[tuple[str, AgentConfig]] = []
         for user_id, name in self._discover():

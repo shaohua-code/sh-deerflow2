@@ -1,9 +1,9 @@
 "use client";
 
 import { MonitorSmartphoneIcon, MoonIcon, SunIcon } from "lucide-react";
-import { useTheme } from "next-themes";
 import { useMemo, type ComponentType, type SVGProps } from "react";
 
+import { useTheme } from "@/components/theme-provider";
 import {
   Select,
   SelectContent,
@@ -95,7 +95,10 @@ export function AppearanceSettingsPage() {
             }
           }}
         >
-          <SelectTrigger className="w-[220px]">
+          <SelectTrigger
+            className="w-full sm:w-[220px]"
+            aria-label={t.settings.appearance.languageTitle}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -133,6 +136,7 @@ function ThemePreviewCard({
   return (
     <button
       type="button"
+      aria-pressed={active}
       onClick={() => onSelect(mode)}
       className={cn(
         "group flex h-full flex-col gap-3 rounded-lg border p-4 text-left transition-all",
@@ -153,6 +157,7 @@ function ThemePreviewCard({
         </div>
       </div>
       <div
+        aria-hidden="true"
         className={cn(
           "relative overflow-hidden rounded-md border text-xs transition-colors",
           previewMode === "dark"
@@ -170,7 +175,7 @@ function ThemePreviewCard({
           <div className="h-2 w-10 rounded-full bg-current/20" />
           <div className="h-2 w-6 rounded-full bg-current/15" />
         </div>
-        <div className="grid grid-cols-[1fr_240px] gap-3 px-3 py-3">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.65fr)] gap-3 px-3 py-3">
           <div className="space-y-2">
             <div className="h-3 w-3/4 rounded-full bg-current/15" />
             <div className="h-3 w-1/2 rounded-full bg-current/10" />

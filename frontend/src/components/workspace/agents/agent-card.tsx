@@ -42,6 +42,8 @@ import { AgentSettingsDialog } from "./agent-settings-dialog";
 
 interface AgentCardProps {
   agent: Agent;
+  canEdit?: boolean;
+  canDelete?: boolean;
 }
 
 /**
@@ -107,7 +109,11 @@ function TruncatedBadge({
   );
 }
 
-export function AgentCard({ agent }: AgentCardProps) {
+export function AgentCard({
+  agent,
+  canEdit = true,
+  canDelete = true,
+}: AgentCardProps) {
   const displayName = agent.display_name?.length
     ? agent.display_name
     : agent.name;
@@ -116,18 +122,27 @@ export function AgentCard({ agent }: AgentCardProps) {
   const deleteAgent = useDeleteAgent();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const chatLabel = t.agents.chatWith(displayName);
+  const settingsLabel = t.agents.settingsFor(displayName);
+  const deleteLabel = t.agents.deleteFor(displayName);
 
   function handleChat() {
     router.push(`/workspace/agents/${agent.name}/chats/new`);
   }
 
+  // 确认框显示用户熟悉的展示名；删除请求仍使用稳定标识 agent.name。
   async function handleDelete() {
+    if (!canDelete) {
+      toast.error(t.agents.permissionRequired("agents:delete"));
+      return;
+    }
     try {
       await deleteAgent.mutateAsync(agent.name);
       toast.success(t.agents.deleteSuccess);
       setDeleteOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+    } catch {
+      // 删除失败不将 owner 数据或存储异常详情显示在界面上。
+      toast.error(t.agents.deleteFailed);
     }
   }
 
@@ -190,30 +205,44 @@ export function AgentCard({ agent }: AgentCardProps) {
         )}
 
         <CardFooter className="mt-auto flex items-center justify-between gap-2 pt-3">
-          <Button size="sm" className="flex-1" onClick={handleChat}>
+          <Button
+            size="sm"
+            className="flex-1"
+            aria-label={chatLabel}
+            title={chatLabel}
+            onClick={handleChat}
+          >
             <MessageSquareIcon className="mr-1.5 h-3.5 w-3.5" />
             {t.agents.chat}
           </Button>
-          <div className="flex gap-1">
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 shrink-0"
-              onClick={() => setSettingsOpen(true)}
-              title={t.agents.settings}
-            >
-              <Settings2Icon className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="text-destructive hover:text-destructive h-8 w-8 shrink-0"
-              onClick={() => setDeleteOpen(true)}
-              title={t.agents.delete}
-            >
-              <Trash2Icon className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          {canEdit || canDelete ? (
+            <div className="flex gap-1">
+              {canEdit ? (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => setSettingsOpen(true)}
+                  aria-label={settingsLabel}
+                  title={settingsLabel}
+                >
+                  <Settings2Icon className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+              {canDelete ? (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive h-8 w-8 shrink-0"
+                  onClick={() => setDeleteOpen(true)}
+                  aria-label={deleteLabel}
+                  title={deleteLabel}
+                >
+                  <Trash2Icon className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </CardFooter>
       </Card>
 
@@ -224,15 +253,31 @@ export function AgentCard({ agent }: AgentCardProps) {
           agent={agent}
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
+          canEdit={canEdit}
         />
       )}
 
       {/* Delete Confirm */}
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent>
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          if (!open && !deleteAgent.isPending) setDeleteOpen(false);
+        }}
+      >
+        <DialogContent
+          showCloseButton={!deleteAgent.isPending}
+          onEscapeKeyDown={(event) => {
+            if (deleteAgent.isPending) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (deleteAgent.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{t.agents.delete}</DialogTitle>
-            <DialogDescription>{t.agents.deleteConfirm}</DialogDescription>
+            <DialogDescription>
+              {t.agents.deleteConfirm(displayName)}
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button

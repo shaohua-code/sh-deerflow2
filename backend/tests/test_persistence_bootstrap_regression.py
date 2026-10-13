@@ -27,11 +27,17 @@ import sqlalchemy as sa
 
 import deerflow.persistence.models  # noqa: F401  -- registers ORM models
 from deerflow.persistence.base import Base
-from deerflow.persistence.bootstrap import _get_head_revision
+from deerflow.persistence.bootstrap import _BASELINE_TABLE_NAMES, _get_head_revision
 from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
 from deerflow.persistence.run import RunRepository
 
 pytestmark = pytest.mark.asyncio
+
+
+def _create_baseline_tables_sync(connection) -> None:
+    """Create the historical Alembic baseline, excluding later revisions."""
+    tables = [Base.metadata.tables[name] for name in _BASELINE_TABLE_NAMES]
+    Base.metadata.create_all(connection, tables=tables)
 
 
 def _seed_pre_3658_database(db_path: Path) -> None:
@@ -42,13 +48,13 @@ def _seed_pre_3658_database(db_path: Path) -> None:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Easiest way to get the legacy shape exactly right: create_all then
-    # ALTER away the new column.
+    # Use the historical baseline table set so later migration tables are
+    # absent before bootstrap applies their owning revisions.
     sync_url = f"sqlite:///{db_path.as_posix()}"
     sync_engine = sa.create_engine(sync_url)
     try:
-        Base.metadata.create_all(sync_engine)
         with sync_engine.begin() as conn:
+            _create_baseline_tables_sync(conn)
             conn.execute(sa.text("ALTER TABLE runs DROP COLUMN token_usage_by_model"))
     finally:
         sync_engine.dispose()
@@ -103,7 +109,8 @@ async def test_legacy_database_with_manual_alter_still_bootstraps(tmp_path: Path
 
     sync_engine = sa.create_engine(f"sqlite:///{db_path.as_posix()}")
     try:
-        Base.metadata.create_all(sync_engine)
+        with sync_engine.begin() as conn:
+            _create_baseline_tables_sync(conn)
         # Don't strip the column -- this is the "user already ran the
         # workaround" case where create_all already produced it.
     finally:

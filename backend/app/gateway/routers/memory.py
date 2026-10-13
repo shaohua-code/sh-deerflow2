@@ -6,6 +6,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.internal_auth import get_trusted_internal_owner_user_id
 from deerflow.agents.memory import MemoryConflictError, MemoryCorruptionError, MemoryManager, get_memory_manager
 from deerflow.config.memory_config import get_memory_config
@@ -13,6 +15,8 @@ from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime.user_context import get_effective_user_id
 
 router = APIRouter(prefix="/api", tags=["memory"])
+
+# 只审计用户主动发起的记忆导入、导出和编辑，不记录正文或自动学习产生的后台更新。
 
 
 def _resolve_memory_user_id(request: Request) -> str:
@@ -35,6 +39,39 @@ def _resolve_memory_user_id(request: Request) -> str:
     if raw_owner:
         return make_safe_user_id(raw_owner)
     return get_effective_user_id()
+
+
+def _require_expected_memory_owner(request: Request) -> None:
+    """Fence browser requests against a shared-cookie account switch.
+
+    Older API clients may omit the header. New frontend requests send the user
+    ID observed when the operation started, so a sibling tab cannot redirect
+    an in-flight read or write to a different signed-in account.
+    """
+    expected_user_id = getattr(request, "headers", {}).get("X-Expected-User-Id")
+    if expected_user_id is None:
+        return
+
+    state = getattr(request, "state", None)
+    user = getattr(state, "user", None)
+    if user is None:
+        user = getattr(getattr(state, "auth", None), "user", None)
+    if user is None or str(getattr(user, "id", "")) != expected_user_id:
+        raise HTTPException(status_code=409, detail="The signed-in account changed; reload this page")
+
+
+async def _require_memory_read_scope(request: Request) -> None:
+    """Require Central IAM read scope before an API response exposes memory.
+
+    Write endpoints currently return the full memory document for compatibility,
+    so they need read scope as well as their write/delete route permission. This
+    check runs before storage access to avoid returning private facts on writes.
+    """
+    state = getattr(request, "state", None)
+    user = getattr(state, "user", None)
+    if user is None:
+        user = getattr(getattr(state, "auth", None), "user", None)
+    await require_iam_data_scope_for_request(request, user, target="memory:read")
 
 
 class ContextSection(BaseModel):
@@ -208,6 +245,7 @@ class MemoryStatusResponse(BaseModel):
     summary="Get Memory Data",
     description="Retrieve the current global memory data including user context, history, and facts.",
 )
+@require_permission("memory", "read", request_parameter="http_request")
 async def get_memory(http_request: Request) -> MemoryResponse:
     """Get the current global memory data.
 
@@ -242,6 +280,8 @@ async def get_memory(http_request: Request) -> MemoryResponse:
         }
         ```
     """
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     memory_data = await _get_memory_or_501(manager, _resolve_memory_user_id(http_request), "get memory")
     return MemoryResponse(**memory_data)
@@ -254,6 +294,7 @@ async def get_memory(http_request: Request) -> MemoryResponse:
     summary="Reload Memory Data",
     description="Reload memory data from the storage file, refreshing the in-memory cache.",
 )
+@require_permission("memory", "read", request_parameter="http_request")
 async def reload_memory(http_request: Request) -> MemoryResponse:
     """Reload memory data from file.
 
@@ -263,6 +304,8 @@ async def reload_memory(http_request: Request) -> MemoryResponse:
     Returns:
         The reloaded memory data.
     """
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     user_id = _resolve_memory_user_id(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
@@ -287,8 +330,11 @@ async def reload_memory(http_request: Request) -> MemoryResponse:
     summary="Clear All Memory Data",
     description="Delete all saved memory data and reset the memory structure to an empty state.",
 )
+@require_permission("memory", "delete", request_parameter="http_request")
 async def clear_memory(http_request: Request) -> MemoryResponse:
     """Clear all persisted memory data."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
         memory_data = await asyncio.to_thread(manager.clear_memory, user_id=_resolve_memory_user_id(http_request))
@@ -299,6 +345,12 @@ async def clear_memory(http_request: Request) -> MemoryResponse:
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to clear memory data.") from exc
 
+    await notify_action_audit(
+        http_request,
+        action="memory.clear",
+        resource_type="memory",
+        resource_id=None,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -309,8 +361,11 @@ async def clear_memory(http_request: Request) -> MemoryResponse:
     summary="Create Memory Fact",
     description="Create a single saved memory fact manually.",
 )
+@require_permission("memory", "write", request_parameter="http_request")
 async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: Request) -> MemoryResponse:
     """Create a single fact manually."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
         memory_data, fact_id = await asyncio.to_thread(
@@ -332,6 +387,12 @@ async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: 
     if fact_id is None:
         # The configured max_facts policy evicted the new fact; it was not stored.
         raise HTTPException(status_code=409, detail="Fact was not stored because the configured memory.max_facts capacity policy evicted it")
+    await notify_action_audit(
+        http_request,
+        action="memory.fact.create",
+        resource_type="memory_fact",
+        resource_id=fact_id,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -342,8 +403,11 @@ async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: 
     summary="Delete Memory Fact",
     description="Delete a single saved memory fact by its fact id.",
 )
+@require_permission("memory", "delete", request_parameter="http_request")
 async def delete_memory_fact_endpoint(fact_id: str, http_request: Request) -> MemoryResponse:
     """Delete a single fact from memory by fact id."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
         memory_data = await asyncio.to_thread(manager.delete_fact, fact_id, user_id=_resolve_memory_user_id(http_request))
@@ -356,6 +420,12 @@ async def delete_memory_fact_endpoint(fact_id: str, http_request: Request) -> Me
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to delete memory fact.") from exc
 
+    await notify_action_audit(
+        http_request,
+        action="memory.fact.delete",
+        resource_type="memory_fact",
+        resource_id=fact_id,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -366,8 +436,11 @@ async def delete_memory_fact_endpoint(fact_id: str, http_request: Request) -> Me
     summary="Patch Memory Fact",
     description="Partially update a single saved memory fact by its fact id while preserving omitted fields.",
 )
+@require_permission("memory", "write", request_parameter="http_request")
 async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, http_request: Request) -> MemoryResponse:
     """Partially update a single fact manually."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
         memory_data = await asyncio.to_thread(
@@ -389,6 +462,12 @@ async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, h
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to update memory fact.") from exc
 
+    await notify_action_audit(
+        http_request,
+        action="memory.fact.update",
+        resource_type="memory_fact",
+        resource_id=fact_id,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -399,10 +478,19 @@ async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, h
     summary="Export Memory Data",
     description="Export the current global memory data as JSON for backup or transfer.",
 )
+@require_permission("memory", "read", request_parameter="http_request")
 async def export_memory(http_request: Request) -> MemoryResponse:
     """Export the current memory data."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     memory_data = await _get_memory_or_501(manager, _resolve_memory_user_id(http_request), "export memory")
+    await notify_action_audit(
+        http_request,
+        action="memory.export",
+        resource_type="memory",
+        resource_id=None,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -413,8 +501,11 @@ async def export_memory(http_request: Request) -> MemoryResponse:
     summary="Import Memory Data",
     description="Import and overwrite the current global memory data from a JSON payload.",
 )
+@require_permission("memory", "write", request_parameter="http_request")
 async def import_memory(request: MemoryResponse, http_request: Request) -> MemoryResponse:
     """Import and persist memory data."""
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     manager = await asyncio.to_thread(get_memory_manager)
     try:
         memory_data = await asyncio.to_thread(
@@ -429,6 +520,12 @@ async def import_memory(request: MemoryResponse, http_request: Request) -> Memor
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to import memory data.") from exc
 
+    await notify_action_audit(
+        http_request,
+        action="memory.import",
+        resource_type="memory",
+        resource_id=None,
+    )
     return MemoryResponse(**memory_data)
 
 
@@ -438,7 +535,8 @@ async def import_memory(request: MemoryResponse, http_request: Request) -> Memor
     summary="Get Memory Configuration",
     description="Retrieve the current memory system configuration.",
 )
-async def get_memory_config_endpoint() -> MemoryConfigResponse:
+@require_permission("memory", "admin", request_parameter="http_request")
+async def get_memory_config_endpoint(http_request: Request) -> MemoryConfigResponse:
     """Get the memory system configuration.
 
     Returns:
@@ -486,14 +584,19 @@ async def get_memory_config_endpoint() -> MemoryConfigResponse:
     response_model=MemoryStatusResponse,
     response_model_exclude_none=True,
     summary="Get Memory Status",
-    description="Retrieve both memory configuration and current data in a single request.",
+    description="Retrieve backend configuration and personal memory data. Requires memory:admin and memory:read.",
 )
+@require_permission("memory", "read", request_parameter="http_request")
+@require_permission("memory", "admin", request_parameter="http_request")
 async def get_memory_status(http_request: Request) -> MemoryStatusResponse:
-    """Get the memory system status including configuration and data.
+    """Get backend-private configuration and memory data for administrators.
 
     Returns:
-        Combined memory configuration and current data.
+        Combined configuration and data; admin permission protects private
+        backend_config fields, and memory read scope is checked before access.
     """
+    _require_expected_memory_owner(http_request)
+    await _require_memory_read_scope(http_request)
     config = get_memory_config()
     manager = await asyncio.to_thread(get_memory_manager)
     memory_data = await _get_memory_or_501(manager, _resolve_memory_user_id(http_request), "get memory status")

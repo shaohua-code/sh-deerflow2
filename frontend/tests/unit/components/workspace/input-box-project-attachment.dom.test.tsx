@@ -28,6 +28,34 @@ rs.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+rs.mock(
+  "@/components/workspace/conversation-references/reference-conversations-button",
+  () => ({
+    ReferenceConversationsButton: ({
+      onChange,
+      references,
+    }: {
+      onChange: (
+        references: Array<{ threadId: string; title: string }>,
+      ) => void;
+      references: Array<{ threadId: string; title: string }>;
+    }) => (
+      <button
+        data-testid="add-test-conversation-reference"
+        onClick={() =>
+          onChange([
+            ...references,
+            { threadId: "source-thread", title: "Source conversation" },
+          ])
+        }
+        type="button"
+      >
+        Add test reference
+      </button>
+    ),
+  }),
+);
+
 // The composer's model selector is irrelevant to submit gating; keep the
 // react-query + network machinery out of the way entirely.
 rs.mock("@/core/models/hooks", () => ({
@@ -73,11 +101,17 @@ const OTHER_STAGED_FILE = {
 
 type SubmitSpy = ReturnType<typeof rs.fn>;
 
-function renderComposer({ onSubmit }: { onSubmit: SubmitSpy }) {
+function renderComposer({
+  onSubmit,
+  threadId = "thread-1",
+}: {
+  onSubmit: SubmitSpy;
+  threadId?: string;
+}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const tree = (onSubmitProp: SubmitSpy): ReactNode => (
+  const tree = (threadIdProp: string, onSubmitProp: SubmitSpy): ReactNode => (
     <I18nProvider initialLocale={DEFAULT_LOCALE}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider
@@ -94,7 +128,7 @@ function renderComposer({ onSubmit }: { onSubmit: SubmitSpy }) {
           >
             <PromptInputProvider>
               <InputBox
-                threadId="thread-1"
+                threadId={threadIdProp}
                 status="ready"
                 context={{ mode: "flash" } as never}
                 onSubmit={onSubmitProp}
@@ -105,7 +139,13 @@ function renderComposer({ onSubmit }: { onSubmit: SubmitSpy }) {
       </QueryClientProvider>
     </I18nProvider>
   );
-  return render(tree(onSubmit));
+  const view = render(tree(threadId, onSubmit));
+  return {
+    container: view.container,
+    unmount: view.unmount,
+    rerenderThread: (nextThreadId: string) =>
+      view.rerender(tree(nextThreadId, onSubmit)),
+  };
 }
 
 function getSubmitButton(container: HTMLElement): HTMLButtonElement {
@@ -134,8 +174,19 @@ afterEach(() => {
 });
 
 describe("InputBox staged project attachments", () => {
+  it("clears one-time conversation references when switching threads", () => {
+    const composer = renderComposer({ onSubmit: rs.fn() });
+    fireEvent.click(screen.getByTestId("add-test-conversation-reference"));
+    expect(screen.getByText("Source conversation")).toBeTruthy();
+
+    composer.rerenderThread("thread-2");
+
+    expect(screen.queryByText("Source conversation")).toBeNull();
+    composer.unmount();
+  });
+
   it("submits an attachment-only message instead of reading it as empty", async () => {
-    stageProjectAttachment("thread-1", ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
     const onSubmit = rs.fn();
     const { container } = renderComposer({ onSubmit });
 
@@ -150,7 +201,7 @@ describe("InputBox staged project attachments", () => {
   });
 
   it("does not intercept /goal while an attach chip is present", async () => {
-    stageProjectAttachment("thread-1", ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
     const onSubmit = rs.fn();
     const { container } = renderComposer({ onSubmit });
 
@@ -195,8 +246,8 @@ describe("InputBox staged project attachments", () => {
     // Attaching the first document and navigating away unmounts the
     // composer; the project page appends the second one to the same pending
     // list. Both must reach the next message.
-    stageProjectAttachment("thread-1", ATTACHMENT);
-    stageProjectAttachment("thread-1", OTHER_ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", OTHER_ATTACHMENT);
     const onSubmit = rs.fn();
     const { container } = renderComposer({ onSubmit });
 
@@ -214,8 +265,8 @@ describe("InputBox staged project attachments", () => {
   });
 
   it("keeps a removed chip removed across a remount", async () => {
-    stageProjectAttachment("thread-1", ATTACHMENT);
-    stageProjectAttachment("thread-1", OTHER_ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", OTHER_ATTACHMENT);
     const onSubmit = rs.fn();
     const first = renderComposer({ onSubmit });
 
@@ -243,7 +294,7 @@ describe("InputBox staged project attachments", () => {
   });
 
   it("resets the staged count after a sent message clears the chip", async () => {
-    stageProjectAttachment("thread-1", ATTACHMENT);
+    stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
     const onSubmit: SubmitSpy = rs.fn(
       (_message: unknown, options?: InputBoxSubmitOptions) => {
         options?.onSent?.();

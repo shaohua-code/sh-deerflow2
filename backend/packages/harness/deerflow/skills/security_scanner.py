@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from deerflow.authz.iam_model_usage import IamModelQuotaExceeded, IamModelUsageError
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
 from deerflow.models import create_chat_model
@@ -163,6 +164,11 @@ async def scan_skill_content(
             if decision in {"allow", "warn", "block"}:
                 return ScanResult(decision, str(parsed.get("reason") or "No reason provided."))
         logger.warning("Security scan produced unparseable output: %s", raw[:200])
+    except (IamModelQuotaExceeded, IamModelUsageError):
+        # A model quota or usage-ledger failure is a policy decision from
+        # Central IAM, not a scanner/provider outage. Let the Gateway map it
+        # to a safe HTTP response instead of converting it into warn/block.
+        raise
     except Exception:
         logger.warning("Skill security scan model call failed; applying configured fail-closed/fail-open policy", exc_info=True)
 

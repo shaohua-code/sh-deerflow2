@@ -127,6 +127,25 @@ test("useInfiniteTrashDocuments does not fire in static-demo mode", async () => 
   }
 });
 
+test("useInfiniteTrashDocuments masks cached data when disabled", () => {
+  const client = makeClient();
+  client.setQueryData(["trash", "documents"], {
+    pages: [{ documents: [{ ...DOCUMENT, name: "private.pdf" }] }],
+    pageParams: [0],
+  });
+  const { result, unmount } = renderHook(
+    () => useInfiniteTrashDocuments({ enabled: false }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
 test("useRestoreDocument posts and invalidates trash and projects caches", async () => {
   const client = makeClient();
   const trashKey = ["trash", "documents"];

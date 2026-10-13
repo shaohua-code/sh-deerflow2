@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, rs } from "@rstest/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ConversationReferenceList } from "@/components/workspace/conversation-references/conversation-reference-picker";
+import { ReferenceConversationsButton } from "@/components/workspace/conversation-references/reference-conversations-button";
 import type { AgentThread } from "@/core/threads/types";
 
 const threads = [
@@ -53,9 +54,17 @@ let threadsQuery: {
   isPending: false,
   isError: false,
 };
+const useThreadsMock = rs.fn((..._args: unknown[]) => threadsQuery);
 
 rs.mock("@/core/threads/hooks", () => ({
-  useThreads: () => threadsQuery,
+  useThreads: (...args: unknown[]) => useThreadsMock(...args),
+}));
+
+rs.mock("@/core/features/hooks", () => ({
+  useConversationReferencesCapability: () => ({
+    enabled: true,
+    maxReferences: 3,
+  }),
 }));
 
 rs.mock("@/core/i18n/hooks", () => ({
@@ -96,6 +105,7 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup();
+  useThreadsMock.mockClear();
   threadsQuery = { data: threads, isPending: false, isError: false };
 });
 
@@ -127,6 +137,25 @@ describe("ConversationReferenceList", () => {
     expect(screen.getByText("Beta design")).toBeTruthy();
     expect(screen.getByText("Untitled")).toBeTruthy();
     expect(screen.queryByText("This conversation")).toBeNull();
+  });
+
+  it("keeps the thread query paused and hides cached rows while disabled", () => {
+    render(
+      <ConversationReferenceList
+        currentThreadId="t-current"
+        enabled={false}
+        cacheScope="user-1"
+        maxReferences={3}
+        onToggle={rs.fn()}
+        selected={[]}
+      />,
+    );
+    expect(useThreadsMock).toHaveBeenCalledWith(undefined, {
+      enabled: false,
+      cacheScope: "user-1",
+    });
+    expect(screen.queryByText("Alpha requirements")).toBeNull();
+    expect(screen.queryByText("No conversations found")).toBeNull();
   });
 
   it("toggles a reference with its title", () => {
@@ -187,5 +216,47 @@ describe("ConversationReferenceList", () => {
     expect(untitled?.getAttribute("aria-disabled")).toBe("true");
     expect(alpha?.getAttribute("aria-disabled")).not.toBe("true");
     expect(screen.getByText("Up to 2 conversations per message")).toBeTruthy();
+  });
+});
+
+describe("ReferenceConversationsButton permissions", () => {
+  const props = {
+    currentThreadId: "t-current",
+    cacheScope: "user-1",
+    disabled: false,
+    references: [],
+    onChange: rs.fn(),
+  };
+
+  it("does not render or query when either read grant is denied", () => {
+    render(
+      <ReferenceConversationsButton {...props} canReadReferences={false} />,
+    );
+    expect(screen.queryByTestId("reference-conversations-button")).toBeNull();
+    expect(useThreadsMock).not.toHaveBeenCalled();
+  });
+
+  it("loads only when opened and closes immediately when permission is revoked", () => {
+    const view = render(
+      <ReferenceConversationsButton {...props} canReadReferences />,
+    );
+    expect(useThreadsMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("reference-conversations-button"));
+    expect(screen.getByText("Alpha requirements")).toBeTruthy();
+    expect(useThreadsMock).toHaveBeenLastCalledWith(undefined, {
+      enabled: true,
+      cacheScope: "user-1",
+    });
+
+    view.rerender(
+      <ReferenceConversationsButton {...props} canReadReferences={false} />,
+    );
+    expect(screen.queryByText("Alpha requirements")).toBeNull();
+
+    view.rerender(
+      <ReferenceConversationsButton {...props} canReadReferences />,
+    );
+    expect(screen.queryByText("Alpha requirements")).toBeNull();
   });
 });

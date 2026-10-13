@@ -2,14 +2,36 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI as _FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app.gateway.authz import AuthContext
 from app.gateway.routers import memory
 from deerflow.agents.memory import MemoryConflictError, MemoryCorruptionError
 from deerflow.agents.memory.backends.deermem.deer_mem import DeerMem
+
+
+class FastAPI(_FastAPI):
+    """Memory router test app with the auth context provided by Gateway middleware."""
+
+    def __init__(self, *, memory_permissions: list[str] | None = None) -> None:
+        super().__init__()
+        permissions = memory_permissions or [
+            "memory:read",
+            "memory:write",
+            "memory:delete",
+            "memory:admin",
+        ]
+
+        @self.middleware("http")
+        async def _stub_auth(request, call_next):
+            user = SimpleNamespace(id="memory-test-user", oauth_id="memory-test-user", system_role="user")
+            request.state.user = user
+            request.state.auth = AuthContext(user=user, permissions=list(permissions))
+            return await call_next(request)
 
 
 def _sample_memory(facts: list[dict] | None = None) -> dict:
@@ -28,6 +50,86 @@ def _sample_memory(facts: list[dict] | None = None) -> dict:
         },
         "facts": facts or [],
     }
+
+
+def test_memory_read_permission_denies_before_loading_manager() -> None:
+    app = FastAPI(memory_permissions=["memory:write"])
+    app.include_router(memory.router)
+    manager = MagicMock()
+
+    with patch("app.gateway.routers.memory.get_memory_manager", return_value=manager), TestClient(app) as client:
+        response = client.get("/api/memory")
+
+    assert response.status_code == 403
+    manager.get_memory.assert_not_called()
+
+
+def test_expected_memory_owner_mismatch_denies_before_read_or_write() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+    memory_config = MagicMock()
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        patch("app.gateway.routers.memory.get_memory_config", return_value=memory_config) as get_config,
+        TestClient(app) as client,
+    ):
+        read_response = client.get(
+            "/api/memory",
+            headers={"X-Expected-User-Id": "another-user"},
+        )
+        write_response = client.delete(
+            "/api/memory",
+            headers={"X-Expected-User-Id": "another-user"},
+        )
+        status_response = client.get(
+            "/api/memory/status",
+            headers={"X-Expected-User-Id": "another-user"},
+        )
+
+    assert read_response.status_code == 409
+    assert write_response.status_code == 409
+    assert status_response.status_code == 409
+    manager.get_memory.assert_not_called()
+    manager.clear_memory.assert_not_called()
+    get_config.assert_not_called()
+
+
+def test_memory_status_requires_admin_before_loading_backend_config() -> None:
+    app = FastAPI(memory_permissions=["memory:read"])
+    app.include_router(memory.router)
+    manager = MagicMock()
+    memory_config = MagicMock()
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager) as get_manager,
+        patch("app.gateway.routers.memory.get_memory_config", return_value=memory_config) as get_config,
+        TestClient(app) as client,
+    ):
+        response = client.get("/api/memory/status")
+
+    assert response.status_code == 403
+    get_manager.assert_not_called()
+    get_config.assert_not_called()
+
+
+def test_memory_scope_denial_short_circuits_personal_memory_read() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+    scope_check = AsyncMock(side_effect=HTTPException(status_code=403, detail="scope denied"))
+
+    with (
+        patch("app.gateway.routers.memory.require_iam_data_scope_for_request", new=scope_check),
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        TestClient(app) as client,
+    ):
+        response = client.get("/api/memory")
+
+    assert response.status_code == 403
+    assert scope_check.await_args.kwargs["target"] == "memory:read"
+    manager.get_memory.assert_not_called()
 
 
 # ── export ─────────────────────────────────────────────────────────────────
@@ -57,7 +159,7 @@ def test_get_memory_route_offloads_manager_call_from_event_loop() -> None:
         return _sample_memory()
 
     manager.get_memory.side_effect = get_memory
-    request = SimpleNamespace()
+    request = SimpleNamespace(_deerflow_test_bypass_auth=True)
     with (
         patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
         patch("app.gateway.routers.memory._resolve_memory_user_id", return_value="user-1"),
@@ -109,6 +211,74 @@ def test_import_memory_route_returns_imported_memory() -> None:
             response = client.post("/api/memory/import", json=imported_memory)
     assert response.status_code == 200
     assert response.json()["facts"] == imported_memory["facts"]
+
+
+def test_explicit_memory_management_actions_emit_metadata_only_audit_events() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    mock_mgr = MagicMock()
+    mock_mgr.clear_memory.return_value = _sample_memory()
+    mock_mgr.create_fact.return_value = (_sample_memory(), "fact-created")
+    mock_mgr.update_fact.return_value = _sample_memory()
+    mock_mgr.delete_fact.return_value = _sample_memory()
+    mock_mgr.get_memory.return_value = _sample_memory()
+    mock_mgr.import_memory.return_value = _sample_memory()
+    audit = AsyncMock()
+    imported_memory = _sample_memory(
+        facts=[
+            {
+                "id": "fact-imported",
+                "content": "PRIVATE MEMORY BODY",
+                "category": "private-category",
+                "confidence": 0.9,
+                "createdAt": "2026-03-20T00:00:00Z",
+                "source": "manual",
+            }
+        ]
+    )
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=mock_mgr),
+        patch("app.gateway.routers.memory.notify_action_audit", new=audit),
+        TestClient(app) as client,
+    ):
+        responses = [
+            client.delete("/api/memory"),
+            client.post(
+                "/api/memory/facts",
+                json={"content": "PRIVATE MEMORY BODY", "category": "private-category"},
+            ),
+            client.patch(
+                "/api/memory/facts/fact-updated",
+                json={"content": "UPDATED PRIVATE MEMORY BODY"},
+            ),
+            client.delete("/api/memory/facts/fact-deleted"),
+            client.get("/api/memory/export"),
+            client.post("/api/memory/import", json=imported_memory),
+        ]
+
+    assert all(response.status_code == 200 for response in responses)
+    assert [call.kwargs for call in audit.await_args_list] == [
+        {"action": "memory.clear", "resource_type": "memory", "resource_id": None},
+        {
+            "action": "memory.fact.create",
+            "resource_type": "memory_fact",
+            "resource_id": "fact-created",
+        },
+        {
+            "action": "memory.fact.update",
+            "resource_type": "memory_fact",
+            "resource_id": "fact-updated",
+        },
+        {
+            "action": "memory.fact.delete",
+            "resource_type": "memory_fact",
+            "resource_id": "fact-deleted",
+        },
+        {"action": "memory.export", "resource_type": "memory", "resource_id": None},
+        {"action": "memory.import", "resource_type": "memory", "resource_id": None},
+    ]
+    assert all("PRIVATE MEMORY BODY" not in str(call) for call in audit.await_args_list)
 
 
 def test_import_route_without_agent_name_persists_default_bucket_markdown(tmp_path) -> None:
@@ -204,13 +374,18 @@ def test_create_memory_fact_route_maps_conflict_to_409() -> None:
     app.include_router(memory.router)
     mock_mgr = MagicMock()
     mock_mgr.create_fact.side_effect = MemoryConflictError("stale write")
+    audit = AsyncMock()
 
-    with patch("app.gateway.routers.memory.get_memory_manager", return_value=mock_mgr):
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=mock_mgr),
+        patch("app.gateway.routers.memory.notify_action_audit", new=audit),
+    ):
         with TestClient(app) as client:
             response = client.post("/api/memory/facts", json={"content": "fact"})
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Memory changed concurrently; reload and retry."
+    audit.assert_not_awaited()
 
 
 def test_create_memory_fact_route_maps_duplicate_to_409() -> None:
@@ -396,6 +571,7 @@ def _internal_owner_request(owner_user_id: str) -> SimpleNamespace:
     return SimpleNamespace(
         headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: owner_user_id},
         state=SimpleNamespace(user=SimpleNamespace(id=DEFAULT_USER_ID, system_role=INTERNAL_SYSTEM_ROLE)),
+        _deerflow_test_bypass_auth=True,
     )
 
 
@@ -445,6 +621,7 @@ def test_get_memory_falls_back_to_effective_user_for_browser_requests() -> None:
     browser_request = SimpleNamespace(
         headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: "owner-1"},
         state=SimpleNamespace(user=SimpleNamespace(id="real-user", system_role="user")),
+        _deerflow_test_bypass_auth=True,
     )
 
     mock_mgr = MagicMock()
@@ -461,6 +638,7 @@ def _browser_request_with_spoofed_owner_header() -> SimpleNamespace:
     return SimpleNamespace(
         headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: "owner-1"},
         state=SimpleNamespace(user=SimpleNamespace(id="real-user", system_role="user")),
+        _deerflow_test_bypass_auth=True,
     )
 
 

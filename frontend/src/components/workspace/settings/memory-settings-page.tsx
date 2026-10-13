@@ -8,7 +8,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useDeferredValue, useId, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
+import { useAuth } from "@/core/auth/AuthProvider";
+import {
+  getMissingPermissions,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { exportMemory } from "@/core/memory/api";
 import {
@@ -64,6 +70,7 @@ type MemorySectionGroup = {
 };
 
 type PendingImport = {
+  ownerId: string;
   fileName: string;
   memory: UserMemory;
 };
@@ -279,7 +286,28 @@ function upperFirst(str: string) {
 
 export function MemorySettingsPage() {
   const { t } = useI18n();
-  const { memory, isLoading, error } = useMemory();
+  const { user } = useAuth();
+  const canReadMemory = hasPermission(user, PERMISSIONS.MEMORY_READ);
+  const canWriteMemory = hasPermission(user, PERMISSIONS.MEMORY_WRITE);
+  const canDeleteMemory = hasPermission(user, PERMISSIONS.MEMORY_DELETE);
+  const memoryOwnerId = user?.id ?? null;
+  const currentMemoryOwnerId = useRef(memoryOwnerId);
+  const currentCanReadMemory = useRef(canReadMemory);
+  const currentCanWriteMemory = useRef(canWriteMemory);
+  const currentCanDeleteMemory = useRef(canDeleteMemory);
+  const previousMemoryOwnerId = useRef(memoryOwnerId);
+  currentMemoryOwnerId.current = memoryOwnerId;
+  currentCanReadMemory.current = canReadMemory;
+  currentCanWriteMemory.current = canWriteMemory;
+  currentCanDeleteMemory.current = canDeleteMemory;
+  const missingActionPermissions = getMissingPermissions(user, [
+    PERMISSIONS.MEMORY_WRITE,
+    PERMISSIONS.MEMORY_DELETE,
+  ]);
+  const { memory, isLoading, isFetching, error, refetch } = useMemory(
+    canReadMemory,
+    memoryOwnerId,
+  );
   const clearMemory = useClearMemory();
   const createMemoryFact = useCreateMemoryFact();
   const deleteMemoryFact = useDeleteMemoryFact();
@@ -287,8 +315,17 @@ export function MemorySettingsPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const updateMemoryFact = useUpdateMemoryFact();
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const [clearDialogOwnerId, setClearDialogOwnerId] = useState<string | null>(
+    null,
+  );
   const [factToDelete, setFactToDelete] = useState<MemoryFact | null>(null);
+  const [factToDeleteOwnerId, setFactToDeleteOwnerId] = useState<string | null>(
+    null,
+  );
   const [factToEdit, setFactToEdit] = useState<MemoryFact | null>(null);
+  const [factEditorOwnerId, setFactEditorOwnerId] = useState<string | null>(
+    null,
+  );
   const [factEditorOpen, setFactEditorOpen] = useState(false);
   const [factForm, setFactForm] = useState<FactFormState>(
     DEFAULT_FACT_FORM_STATE,
@@ -299,6 +336,7 @@ export function MemorySettingsPage() {
     null,
   );
   const [isExporting, setIsExporting] = useState(false);
+  const exportAbortRef = useRef<AbortController | null>(null);
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLowerCase();
   const factContentInputId = useId();
@@ -353,6 +391,30 @@ export function MemorySettingsPage() {
   const importButton = t.settings.memory.importButton ?? t.common.import;
   const importSuccess = t.settings.memory.importSuccess ?? "Memory imported";
 
+  // 权限撤回或账号切换时清除本地待确认操作，避免新账号继承旧账号的写入意图。
+  useEffect(() => {
+    return () => exportAbortRef.current?.abort();
+  }, [memoryOwnerId, canReadMemory]);
+
+  useEffect(() => {
+    const ownerChanged = previousMemoryOwnerId.current !== memoryOwnerId;
+    previousMemoryOwnerId.current = memoryOwnerId;
+    // 撤权会关闭草稿；即使新旧账号都有写权限，切号也必须清空旧意图。
+    if (!canWriteMemory || ownerChanged) {
+      setPendingImport(null);
+      setFactEditorOpen(false);
+      setFactToEdit(null);
+      setFactEditorOwnerId(null);
+      setFactForm(DEFAULT_FACT_FORM_STATE);
+    }
+    if (!canDeleteMemory || ownerChanged) {
+      setClearDialogOpen(false);
+      setClearDialogOwnerId(null);
+      setFactToDelete(null);
+      setFactToDeleteOwnerId(null);
+    }
+  }, [canDeleteMemory, canWriteMemory, memoryOwnerId]);
+
   const sectionGroups = memory ? buildMemorySectionGroups(memory, t) : [];
   const filteredSectionGroups = sectionGroups
     .map((group) => ({
@@ -390,9 +452,23 @@ export function MemorySettingsPage() {
     (showFacts && filteredFacts.length > 0);
 
   async function handleExportMemory() {
+    if (!canReadMemory || !memoryOwnerId) return;
+    // 记忆后端可能返回实现细节；页面错误统一使用双语操作提示，不透传原始 detail。
+    const controller = new AbortController();
+    exportAbortRef.current = controller;
     try {
       setIsExporting(true);
-      const exportedMemory = await exportMemory();
+      const exportedMemory = await exportMemory(
+        memoryOwnerId,
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        currentMemoryOwnerId.current !== memoryOwnerId ||
+        !currentCanReadMemory.current
+      ) {
+        return;
+      }
       const fileName = `deerflow-memory-${(exportedMemory.lastUpdated || new Date().toISOString()).replace(/[:.]/g, "-")}.json`;
       const blob = new Blob([JSON.stringify(exportedMemory, null, 2)], {
         type: "application/json",
@@ -406,9 +482,12 @@ export function MemorySettingsPage() {
       link.remove();
       URL.revokeObjectURL(url);
       toast.success(exportSuccess);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+    } catch {
+      if (!controller.signal.aborted) {
+        toast.error(t.settings.memory.exportFailed);
+      }
     } finally {
+      if (exportAbortRef.current === controller) exportAbortRef.current = null;
       setIsExporting(false);
     }
   }
@@ -416,6 +495,8 @@ export function MemorySettingsPage() {
   async function handleImportFileSelection(event: {
     target: HTMLInputElement;
   }) {
+    if (!canWriteMemory || !memoryOwnerId) return;
+    const selectedOwnerId = memoryOwnerId;
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) {
@@ -424,63 +505,145 @@ export function MemorySettingsPage() {
 
     try {
       const parsed: unknown = JSON.parse(await file.text());
+      if (
+        currentMemoryOwnerId.current !== selectedOwnerId ||
+        !currentCanWriteMemory.current
+      ) {
+        return;
+      }
       if (!isImportedMemory(parsed)) {
         toast.error(t.settings.memory.importInvalidFile);
         return;
       }
       setPendingImport({
+        ownerId: selectedOwnerId,
         fileName: file.name,
         memory: parsed,
       });
     } catch {
-      toast.error(t.settings.memory.importInvalidFile);
+      if (
+        currentMemoryOwnerId.current === selectedOwnerId &&
+        currentCanWriteMemory.current
+      ) {
+        toast.error(t.settings.memory.importInvalidFile);
+      }
     }
   }
 
   async function handleConfirmImport() {
-    if (!pendingImport) {
+    if (
+      !canWriteMemory ||
+      !memoryOwnerId ||
+      !pendingImport ||
+      pendingImport.ownerId !== memoryOwnerId
+    ) {
       return;
     }
 
+    const operationOwnerId = pendingImport.ownerId;
     try {
-      await importMemoryMutation.mutateAsync(pendingImport.memory);
+      await importMemoryMutation.mutateAsync({
+        memory: pendingImport.memory,
+        ownerId: memoryOwnerId,
+      });
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanWriteMemory.current
+      ) {
+        return;
+      }
       toast.success(importSuccess);
       setPendingImport(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+    } catch {
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanWriteMemory.current
+      ) {
+        return;
+      }
+      toast.error(t.settings.memory.importFailed);
     }
   }
 
   async function handleClearMemory() {
+    if (
+      !canDeleteMemory ||
+      !memoryOwnerId ||
+      clearDialogOwnerId !== memoryOwnerId
+    ) {
+      return;
+    }
+    const operationOwnerId = memoryOwnerId;
     try {
-      await clearMemory.mutateAsync();
+      await clearMemory.mutateAsync({ ownerId: memoryOwnerId });
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanDeleteMemory.current
+      ) {
+        return;
+      }
       toast.success(clearAllSuccess);
       setClearDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      setClearDialogOwnerId(null);
+    } catch {
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanDeleteMemory.current
+      ) {
+        return;
+      }
+      toast.error(t.settings.memory.clearAllFailed);
     }
   }
 
   async function handleDeleteFact() {
-    if (!factToDelete) return;
+    if (
+      !canDeleteMemory ||
+      !memoryOwnerId ||
+      !factToDelete ||
+      factToDeleteOwnerId !== memoryOwnerId
+    ) {
+      return;
+    }
+    const operationOwnerId = memoryOwnerId;
 
     try {
-      await deleteMemoryFact.mutateAsync(factToDelete.id);
+      await deleteMemoryFact.mutateAsync({
+        factId: factToDelete.id,
+        ownerId: memoryOwnerId,
+      });
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanDeleteMemory.current
+      ) {
+        return;
+      }
       toast.success(factDeleteSuccess);
       setFactToDelete(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      setFactToDeleteOwnerId(null);
+    } catch {
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanDeleteMemory.current
+      ) {
+        return;
+      }
+      toast.error(t.settings.memory.factDeleteFailed);
     }
   }
 
   function openCreateFactDialog() {
+    if (!canWriteMemory || !memoryOwnerId) return;
     setFactToEdit(null);
+    setFactEditorOwnerId(memoryOwnerId);
     setFactForm(DEFAULT_FACT_FORM_STATE);
     setFactEditorOpen(true);
   }
 
   function openEditFactDialog(fact: MemoryFact) {
+    if (!canWriteMemory || !memoryOwnerId) return;
     setFactToEdit(fact);
+    setFactEditorOwnerId(memoryOwnerId);
     setFactForm({
       content: fact.content,
       category: fact.category,
@@ -490,6 +653,14 @@ export function MemorySettingsPage() {
   }
 
   async function handleSaveFact() {
+    if (
+      !canWriteMemory ||
+      !memoryOwnerId ||
+      factEditorOwnerId !== memoryOwnerId
+    ) {
+      return;
+    }
+    const operationOwnerId = memoryOwnerId;
     const trimmedContent = factForm.content.trim();
     if (!trimmedContent) {
       toast.error(factValidationContent);
@@ -518,17 +689,33 @@ export function MemorySettingsPage() {
         await updateMemoryFact.mutateAsync({
           factId: factToEdit.id,
           input: patchInput,
+          ownerId: memoryOwnerId,
         });
-        toast.success(editFactSuccess);
       } else {
-        await createMemoryFact.mutateAsync(input);
-        toast.success(addFactSuccess);
+        await createMemoryFact.mutateAsync({
+          input,
+          ownerId: memoryOwnerId,
+        });
       }
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanWriteMemory.current
+      ) {
+        return;
+      }
+      toast.success(factToEdit ? editFactSuccess : addFactSuccess);
       setFactEditorOpen(false);
       setFactToEdit(null);
+      setFactEditorOwnerId(null);
       setFactForm(DEFAULT_FACT_FORM_STATE);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+    } catch {
+      if (
+        currentMemoryOwnerId.current !== operationOwnerId ||
+        !currentCanWriteMemory.current
+      ) {
+        return;
+      }
+      toast.error(t.settings.memory.factSaveFailed);
     }
   }
 
@@ -541,13 +728,30 @@ export function MemorySettingsPage() {
         title={t.settings.memory.title}
         description={t.settings.memory.description}
       >
-        {isLoading ? (
+        {!canReadMemory ? (
+          <p role="alert" className="text-muted-foreground text-sm">
+            {t.agents.permissionRequired(PERMISSIONS.MEMORY_READ)}
+          </p>
+        ) : isLoading ? (
           <div className="text-muted-foreground text-sm">
             {t.common.loading}
           </div>
-        ) : error ? (
-          <div>
-            {t.common.error} {error.message}
+        ) : error && !memory ? (
+          <div
+            role="alert"
+            className="border-destructive/30 flex flex-col items-start gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <p>{t.settings.memory.loadFailed}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+            >
+              {isFetching
+                ? t.settings.memory.retrying
+                : t.settings.memory.retry}
+            </Button>
           </div>
         ) : !memory ? (
           <div className="text-muted-foreground text-sm">
@@ -555,6 +759,32 @@ export function MemorySettingsPage() {
           </div>
         ) : (
           <div className="space-y-4">
+            {missingActionPermissions.length > 0 ? (
+              <p role="status" className="text-muted-foreground text-sm">
+                {t.agents.permissionActionsLimited(
+                  missingActionPermissions.join(", "),
+                )}
+              </p>
+            ) : null}
+            {error ? (
+              <div
+                role="alert"
+                className="border-destructive/30 flex flex-col items-start gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+              >
+                <p>{t.settings.memory.refreshFailed}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isFetching}
+                  onClick={() => void refetch()}
+                >
+                  {isFetching
+                    ? t.settings.memory.retrying
+                    : t.settings.memory.retry}
+                </Button>
+              </div>
+            ) : null}
+
             {isMemorySummaryEmpty(memory) && memory.facts.length === 0 ? (
               <div className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
                 {memoryFullyEmpty}
@@ -568,6 +798,7 @@ export function MemorySettingsPage() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder={searchPlaceholder}
+                  aria-label={searchPlaceholder}
                   className="min-w-0 flex-1 sm:max-w-md"
                 />
                 <ToggleGroup
@@ -596,41 +827,55 @@ export function MemorySettingsPage() {
 
               {/* Row 2: actions — constructive group on the left, destructive separated to the right */}
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json,application/json"
-                  className="hidden"
-                  onChange={(event) => void handleImportFileSelection(event)}
-                />
-                <Button
-                  variant="outline"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={importMemoryMutation.isPending}
-                >
-                  <UploadIcon className="mr-2 h-4 w-4" />
-                  {importButton}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => void handleExportMemory()}
-                  disabled={isExporting}
-                >
-                  <DownloadIcon className="mr-2 h-4 w-4" />
-                  {isExporting ? t.common.loading : exportButton}
-                </Button>
-                <Button variant="outline" onClick={openCreateFactDialog}>
-                  <PlusIcon className="mr-2 h-4 w-4" />
-                  {addFactLabel}
-                </Button>
-                <Button
-                  variant="destructive"
-                  className="ml-auto"
-                  onClick={() => setClearDialogOpen(true)}
-                  disabled={clearMemory.isPending}
-                >
-                  {clearMemory.isPending ? t.common.loading : clearAllLabel}
-                </Button>
+                {canWriteMemory ? (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(event) =>
+                        void handleImportFileSelection(event)
+                      }
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importMemoryMutation.isPending}
+                    >
+                      <UploadIcon className="mr-2 h-4 w-4" />
+                      {importButton}
+                    </Button>
+                    <Button variant="outline" onClick={openCreateFactDialog}>
+                      <PlusIcon className="mr-2 h-4 w-4" />
+                      {addFactLabel}
+                    </Button>
+                  </>
+                ) : null}
+                {canReadMemory ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => void handleExportMemory()}
+                    disabled={isExporting}
+                  >
+                    <DownloadIcon className="mr-2 h-4 w-4" />
+                    {isExporting ? t.common.loading : exportButton}
+                  </Button>
+                ) : null}
+                {canDeleteMemory ? (
+                  <Button
+                    variant="destructive"
+                    className="ml-auto"
+                    onClick={() => {
+                      if (!memoryOwnerId) return;
+                      setClearDialogOwnerId(memoryOwnerId);
+                      setClearDialogOpen(true);
+                    }}
+                    disabled={clearMemory.isPending}
+                  >
+                    {clearMemory.isPending ? t.common.loading : clearAllLabel}
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -726,31 +971,40 @@ export function MemorySettingsPage() {
                             </p>
                           </div>
 
-                          <div className="flex shrink-0 items-center gap-1 self-start sm:ml-3">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="shrink-0"
-                              onClick={() => openEditFactDialog(fact)}
-                              disabled={deleteMemoryFact.isPending}
-                              title={t.common.edit}
-                              aria-label={t.common.edit}
-                            >
-                              <PenLineIcon className="h-4 w-4" />
-                            </Button>
-
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="text-destructive hover:text-destructive shrink-0"
-                              onClick={() => setFactToDelete(fact)}
-                              disabled={deleteMemoryFact.isPending}
-                              title={t.common.delete}
-                              aria-label={t.common.delete}
-                            >
-                              <Trash2Icon className="h-4 w-4" />
-                            </Button>
-                          </div>
+                          {canWriteMemory || canDeleteMemory ? (
+                            <div className="flex shrink-0 items-center gap-1 self-start sm:ml-3">
+                              {canWriteMemory ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="shrink-0"
+                                  onClick={() => openEditFactDialog(fact)}
+                                  disabled={updateMemoryFact.isPending}
+                                  title={t.common.edit}
+                                  aria-label={t.common.edit}
+                                >
+                                  <PenLineIcon className="h-4 w-4" />
+                                </Button>
+                              ) : null}
+                              {canDeleteMemory ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-destructive hover:text-destructive shrink-0"
+                                  onClick={() => {
+                                    if (!memoryOwnerId) return;
+                                    setFactToDeleteOwnerId(memoryOwnerId);
+                                    setFactToDelete(fact);
+                                  }}
+                                  disabled={deleteMemoryFact.isPending}
+                                  title={t.common.delete}
+                                  aria-label={t.common.delete}
+                                >
+                                  <Trash2Icon className="h-4 w-4" />
+                                </Button>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -762,8 +1016,28 @@ export function MemorySettingsPage() {
         )}
       </SettingsSection>
 
-      <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
-        <DialogContent>
+      <Dialog
+        open={
+          canDeleteMemory &&
+          clearDialogOpen &&
+          clearDialogOwnerId === memoryOwnerId
+        }
+        onOpenChange={(open) => {
+          if (!open && clearMemory.isPending) return;
+          setClearDialogOpen(open);
+          if (!open) setClearDialogOwnerId(null);
+        }}
+      >
+        <DialogContent
+          showCloseButton={!clearMemory.isPending}
+          aria-busy={clearMemory.isPending}
+          onEscapeKeyDown={(event) => {
+            if (clearMemory.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (clearMemory.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{clearAllConfirmTitle}</DialogTitle>
             <DialogDescription>{clearAllConfirmDescription}</DialogDescription>
@@ -771,7 +1045,10 @@ export function MemorySettingsPage() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setClearDialogOpen(false)}
+              onClick={() => {
+                setClearDialogOpen(false);
+                setClearDialogOwnerId(null);
+              }}
               disabled={clearMemory.isPending}
             >
               {t.common.cancel}
@@ -788,16 +1065,32 @@ export function MemorySettingsPage() {
       </Dialog>
 
       <Dialog
-        open={factEditorOpen}
+        open={
+          canWriteMemory &&
+          factEditorOpen &&
+          factEditorOwnerId === memoryOwnerId
+        }
         onOpenChange={(open) => {
+          // 保存请求已经提交后，关闭弹窗不会取消请求；锁定当前草稿直到请求结束。
+          if (!open && isFactFormPending) return;
           setFactEditorOpen(open);
           if (!open) {
             setFactToEdit(null);
+            setFactEditorOwnerId(null);
             setFactForm(DEFAULT_FACT_FORM_STATE);
           }
         }}
       >
-        <DialogContent>
+        <DialogContent
+          showCloseButton={!isFactFormPending}
+          aria-busy={isFactFormPending}
+          onEscapeKeyDown={(event) => {
+            if (isFactFormPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (isFactFormPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {factToEdit ? editFactTitle : addFactTitle}
@@ -813,6 +1106,7 @@ export function MemorySettingsPage() {
               </label>
               <Textarea
                 id={factContentInputId}
+                disabled={isFactFormPending}
                 value={factForm.content}
                 onChange={(event) =>
                   setFactForm((current) => ({
@@ -835,6 +1129,7 @@ export function MemorySettingsPage() {
                 </label>
                 <Input
                   id={factCategoryInputId}
+                  disabled={isFactFormPending}
                   value={factForm.category}
                   onChange={(event) =>
                     setFactForm((current) => ({
@@ -856,6 +1151,7 @@ export function MemorySettingsPage() {
                 <Input
                   id={factConfidenceInputId}
                   aria-describedby={factConfidenceHintId}
+                  disabled={isFactFormPending}
                   type="number"
                   min="0"
                   max="1"
@@ -883,6 +1179,7 @@ export function MemorySettingsPage() {
               onClick={() => {
                 setFactEditorOpen(false);
                 setFactToEdit(null);
+                setFactEditorOwnerId(null);
                 setFactForm(DEFAULT_FACT_FORM_STATE);
               }}
               disabled={isFactFormPending}
@@ -900,14 +1197,29 @@ export function MemorySettingsPage() {
       </Dialog>
 
       <Dialog
-        open={factToDelete !== null}
+        open={
+          canDeleteMemory &&
+          factToDelete !== null &&
+          factToDeleteOwnerId === memoryOwnerId
+        }
         onOpenChange={(open) => {
+          if (!open && deleteMemoryFact.isPending) return;
           if (!open) {
             setFactToDelete(null);
+            setFactToDeleteOwnerId(null);
           }
         }}
       >
-        <DialogContent>
+        <DialogContent
+          showCloseButton={!deleteMemoryFact.isPending}
+          aria-busy={deleteMemoryFact.isPending}
+          onEscapeKeyDown={(event) => {
+            if (deleteMemoryFact.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (deleteMemoryFact.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{factDeleteConfirmTitle}</DialogTitle>
             <DialogDescription>
@@ -927,7 +1239,10 @@ export function MemorySettingsPage() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setFactToDelete(null)}
+              onClick={() => {
+                setFactToDelete(null);
+                setFactToDeleteOwnerId(null);
+              }}
               disabled={deleteMemoryFact.isPending}
             >
               {t.common.cancel}
@@ -944,14 +1259,28 @@ export function MemorySettingsPage() {
       </Dialog>
 
       <Dialog
-        open={pendingImport !== null}
+        open={
+          canWriteMemory &&
+          pendingImport !== null &&
+          pendingImport.ownerId === memoryOwnerId
+        }
         onOpenChange={(open) => {
+          if (!open && importMemoryMutation.isPending) return;
           if (!open) {
             setPendingImport(null);
           }
         }}
       >
-        <DialogContent>
+        <DialogContent
+          showCloseButton={!importMemoryMutation.isPending}
+          aria-busy={importMemoryMutation.isPending}
+          onEscapeKeyDown={(event) => {
+            if (importMemoryMutation.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (importMemoryMutation.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{t.settings.memory.importConfirmTitle}</DialogTitle>
             <DialogDescription>

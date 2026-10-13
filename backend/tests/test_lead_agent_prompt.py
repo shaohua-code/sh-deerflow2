@@ -12,6 +12,15 @@ from deerflow.config.subagents_config import CustomSubagentConfig, SubagentsAppC
 from deerflow.skills.types import Skill, SkillCategory
 
 
+@pytest.fixture(autouse=True)
+def _allow_memory_scope_for_prompt_unit_tests(monkeypatch):
+    """These tests cover prompt rendering, not the Central IAM policy helper."""
+    monkeypatch.setattr(
+        "deerflow.agents.memory.authorization.is_memory_scope_authorized_sync",
+        lambda *args, **kwargs: True,
+    )
+
+
 def _set_skills_cache_state(*, skills=None, active=False, version=0):
     prompt_module._get_cached_skills_prompt_section.cache_clear()
     with prompt_module._enabled_skills_lock:
@@ -445,6 +454,30 @@ def test_get_memory_context_preserves_legacy_fail_closed_contract(monkeypatch):
             "agent-a",
             app_config=explicit_config,
             user_id="user-1",
+        )
+
+
+def test_get_memory_context_does_not_read_manager_when_iam_scope_is_denied(monkeypatch):
+    from deerflow.agents.memory import MemoryReadError
+
+    explicit_config = SimpleNamespace(
+        memory=SimpleNamespace(enabled=True, injection_enabled=True, backend_config={}),
+    )
+    monkeypatch.setattr(
+        "deerflow.agents.memory.authorization.is_memory_scope_authorized_sync",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "deerflow.agents.memory.get_memory_manager",
+        lambda: pytest.fail("memory manager must not be accessed after scope denial"),
+    )
+
+    with pytest.raises(MemoryReadError, match="authorization denied"):
+        prompt_module._get_memory_context(
+            "agent-a",
+            app_config=explicit_config,
+            user_id="user-1",
+            runtime_context={"user_id": "user-1"},
         )
 
 

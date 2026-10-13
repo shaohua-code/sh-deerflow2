@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import bcrypt
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.gateway.auth import create_access_token, decode_token, hash_password, verify_password
@@ -107,6 +107,13 @@ def test_create_and_decode_token():
     payload = decode_token(token)
     assert payload is not None
     assert payload.sub == user_id
+
+    # A local session id lets the Gateway resolve the matching IAM token-vault
+    # row without exposing the upstream token in browser-visible state.
+    session_id = str(uuid4())
+    session_token = create_access_token(user_id, session_id=session_id)
+    session_payload = decode_token(session_token)
+    assert session_payload.sid == session_id
 
 
 def test_decode_token_expired():
@@ -278,6 +285,207 @@ def test_require_permission_denies_wrong_permission():
             response = client.get("/test")
             assert response.status_code == 403
             assert "Permission denied" in response.json()["detail"]
+
+
+def test_require_permission_checks_iam_scope_for_owner_scoped_read():
+    """Thread/run reads by id must enforce the same central scope as search."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+
+    app = FastAPI()
+    store = MemoryThreadMetaStore(InMemoryStore())
+    asyncio.run(store.create("alice-thread", user_id="alice"))
+    app.state.thread_store = store
+    endpoint_calls: list[str] = []
+
+    @app.get("/threads/{thread_id}/runs")
+    @require_permission("runs", "read", owner_check=True)
+    async def endpoint(thread_id: str, request: Request):
+        endpoint_calls.append(thread_id)
+        return {"ok": True}
+
+    user = SimpleNamespace(id="alice", oauth_id="iam-subject", system_role="user")
+    auth = AuthContext(user=user, permissions=[Permissions.RUNS_READ])
+    scope_check = AsyncMock()
+    with (
+        patch("app.gateway.authz._authenticate", return_value=auth),
+        patch("app.gateway.authz.require_iam_data_scope_for_request", scope_check),
+        TestClient(app) as client,
+    ):
+        response = client.get("/threads/alice-thread/runs")
+
+    assert response.status_code == 200, response.text
+    scope_check.assert_awaited_once()
+    assert scope_check.await_args.args[1] is user
+    assert scope_check.await_args.kwargs["target"] == "runs:read"
+    assert endpoint_calls == ["alice-thread"]
+
+
+def test_require_permission_stops_owner_scoped_read_when_iam_scope_denies():
+    """An IAM scope denial prevents a direct resource read handler from running."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+
+    app = FastAPI()
+    store = MemoryThreadMetaStore(InMemoryStore())
+    asyncio.run(store.create("alice-thread", user_id="alice"))
+    app.state.thread_store = store
+    endpoint_calls: list[str] = []
+
+    @app.get("/threads/{thread_id}")
+    @require_permission("threads", "read", owner_check=True)
+    async def endpoint(thread_id: str, request: Request):
+        endpoint_calls.append(thread_id)
+        return {"ok": True}
+
+    user = SimpleNamespace(id="alice", oauth_id="iam-subject", system_role="user")
+    auth = AuthContext(user=user, permissions=[Permissions.THREADS_READ])
+    scope_check = AsyncMock(side_effect=HTTPException(status_code=403, detail="scope denied"))
+    with (
+        patch("app.gateway.authz._authenticate", return_value=auth),
+        patch("app.gateway.authz.require_iam_data_scope_for_request", scope_check),
+        TestClient(app) as client,
+    ):
+        response = client.get("/threads/alice-thread")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "scope denied"
+    scope_check.assert_awaited_once()
+    assert endpoint_calls == []
+
+
+@pytest.mark.parametrize(
+    ("resource", "action", "path", "resource_id"),
+    [
+        ("threads", "write", "/threads/alice-thread/write", "alice-thread"),
+        ("threads", "delete", "/threads/alice-thread/delete", "alice-thread"),
+        ("runs", "create", "/threads/alice-thread/runs", None),
+        ("runs", "cancel", "/threads/alice-thread/runs/run-1/cancel", "run-1"),
+    ],
+)
+def test_require_permission_checks_iam_scope_for_owner_scoped_mutations(resource, action, path, resource_id):
+    """Owner-bound writes, deletes, run creation and cancellation require data scope too."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+
+    app = FastAPI()
+    store = MemoryThreadMetaStore(InMemoryStore())
+    asyncio.run(store.create("alice-thread", user_id="alice"))
+    app.state.thread_store = store
+    endpoint_calls: list[str] = []
+    route = "/threads/{thread_id}/runs/{run_id}/cancel" if action == "cancel" else "/threads/{thread_id}/runs" if action == "create" else f"/threads/{{thread_id}}/{action}"
+
+    @app.post(route)
+    @require_permission(resource, action, owner_check=True, require_existing=True)
+    async def endpoint(thread_id: str, request: Request, run_id: str | None = None):
+        endpoint_calls.append(thread_id)
+        return {"ok": True}
+
+    user = SimpleNamespace(id="alice", oauth_id="iam-subject", system_role="user")
+    permission = {
+        ("threads", "write"): Permissions.THREADS_WRITE,
+        ("threads", "delete"): Permissions.THREADS_DELETE,
+        ("runs", "create"): Permissions.RUNS_CREATE,
+        ("runs", "cancel"): Permissions.RUNS_CANCEL,
+    }[(resource, action)]
+    auth = AuthContext(user=user, permissions=[permission])
+    scope_check = AsyncMock()
+    with (
+        patch("app.gateway.authz._authenticate", return_value=auth),
+        patch("app.gateway.authz.require_iam_data_scope_for_request", scope_check),
+        TestClient(app) as client,
+    ):
+        response = client.post(path)
+
+    assert response.status_code == 200, response.text
+    scope_check.assert_awaited_once()
+    assert scope_check.await_args.kwargs == {
+        "target": f"{resource}:{action}",
+        "action": action,
+        "resource_id": resource_id,
+    }
+    assert endpoint_calls == ["alice-thread"]
+
+
+def test_owner_scoped_mutation_stops_before_handler_when_iam_scope_denies():
+    """A local owner match is necessary but does not bypass a central data-scope denial."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+
+    app = FastAPI()
+    store = MemoryThreadMetaStore(InMemoryStore())
+    asyncio.run(store.create("alice-thread", user_id="alice"))
+    app.state.thread_store = store
+    endpoint_calls: list[str] = []
+
+    @app.post("/threads/{thread_id}/write")
+    @require_permission("threads", "write", owner_check=True, require_existing=True)
+    async def endpoint(thread_id: str, request: Request):
+        endpoint_calls.append(thread_id)
+        return {"ok": True}
+
+    user = SimpleNamespace(id="alice", oauth_id="iam-subject", system_role="user")
+    auth = AuthContext(user=user, permissions=[Permissions.THREADS_WRITE])
+    scope_check = AsyncMock(side_effect=HTTPException(status_code=403, detail="scope denied"))
+    with (
+        patch("app.gateway.authz._authenticate", return_value=auth),
+        patch("app.gateway.authz.require_iam_data_scope_for_request", scope_check),
+        TestClient(app) as client,
+    ):
+        response = client.post("/threads/alice-thread/write")
+
+    assert response.status_code == 403
+    scope_check.assert_awaited_once()
+    assert endpoint_calls == []
+
+
+def test_owner_scoped_mutation_hides_foreign_thread_before_iam_scope_check():
+    """The local owner filter must reject foreign IDs before Central IAM is called."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+
+    app = FastAPI()
+    store = MemoryThreadMetaStore(InMemoryStore())
+    asyncio.run(store.create("alice-thread", user_id="alice"))
+    app.state.thread_store = store
+
+    @app.post("/threads/{thread_id}/write")
+    @require_permission("threads", "write", owner_check=True, require_existing=True)
+    async def endpoint(thread_id: str, request: Request):
+        return {"ok": True}
+
+    user = SimpleNamespace(id="bob", oauth_id="bob-iam-subject", system_role="user")
+    auth = AuthContext(user=user, permissions=[Permissions.THREADS_WRITE])
+    scope_check = AsyncMock()
+    with (
+        patch("app.gateway.authz._authenticate", return_value=auth),
+        patch("app.gateway.authz.require_iam_data_scope_for_request", scope_check),
+        TestClient(app) as client,
+    ):
+        response = client.post("/threads/alice-thread/write")
+
+    assert response.status_code == 404
+    scope_check.assert_not_awaited()
 
 
 def _make_internal_owner_check_app():

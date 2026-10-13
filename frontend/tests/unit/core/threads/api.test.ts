@@ -1,13 +1,21 @@
 import { beforeEach, expect, test, rs } from "@rstest/core";
 
+import { GatewayApiError } from "@/core/api/errors";
+
 const fetchWithAuth = rs.fn();
+const isStaticWebsiteOnly = rs.fn(() => false);
+const loadStaticDemoThreads = rs.fn();
 
 rs.mock("@/core/api/fetcher", () => ({
   fetch: fetchWithAuth,
 }));
+rs.mock("@/core/static-mode", () => ({ isStaticWebsiteOnly }));
+rs.mock("@/core/threads/static-demo", () => ({ loadStaticDemoThreads }));
 
 beforeEach(() => {
   fetchWithAuth.mockReset();
+  isStaticWebsiteOnly.mockReturnValue(false);
+  loadStaticDemoThreads.mockReset();
 });
 
 test("fetchThreadTokenUsage uses shared auth fetch without JSON GET headers", async () => {
@@ -52,6 +60,32 @@ test("fetchThreadTokenUsage returns null for unavailable token usage", async () 
   const { fetchThreadTokenUsage } = await import("@/core/threads/api");
 
   await expect(fetchThreadTokenUsage("thread-1")).resolves.toBeNull();
+});
+
+test("searchThreads can inventory active and archived conversations together", async () => {
+  fetchWithAuth.mockResolvedValue({ ok: true, json: async () => [] });
+
+  const { searchThreads } = await import("@/core/threads/api");
+  await expect(searchThreads({ limit: 25, offset: 50 })).resolves.toEqual([]);
+
+  const request = fetchWithAuth.mock.calls[0]?.[1];
+  expect(request.method).toBe("POST");
+  expect(JSON.parse(request.body)).toEqual({ limit: 25, offset: 50 });
+});
+
+test("searchThreads reads public fixtures in static demo mode", async () => {
+  isStaticWebsiteOnly.mockReturnValue(true);
+  loadStaticDemoThreads.mockResolvedValue([
+    { thread_id: "active", metadata: {} },
+    { thread_id: "archived", metadata: { deerflow_archived: true } },
+  ]);
+
+  const { searchThreads } = await import("@/core/threads/api");
+  await expect(
+    searchThreads({ archived: false, limit: 1, offset: 0 }),
+  ).resolves.toEqual([{ thread_id: "active", metadata: {} }]);
+  expect(loadStaticDemoThreads).toHaveBeenCalledWith();
+  expect(fetchWithAuth).not.toHaveBeenCalled();
 });
 
 test("branchThreadFromTurn posts the selected turn ids to the gateway", async () => {
@@ -166,8 +200,11 @@ test("compactThreadContext surfaces an active-run conflict", async () => {
   });
 
   const { compactThreadContext } = await import("@/core/threads/api");
+  const failedRequest = compactThreadContext("thread-1");
 
-  await expect(compactThreadContext("thread-1")).rejects.toThrow(
-    "Thread has a run in flight. Compact after the run finishes.",
-  );
+  await expect(failedRequest).rejects.toBeInstanceOf(GatewayApiError);
+  await expect(failedRequest).rejects.toMatchObject({
+    status: 409,
+    message: "Thread has a run in flight. Compact after the run finishes.",
+  });
 });

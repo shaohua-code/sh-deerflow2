@@ -136,8 +136,23 @@ class ScheduledTaskRepository:
             row = await session.get(ScheduledTaskRow, task_id)
             return self._row_to_dict(row) if row is not None else None
 
-    async def list_by_user(self, user_id: str) -> list[dict[str, Any]]:
+    async def list_by_user(
+        self,
+        user_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """按 owner 和稳定顺序读取计划；分页参数供受限的宿主读取使用。"""
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if limit is not None and not 1 <= limit <= 201:
+            raise ValueError("limit must be between 1 and 201")
         stmt = select(ScheduledTaskRow).where(ScheduledTaskRow.user_id == user_id).order_by(ScheduledTaskRow.created_at.desc(), ScheduledTaskRow.id.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset:
+            stmt = stmt.offset(offset)
         async with self._sf() as session:
             result = await session.execute(stmt)
             return [self._row_to_dict(row) for row in result.scalars()]
@@ -161,8 +176,15 @@ class ScheduledTaskRepository:
         user_id: str,
         error: str,
         now: datetime,
+        allow_executing: bool = False,
     ) -> str:
-        """Pause a task and cancel its waiting occurrence in one transaction."""
+        """Pause a task and cancel its waiting occurrence in one transaction.
+
+        Account deactivation may pause a task whose occurrence has already
+        launched. In that case keep the in-flight run intact but prevent its
+        schedule from producing another occurrence; interactive pause keeps
+        the stricter default and reports ``executing``.
+        """
         async with self._sf() as session:
             task = await self._lock_task(session, task_id)
             if task is None or task.user_id != user_id:
@@ -183,10 +205,10 @@ class ScheduledTaskRepository:
                 .scalars()
                 .first()
             )
-            if run is not None and run.status in {"launching", "running"}:
+            if run is not None and run.status in {"launching", "running"} and not allow_executing:
                 await session.rollback()
                 return "executing"
-            if run is not None:
+            if run is not None and run.status == "queued":
                 run.status = "interrupted"
                 run.error = error
                 run.finished_at = now
@@ -356,7 +378,8 @@ class ScheduledTaskRepository:
             if expected_lease_owner is not None and row.lease_owner != expected_lease_owner:
                 await session.rollback()
                 return False
-            row.status = status
+            if row.status != "paused" or status != "enabled":
+                row.status = status
             row.lease_owner = None
             row.lease_expires_at = None
             row.updated_at = datetime.now(UTC)
@@ -443,6 +466,11 @@ class ScheduledTaskRepository:
                 # finalizes a `once` task) before this launch-path write
                 # commits. Cron parents stay enabled even after completion,
                 # so also protect the terminal occurrence's status/error.
+                pass
+            elif row.status == "paused" and status in {"enabled", "running"}:
+                # An administrator can pause a task while its dispatch lease
+                # is being released or its run is being recorded. Do not let
+                # that stale launch write reactivate a disabled owner's task.
                 pass
             else:
                 row.status = status

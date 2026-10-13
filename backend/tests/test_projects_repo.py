@@ -42,6 +42,22 @@ class TestProjectRepository:
         assert await repo.list(user_id="u2") == []
 
     @pytest.mark.anyio
+    async def test_list_supports_stable_owner_scoped_pages(self, repo):
+        first = await repo.create(name="first", user_id="u1")
+        second = await repo.create(name="second", user_id="u1")
+        third = await repo.create(name="third", user_id="u1")
+        await repo.create(name="foreign", user_id="u2")
+
+        all_owned = await repo.list(user_id="u1")
+        page_one = await repo.list(user_id="u1", limit=2, offset=0)
+        page_two = await repo.list(user_id="u1", limit=2, offset=2)
+
+        assert [row["id"] for row in page_one + page_two] == [row["id"] for row in all_owned]
+        assert [row["id"] for row in page_one] == [first["id"], second["id"]]
+        assert [row["id"] for row in page_two] == [third["id"]]
+        assert len(await repo.list(user_id="u2", limit=10, offset=0)) == 1
+
+    @pytest.mark.anyio
     async def test_patch_rename_and_instructions(self, repo):
         row = await repo.create(name="old", user_id="u1")
         updated = await repo.patch(row["id"], name="new", instructions="ctx", presentation={"icon": "folder"}, user_id="u1")

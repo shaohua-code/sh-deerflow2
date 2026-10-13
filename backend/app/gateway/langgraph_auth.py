@@ -93,7 +93,7 @@ async def authenticate(request):
         )
 
     user = await get_local_provider().get_user(payload.sub)
-    if user is None:
+    if user is None or not user.is_active:
         raise Auth.exceptions.HTTPException(
             status_code=401,
             detail="User not found",

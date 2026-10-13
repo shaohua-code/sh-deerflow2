@@ -1,14 +1,12 @@
-import { FlatCompat } from "@eslint/eslintrc";
+import nextVitals from "eslint-config-next/core-web-vitals.js";
 import tseslint from "typescript-eslint";
-
-const compat = new FlatCompat({
-  baseDirectory: import.meta.dirname,
-});
 
 export default tseslint.config(
   {
     ignores: [
       ".next",
+      ".next-codex-*/**",
+      ".next-flowdesk-ui-*/**",
       "playwright-report",
       "test-results",
       "src/components/ui/**",
@@ -16,7 +14,8 @@ export default tseslint.config(
       "*.js",
     ],
   },
-  ...compat.extends("next/core-web-vitals"),
+  // Next.js 16 的官方配置原生支持 Flat Config，直接组合可避免 legacy patch。
+  ...nextVitals,
   {
     files: ["**/*.ts", "**/*.tsx"],
     extends: [

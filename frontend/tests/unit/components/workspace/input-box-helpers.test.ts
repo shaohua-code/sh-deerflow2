@@ -9,6 +9,7 @@ import {
   filterSkillsForAgent,
   finishGoalRequest,
   getGoalObjectiveCounter,
+  getComposerOperationErrorMessage,
   getInputSubmitAction,
   getLeadingSlashSkillQuery,
   getMatchingSkillSuggestions,
@@ -22,6 +23,7 @@ import {
   readGoalResponseError,
   type SlashSuggestion,
 } from "@/components/workspace/input-box-helpers";
+import { GatewayApiError } from "@/core/api/errors";
 import { RESERVED_SLASH_SKILL_NAMES, type Skill } from "@/core/skills";
 
 function makeSkill(name: string, enabled = true): Skill {
@@ -392,22 +394,26 @@ describe("getMatchingSkillSuggestions", () => {
 });
 
 describe("readGoalResponseError", () => {
-  it("returns the detail string when present", async () => {
+  it("retains the response status and detail for diagnostic handling", async () => {
     const response = {
       status: 422,
       json: async () => ({ detail: "Goal objective must not be empty." }),
     } as unknown as Response;
-    expect(await readGoalResponseError(response)).toBe(
-      "Goal objective must not be empty.",
-    );
+    const error = await readGoalResponseError(response);
+
+    expect(error).toBeInstanceOf(GatewayApiError);
+    expect(error.status).toBe(422);
+    expect(error.message).toBe("Goal objective must not be empty.");
   });
 
-  it("falls back to the HTTP status when detail is missing or unparseable", async () => {
+  it("keeps status when detail is missing or unparseable", async () => {
     const noDetail = {
       status: 500,
       json: async () => ({}),
     } as unknown as Response;
-    expect(await readGoalResponseError(noDetail)).toBe("HTTP 500");
+    const noDetailError = await readGoalResponseError(noDetail);
+    expect(noDetailError.status).toBe(500);
+    expect(noDetailError.message).toBe("HTTP 500");
 
     const broken = {
       status: 503,
@@ -415,7 +421,38 @@ describe("readGoalResponseError", () => {
         throw new Error("not json");
       },
     } as unknown as Response;
-    expect(await readGoalResponseError(broken)).toBe("HTTP 503");
+    const brokenError = await readGoalResponseError(broken);
+    expect(brokenError.status).toBe(503);
+    expect(brokenError.message).toBe("HTTP 503");
+  });
+});
+
+describe("getComposerOperationErrorMessage", () => {
+  it("maps only a stable conflict status to the localized recovery copy", () => {
+    const conflictCopy = "Wait for the current run to finish.";
+    const error = new GatewayApiError(409, "private backend conflict detail");
+
+    expect(
+      getComposerOperationErrorMessage(error, "Safe fallback", conflictCopy),
+    ).toBe(conflictCopy);
+  });
+
+  it("never returns arbitrary Gateway or network error text to the composer", () => {
+    const privateDetail = "database password validation failed at host xyz";
+
+    expect(
+      getComposerOperationErrorMessage(
+        new GatewayApiError(500, privateDetail),
+        "Safe fallback",
+        "Conflict copy",
+      ),
+    ).toBe("Safe fallback");
+    expect(
+      getComposerOperationErrorMessage(
+        new Error(privateDetail),
+        "Safe fallback",
+      ),
+    ).toBe("Safe fallback");
   });
 });
 

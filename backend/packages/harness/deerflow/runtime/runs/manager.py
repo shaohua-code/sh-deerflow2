@@ -797,6 +797,37 @@ class RunManager:
                     logger.warning("Failed to map store row for run %s", run_id, exc_info=True)
         return _page(list(records_by_id.values()))
 
+    async def delete_thread_runs(self, thread_id: str, *, user_id: str | None = None) -> int:
+        """Delete a thread's run history only while its delete lease is held.
+
+        The router acquires this durable reservation before touching any thread
+        data. Keeping this check here prevents a future caller from accidentally
+        bypassing run admission and deleting history while work is still active.
+        """
+        async with self._lock:
+            thread_records = self._thread_records_locked(thread_id)
+            has_delete_reservation = any(record.operation_kind == ThreadOperationKind.delete and record.user_id == user_id for record in thread_records)
+            if not has_delete_reservation:
+                raise ConflictError("Thread run history deletion requires an active delete reservation")
+
+            run_records = [record for record in thread_records if record.operation_kind == ThreadOperationKind.run]
+            if user_id is not None and any(record.user_id is not None and record.user_id != user_id for record in run_records):
+                raise RuntimeError("Cannot delete thread run history with a conflicting owner")
+            scoped_records = [record for record in run_records if user_id is None or record.user_id in (None, user_id)]
+            if any(record.status in (RunStatus.pending, RunStatus.running) for record in scoped_records):
+                raise ConflictError("Thread still has an active run")
+
+            deleted_count = len(scoped_records)
+            if self._store is not None:
+                deleted_count = await self._call_store_with_retry("delete thread run history", thread_id, lambda: self._store.delete_by_thread(thread_id, user_id=user_id))
+
+            # Keep the active delete reservation indexed until its context exits.
+            # Clearing cached completed runs makes local history agree with SQL.
+            for record in scoped_records:
+                self._runs.pop(record.run_id, None)
+                self._unindex_run_locked(record.run_id, thread_id)
+            return deleted_count
+
     async def list_successful_regenerate_sources(
         self,
         thread_id: str,
@@ -1479,6 +1510,46 @@ class RunManager:
         # Row is still active — lease was renewed by the owner while the
         # takeover raced. Notify that owner instead of exposing routing as 409.
         return await self._request_remote_cancel(run_id, action=action)
+
+    async def cancel_active_runs_for_user(
+        self,
+        user_id: str,
+        *,
+        action: str = "interrupt",
+    ) -> dict[str, CancelOutcome]:
+        """Stop active Agent runs owned by one account.
+
+        管理员停用账号后，Gateway 会通过此方法终止该账号已经启动的 Agent
+        任务。查询只筛选普通 Agent run；checkpoint 写入等线程操作不能被误当作
+        Agent 任务取消。启用多 worker 租约后，``cancel`` 会把请求安全地转交给
+        持有任务的 Gateway 实例。
+        """
+        if not user_id:
+            raise ValueError("user_id must not be empty")
+
+        if self._store is None:
+            async with self._lock:
+                run_ids = [record.run_id for record in self._runs.values() if record.user_id == user_id and record.operation_kind == ThreadOperationKind.run and record.status in (RunStatus.pending, RunStatus.running)]
+        else:
+            # 持久仓储是跨进程运行记录的来源；这里从有限的运行中集合筛出目标
+            # owner，再复用 cancel() 的本地 abort / 多 worker lease 流程。
+            rows = await self._store.list_inflight()
+            run_ids = [
+                str(row["run_id"])
+                for row in rows
+                if row.get("user_id") == user_id and row.get("operation_kind", ThreadOperationKind.run.value) == ThreadOperationKind.run.value and row.get("status") in {RunStatus.pending.value, RunStatus.running.value}
+            ]
+
+        outcomes: dict[str, CancelOutcome] = {}
+        for run_id in run_ids:
+            try:
+                outcomes[run_id] = await self.cancel(run_id, action=action)
+            except Exception:
+                # 停用账号的数据库事务已提交；保留任务 ID 供 Gateway 日志和
+                # 管理页提示定位，不能把未知结果伪装成成功。
+                logger.exception("Failed to stop active run %s for a disabled account", run_id)
+                outcomes[run_id] = CancelOutcome.unknown
+        return outcomes
 
     def _compute_lease_expires_at(self) -> str | None:
         """Return the lease expiry ISO timestamp for a freshly created run.

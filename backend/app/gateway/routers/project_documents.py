@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.gateway.authz import require_permission
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import get_auth_context, require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_config, get_project_document_repo, get_project_repo, get_thread_store
 from app.gateway.routers.uploads import DEFAULT_MAX_FILE_SIZE, UPLOAD_CHUNK_SIZE, _get_upload_limit
 from app.gateway.upload_ingestion import ThreadUploadIngestionService, UnsafeFilenameError, UnsafeUploadDestinationError
@@ -126,7 +127,8 @@ def _is_inline_viewable_mime_type(media_type: str) -> bool:
 
 async def _require_project(request: Request, project_id: str) -> dict:
     """Owned project row in any status (archived keeps read access, §8.4), else 404."""
-    row = await get_project_repo(request).get(project_id)
+    user = get_auth_context(request).require_user()
+    row = await get_project_repo(request).get(project_id, user_id=str(user.id))
     if row is None:
         raise _not_found()
     return row
@@ -145,6 +147,8 @@ async def list_project_documents(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> ProjectDocumentListResponse:
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", resource_id=project_id)
     await _require_project(request, project_id)
     repo = get_project_document_repo(request)
     rows = await repo.list_active(project_id, limit=limit, offset=offset)
@@ -185,7 +189,11 @@ async def upload_project_document(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    user_id = get_effective_user_id()
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
+    await _require_project(request, project_id)
+    user_id = str(user.id)
     paths = get_paths()
     max_file_size = _get_upload_limit(config, "max_file_size", DEFAULT_MAX_FILE_SIZE, legacy_key="max_single_file_size")
     try:
@@ -285,15 +293,20 @@ async def promote_thread_file_to_shelf(
     Response mirrors upload: 201 created, 200 on a content dedup hit (the
     existing row keeps its own name and provenance, §10.9).
     """
-    if await get_thread_store(request).get(body.thread_id) is None:
-        raise _not_found()
-    repo = get_project_document_repo(request)
     try:
         display_name = validate_shelf_filename(body.shelf_name) if body.shelf_name is not None else validate_shelf_filename(normalize_filename(body.name))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    user_id = get_effective_user_id()
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="threads:read", action="read", resource_id=body.thread_id)
+    await _require_project(request, project_id)
+    if await get_thread_store(request).get(body.thread_id, user_id=str(user.id)) is None:
+        raise _not_found()
+    repo = get_project_document_repo(request)
+    user_id = str(user.id)
     paths = get_paths()
     source = await run_file_io(_resolve_thread_source, paths, user_id=user_id, thread_id=body.thread_id, kind=body.kind, name=body.name)
     if source is None:
@@ -359,9 +372,11 @@ async def attach_project_document_to_thread(
     owner check above, ``require_existing``); the response is returned only
     after ingestion succeeds.
     """
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
     await _require_project(request, project_id)
     repo = get_project_document_repo(request)
-    user_id = get_effective_user_id()
+    user_id = str(user.id)
     paths = get_paths()
     try:
         staged = await stage_document_copy_for_attach(repo, paths, user_id=user_id, project_id=project_id, document_id=document_id)
@@ -430,6 +445,8 @@ async def get_project_document_content(
     size-mismatched answers with an explicit ``content_missing`` error (§11) —
     never an empty or substituted body.
     """
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", resource_id=project_id)
     await _require_project(request, project_id)
     row = await get_project_document_repo(request).get(document_id)
     if row is None or row.get("project_id") != project_id:
@@ -457,7 +474,9 @@ async def get_project_document_content(
         media_type = "text/markdown"
         filename = f"{row['name']}.md"
     else:
-        guessed, _ = await run_file_io(mimetypes.guess_type, str(original))
+        # Storage may use a compact Windows-safe basename; MIME belongs to
+        # the user-visible upload name, not the private physical path.
+        guessed, _ = await run_file_io(mimetypes.guess_type, row["name"])
         media_type = guessed
     if media_type is None and not download and await run_file_io(is_text_file_by_content, serving_path):
         media_type = "text/plain"
@@ -489,6 +508,14 @@ async def delete_project_document(project_id: str, document_id: str, request: Re
     Archived shelves reject the write inside the repository's locked
     transaction, so they surface as the same fail-closed 404 (§8.4).
     """
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:delete", action="delete", resource_id=project_id)
     await _require_project(request, project_id)
-    if not await get_project_document_repo(request).trash(document_id, project_id=project_id):
+    if not await get_project_document_repo(request).trash(document_id, project_id=project_id, user_id=str(user.id)):
         raise _not_found()
+    await notify_action_audit(
+        request,
+        action="project.document.trash",
+        resource_type="project_document",
+        resource_id=document_id,
+    )

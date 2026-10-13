@@ -1488,6 +1488,12 @@ class MemoryUpdater:
                         "history": copy.deepcopy(updated_memory.get("history", {})),
                     }
                 try:
+                    if not self._authorize_memory_write(
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        agent_name=agent_name,
+                    ):
+                        return False
                     self._storage.apply_changes(
                         change_set,
                         agent_name=agent_name,
@@ -1522,6 +1528,12 @@ class MemoryUpdater:
             capacity_decisions=capacity_decisions,
         )
         updated_memory = _strip_upload_mentions_from_memory(updated_memory)
+        if not self._authorize_memory_write(
+            thread_id=thread_id,
+            user_id=user_id,
+            agent_name=agent_name,
+        ):
+            return False
         saved = self._storage.save(
             updated_memory,
             agent_name,
@@ -1537,6 +1549,36 @@ class MemoryUpdater:
                     user_id=user_id,
                 )
         return saved
+
+    def _authorize_memory_write(
+        self,
+        *,
+        thread_id: str | None,
+        user_id: str | None,
+        agent_name: str | None,
+    ) -> bool:
+        """Invoke host authorization immediately before a persistent write.
+
+        Keeping this callback at the commit boundary closes the revocation
+        window between queue admission / extraction and storage. Backends and
+        standalone use without a host callback retain their existing behavior.
+        """
+        callback = getattr(self._callbacks, "before_memory_write", None)
+        if not callable(callback):
+            return True
+        try:
+            allowed = callback(
+                thread_id=thread_id,
+                user_id=user_id,
+                agent_name=agent_name,
+            )
+        except Exception:
+            logger.warning("Memory write authorization callback failed; skipping persistence")
+            return False
+        if allowed is not True:
+            logger.info("Memory write authorization denied; skipping persistence")
+            return False
+        return True
 
     async def aupdate_memory(
         self,

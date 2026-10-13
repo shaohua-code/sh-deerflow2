@@ -1,5 +1,15 @@
 ### Data Flow
 
+`components/theme-provider.tsx` 统一管理产品主题偏好和根元素 class。保留 `theme` localStorage 键的兼容性，在系统主题或跨标签存储变化时更新主题，并要求所有消费者从本地模块导入 `useTheme`。Server Component `app/layout.tsx` 负责 `next/script` 的 `beforeInteractive` 初始化；不要在客户端 Provider 中放置内联 `<script>`。公开首页继续强制深色，但不覆盖用户保存的偏好。
+
+`core/skills/hooks.ts` 的 `useSkills(enabled)` 是技能目录唯一的前端读取入口。技能中心、聊天输入提示和历史技能引用都要把 `skills:read` 结果传入；明确撤权时隐藏返回数据、取消携带 AbortSignal 的请求并清理目录缓存。技能创建入口调用新对话运行，需要 `runs:create`；档案安装、技能开关则遵循各自的 `skills:write`、`skills:admin` 与管理员角色要求。
+
+记忆设置页的 `core/memory/hooks.ts` query key 必须包含认证用户 ID；明确撤销 `memory:read` 或切换账号时取消请求并清除旧 owner 缓存。记忆读取、导出和写入 API 都携带 `X-Expected-User-Id`，Gateway 在访问记忆存储前核对当前会话身份。Mutation 只失效发起操作的账号缓存，不把迟到响应直接写回缓存；导入草稿、事实编辑/删除和清空确认也绑定 owner，账号切换时清除，导出请求取消且忽略迟到回调。继续兼容不带此请求头的旧 API 客户端。
+
+产物面板的 `sessionStorage` v2 键由认证用户 ID 与 pathname 共同组成，只保存产物路径列表、选中路径和面板开关状态；正文编辑草稿仍只在组件内存中。旧 v1 键仅含 pathname，无法证明属于哪个账号，因此不能自动迁入任一已登录用户；保留旧键但不读取。账号或路径变化时，先完成新键水合，再写入新状态，避免旧渲染帧覆盖新账号的存储。
+
+项目资料附加到对话后的待发送附件由 `core/projects/composer-attach.ts` 暂存于 `sessionStorage`；v2 键同时包含认证用户 ID 与 thread ID。项目页在服务端附加成功后传入当前 owner，输入框按同一 owner 读取；账号/会话切换时旧附件不得显示或写入新键。旧版仅含 thread ID 的键无法证明归属，保留但不读取或自动迁移。
+
 1. Optional composer helpers such as `core/input-polish` can rewrite the local draft before submission, and `core/voice-input` can transcribe browser microphone input into that same local draft; confirmed user input then flows to thread hooks (`core/threads/hooks.ts`) → LangGraph SDK streaming
 2. Stream events update thread state (messages, artifacts, todos, goal). The main thread stream uses the LangGraph SDK's `throttle: true` mode so updates received in the same macrotask coalesce before React is notified; do not replace it with a numeric delay without validating the SDK's trailing-debounce behavior on a continuous stream.
    File-tool artifact auto-open work must run in an effect with timer cleanup; never schedule timers while rendering streamed `write_file` or `str_replace` updates.
@@ -34,18 +44,21 @@
    later server preference. The
    Capability Center > Plugins MCP switch calls the targeted `PATCH /api/mcp/config`
    mutation, disables switches until that mutation's success refetch completes,
-   displays the backend error `detail` through a toast, and invalidates
+   displays localized operation failure copy, keeps backend `detail` in diagnostics, and invalidates
    `["mcpConfig"]` only after success.
    Server management uses targeted `POST /api/mcp/config/servers`,
    `PUT /api/mcp/config/server`, and bodyless
    `DELETE /api/mcp/config/servers/{server_name}` mutations. Delete names are
    percent-encoded, including legacy empty and slash-containing names; every
    successful mutation invalidates `["mcpConfig"]` only after the response.
-   Current-chat MCP background tasks use `core/background-tasks`: the header
-   trigger is hidden for new/mock/static-demo threads and unless `/api/features`
-   reports the startup-scoped `mcp_tasks` capability; the list query is disabled
-   while that capability is unavailable, so default-disabled and memory-backend
-   deployments never poll an endpoint that cannot serve tasks. It lists at most
+   Current-chat MCP background tasks use `core/background-tasks`: show the header
+   trigger only for persisted non-mock threads when `/api/features` reports the
+   startup-scoped `mcp_tasks` capability and `threads:read` is not explicitly
+   denied. The list/detail queries stop and hide cached data without
+   `threads:read`; cancellation is available only with `threads:write`. Query
+   keys include the authenticated user ID so switching accounts cannot reuse
+   another user's task records. Default-disabled and memory-backend deployments
+   never poll an endpoint that cannot serve tasks. It lists at most
    20 local task records, refreshes every 3 seconds while any task is active
    (15 seconds otherwise), fetches bounded task details only while a user expands
    a card, and cancels through the thread-scoped local-ID endpoint. The expanded view
@@ -77,8 +90,17 @@
    so backend cross-tab ordering remains authoritative.
    Settings > Subagents reads one catalog for built-in, config, and managed
    definitions. Only administrators see managed-definition mutation controls;
-   Custom Agent settings consume the same query and preserve stale selected names
-   as removable "missing" entries instead of silently widening the allowlist.
+   `useSubagents` must cancel in-flight reads and remove its cached catalog when
+   `subagents:read` is denied. Custom Agent settings use the same permission gate;
+   without catalog access, disable binding edits and omit `allowed_subagents` from
+   unrelated saves so the stored allowlist is preserved. With access, preserve
+   stale selected names as removable "missing" entries instead of silently
+   widening the allowlist.
+   `useAgentsApiEnabled` keeps the last definitive `/api/features` value in the
+   browser cache. Read it with `useSyncExternalStore`: the server snapshot stays
+   `undefined` for hydration parity, the browser snapshot reads localStorage,
+   and a `storage` event updates other tabs. A live Gateway answer still wins;
+   fail open only when neither source has a known value.
 6. Components subscribe to thread state and render updates
 
 Project moves in `core/threads/hooks.ts` cancel all per-thread metadata query
@@ -95,6 +117,7 @@ request and disable the hidden file input while an install is pending. The API
 client preserves structured SkillScan findings on `SkillRequestError`, and the
 settings page renders a compact file/rule/line summary so security rejections
 remain actionable; a proxy-generated 413 is mapped to the localized size error.
+Capability-center Skill Gallery, MCP configuration and artifact Skill installation use localized operation-specific messages; keep Gateway details in diagnostics. On refresh failure retain cached data with retry, preserve structured security findings, and show explicit admin-required copy for 403.
 
 Run duration is run-scoped UI metadata even though the compatibility field `additional_kwargs.turn_duration` is repeated on historical AI messages. `core/messages/run-duration.ts` folds those copies into one display anchored after the run's last visible message group. `MessageList` owns the temporary client-side duration for a just-completed live turn until authoritative history arrives. The duration is total run wall-clock time, not per-message reasoning time; reasoning disclosure and run activity/duration are rendered separately.
 
@@ -102,7 +125,7 @@ The workspace-change card follows the same rule: it is resolved from `(threadId,
 
 Composer drafts are tab-scoped browser state. `core/threads/composer-draft.ts` stores only text plus the selected slash-skill name in `sessionStorage`, keyed by user, agent, and logical conversation scope. New-chat pages pass the stable scope `"new"` because their runtime `threadId` is a fresh UUID on every reload; established conversations use their real thread ID. `InputBox` waits for enabled skills before restoring a skill chip, degrades a missing/disabled skill back to editable slash text, and clears the stored draft through `SendMessageOptions.onSent` only after the send passes the in-flight guard. Attachments, sidecar quotes, voice state, and polish undo state are not persisted.
 
-Conversation references (`read_conversation`, opt-in on the backend) are attached from the composer. `ReferenceConversationsButton` (`components/workspace/conversation-references/`) renders only while `/api/features` reports `conversation_references.enabled`, opens a picker over the same `useThreads()` list the sidebar uses (the current thread excluded, capped at `max_references`), and shows removable chips in the composer header. On submit the thread IDs ride `InputBoxSubmitOptions.conversationReferences` → `SendMessageOptions.conversationReferences` → run `context.conversation_references`, which the Gateway consumes at admission; the LangGraph SDK drops unknown top-level body fields, so the top-level request field is not reachable from the web UI. `core/conversation-references` also writes display-only `additional_kwargs.conversation_references` (`{thread_id, title, agent_name?}`) on the visible human message so `message-list-item.tsx` can render read-only chips linking to the source — through `pathOfThread`, so custom-agent sources route to `/workspace/agents/{agent}/chats/{id}`; that metadata grants nothing. References are per message: they are not persisted with the draft, clear on send or thread switch, and regenerate/edit of a turn runs without them unless attached again.
+Conversation references (`read_conversation`, opt-in on the backend) are attached from the composer. `ReferenceConversationsButton` (`components/workspace/conversation-references/`) renders only while `/api/features` reports `conversation_references.enabled` and the user is not explicitly denied `threads:read` or `runs:read`; thread search requires the former, and Gateway binds the latter to the run-scoped reader. The picker enables its `useThreads()` query only while open and authorized, partitions the query cache by user ID, and disabled queries must hide cached rows. It excludes the current thread, caps selection at `max_references`, and shows removable chips in the composer header. On submit the thread IDs ride `InputBoxSubmitOptions.conversationReferences` → `SendMessageOptions.conversationReferences` → run `context.conversation_references`, which the Gateway consumes at admission; the LangGraph SDK drops unknown top-level body fields, so the top-level request field is not reachable from the web UI. `core/conversation-references` also writes display-only `additional_kwargs.conversation_references` (`{thread_id, title, agent_name?}`) on the visible human message so `message-list-item.tsx` can render read-only chips linking to the source — through `pathOfThread`, so custom-agent sources route to `/workspace/agents/{agent}/chats/{id}`; that metadata grants nothing. References are per message: they are not persisted with the draft, clear on send, account/thread switch, or loss of either read permission, and regenerate/edit of a turn runs without them unless attached again.
 
 Auth UI note: the login page's "keep me signed in" option submits only `remember_me` to the Gateway and may persist only the email address through `core/auth/remember-login.ts`. Passwords and tokens must never be stored in frontend storage; the `HttpOnly access_token` and readable `csrf_token` cookies remain Gateway-owned.
 
@@ -111,6 +134,8 @@ Auth UI note: the login page's "keep me signed in" option submits only `remember
 The `/` skill list stays reachable after a skill is selected: typing `/` in the editable text beside the chip reopens it, and picking an entry swaps the chip rather than adding a second one, because the wire format carries exactly one leading `/skill`. That list offers skills only while a chip is selected — a builtin command owns the whole composer line, so `/goal` behind a selected skill would submit as chat text instead of running the command. The trigger itself is unchanged: a slash only opens the list at the start of the input (`getLeadingSlashSkillQuery`), pinned by `tests/e2e/chat.spec.ts`.
 
 Human input requests are a structured message protocol layered on normal chat history. The backend writes request payloads to `ToolMessage.artifact.human_input`, `src/core/messages/human-input.ts` owns the runtime validators/types, and `src/components/workspace/messages/human-input-card.tsx` renders the reusable card. The protocol is versioned on the request side only: v1 covers `free_text` / `choice_with_other`, and v2 adds `form` (typed fields — text/textarea/number/select/multi_select/checkbox/date — with required-field validation in the card). Replies deliberately stay on the v1 response protocol: the form card submits a `response_kind: "text"` reply whose value is the human-readable summary plus one JSON block keyed by stable field names (`buildHumanInputFormSubmissionValue` — the readable part alone is ambiguous because labels/values may contain the separators), so the model can reconstruct the submitted mapping without a structured response kind. The validators reject unknown versions/modes (and field names colliding with JS `Object.prototype` members) so future protocol bumps degrade to the plain-text ToolMessage fallback rather than rendering a broken card. Form values are read through own-property access only (`readHumanInputFormValue`); select fields stay controlled from their empty-string placeholder state through selection; checkbox fields are native `<input type="checkbox">` controls seeded to an explicit `false` (`buildInitialHumanInputFormValues`) so an untouched checkbox submits as "no" while a `required` checkbox keeps must-agree semantics (no HTML `required` attribute — native constraint validation would intercept the custom submit path), and form controls carry label/`htmlFor`, `aria-required` plus a visually-hidden localized "required" marker, and `aria-invalid`/error associations whose error node stays mounted while any field is still invalid. Composer-bypass closure: `deriveHumanInputThreadState` treats a visible plain human message as answering the latest unanswered request opened before it (only the latest — nothing guarantees a single outstanding request across runs, and closing all would silently swallow older decisions; an older request left open simply becomes the active card again). This lets current users bypass a structured form through the normal composer and preserves compatibility with old v1-only frontends that degrade a v2 request to plain text. `MessageList` owns answered/latest/pending state for visible cards, but derives answered responses from raw `thread.messages` because replies are hidden; pending cards clear when the hidden reply appears, when dispatch is dropped, or when a new `thread.error` reports an async stream failure. Page-level card submit callbacks must send a normal human message and put `hide_from_ui: true` plus the response payload in the fourth `sendMessage(..., options)` argument as `options.additionalKwargs`; the third argument remains run context such as `{ agent_name }`. Composer entry points remain enabled while a human-input request is open; a normal visible message intentionally bypasses the card and starts the next run without structured response metadata.
+
+Human-input and composer errors preserve drafts; after failed dispatch reset only the pending marker, log the original exception and show localized fallback copy rather than the Gateway body. Map known recoverable statuses explicitly.
 
 Tool-calling AI messages can contain user-visible text as well as `tool_calls`. `core/messages/utils.ts` keeps these turns in an `assistant:processing` group, and `components/workspace/messages/message-group.tsx` must render the visible text as a processing step instead of treating the message as only tool metadata. This preserves provider text such as error explanations or "trying another approach" notes during tool-heavy runs.
 While the current turn is still loading, a content-only AI message after the latest visible human input also stays in that processing group until the turn settles: a provider may append tool-call chunks to the same message later, and classifying it as a final assistant bubble too early makes the text jump into the steps panel. `MessageGroup` therefore renders processing text even before the first tool call arrives.
@@ -124,6 +149,7 @@ Edit-and-rerun is deliberately latest-turn-only. `core/messages/utils.ts::getLat
 Generic tool details receive the explicit Debug flag from `MessageGroup`, independent of token statistics. `tool-call-details.tsx` mounts payload previews only while expanded; `core/messages/tool-detail-preview.ts` caps text output at 12,000 characters, visits at most 12,000 values, and limits nesting to six levels. Serialization budgets include escaped strings, punctuation, indentation, closing delimiters, and truncation markers so structured previews remain valid JSON without a final mid-token slice. Generic calls keep the original ToolMessage content/status. Text is displayed verbatim (or as a bounded prefix), never passed through JSON.parse: reparsing can round numeric IDs, discard duplicate keys, and alter quoted strings. Objects/arrays are formatted only on expansion; specialized renderers retain their existing result conversion. An empty received payload is distinct from a missing message, and neither implies a running/completed state. Copy actions use the shared clipboard fallback, copy the displayed preview, and reset feedback after two seconds. Truncated containers include an inline ellipsis unless an object has already emitted a real ellipsis key; in that case, only the external truncation notice is guaranteed. Arrays stop after a child collapses because the text budget is exhausted, avoiding repeated trailing markers while preserving literal ellipsis elements. Cycle, accessor, and depth-limit markers do not suppress later siblings. Truncated string prefixes preserve complete UTF-16 surrogate pairs. Object traversal stops before a key exceeds the remaining text budget; never shorten property names, since shortened keys can collide with real data. Renderer routing and result conversion share `getToolCallKind`. Disclosure accessible names include the tool name and call ID.
 
 Array previews coalesce consecutive generated markers only at the end into one omitted-suffix notice. The serializer tracks marker provenance and complete entry boundaries; it must not deduplicate literal ellipsis values or shift the indices of later real elements. A cycle/accessor/depth-limit tail can therefore share one notice while the same markers in the middle retain their positions.
+
 
 ### Key Patterns
 
@@ -147,6 +173,31 @@ Array previews coalesce consecutive generated markers only at the end into one o
 
 ### Interaction Ownership
 
+While destructive or external mutations are pending, keep dialogs open and fields locked; closing the local dialog must not imply an already submitted Gateway write was canceled. Feishu wait-for-user flows remain closable.
+
+Route Suspense and lazy chunks each provide localized skeleton feedback; avoid blank initial and tab-switch states.
+
+Feishu connection requires a fresh status refetch. Treat 409 as a replaced flow, 400 as a request error and 504 as still pending; a local timeout does not prove server-side expiry. Generation tokens invalidate stale callbacks, and restart is available only while idle.
+
+Personal-data downloads are single-flight and abortable; late responses must not create object URLs or mutate newer request state.
+
+Export/delete jobs persist one user-scoped idempotency record (kind, scope and key), replay only after explicit user action, and clear it only after an acknowledged response. Never persist task content or confirmation phrases; storage failure blocks creation, and the server still enforces owner and capability.
+
+core/auth/permissions.ts mirrors the Gateway permission vocabulary and distinguishes allow/deny/unknown. On explicit denial, hide or disable the entry and clear stale cache/drafts; unknown remains compatible with older Gateways. Keep feature flags, Gateway capabilities and IAM grants separate. UI checks never replace server authorization: route guards, owner checks and IAM data scopes remain final. Sync new permissions across frontend constants, Gateway and contract tests.
+
+`product/workspace-home.tsx` follows the same route grants as its data sources: recent chats and running-thread summaries require `threads:read`, recent files require `threads:read + projects:read`, the Agent directory requires `agents:read`, and chat/Agent quick-start links require `runs:create`. When a grant is explicitly revoked, stop the query, hide its cached result, and remove that dashboard query cache; permission fields missing from older Gateway responses remain unresolved for rolling-upgrade compatibility.
+
+File Center requests require threads:read and projects:read; explicit denial hides cached data and clears delete drafts. Recheck permissions on submit; Gateway owner/data-scope checks remain final.
+
+Thread send/continue/regenerate requires runs:create; branch and project-thread creation require threads:write; stopping remains separately gated by runs:cancel. Keep the draft on denial and let Gateway authorization decide.
+
+InputBox auxiliary model requests follow their own Gateway grants: follow-up suggestions read conversation content and require threads:read; pre-send polishing calls a model and requires runs:create. Do not issue suggestions without read access; clear displayed suggestions and discard late responses when access is revoked. Gate polishing on runs:create itself, not the general send flag: a first project-scoped send may also require threads:write. Disable model requests with localized guidance when runs:create is denied, abort in-flight requests on revocation, and keep the local undo action available because it makes no Gateway request.
+
+频道目录按 channels:read/write/admin 控制可见性和 mutation；配置读取只返回凭据掩码。权限撤销后清除旧缓存，缺少写权限时不启动后续连接请求；Gateway 路由守卫仍是最终授权边界。
+
+Delete preflight requires a fresh, user-scoped capability read; unknown/failure disables the action, and changed capability pauses an open confirmation. Export does not depend on delete capability; POST and worker still enforce owner and permissions.
+
+- `src/app/layout.tsx` 挂载 `PublicProductBrandProvider`；它只在 `/`、`/login`、`/setup` 入口同步运行时品牌标题，并跟随文档 `lang` 属性切换中英文。工作台标题仍由 `product/document-title.tsx` 管理，文章和文档标题不能被公开品牌覆盖；服务端 metadata 保留源码默认名，保证 Gateway 未就绪时首屏可用。
 - `src/components/workspace/model-picker-content.tsx` owns the compact model
   list, favorite grouping, and the anchored non-modal picker shared by the main
   composer and Side Chat. Each row keeps model selection and its inline
@@ -159,13 +210,22 @@ Array previews coalesce consecutive generated markers only at the end into one o
   merge the main and Side Chat selection callbacks. Keep favorite buttons out
   of model-selection buttons; the two call sites continue to own their triggers
   and their distinct mode/reasoning-effort transitions.
+- `core/models/hooks.ts` loads the Gateway-filtered model catalog. Gateway
+  authorization remains the final boundary for both listing and using a model;
+  keep the browser cache short-lived and refresh it on window focus so a
+  same-account IAM grant or revocation is reflected without signing in again.
+- `core/agents/hooks.ts` accepts an enabled state for Agent list/detail reads.
+  When `agents:read` is explicitly denied, cancel and remove the corresponding
+  cached query; direct Agent-chat routes must show the missing permission and
+  must not leave a disabled query's old Agent data visible.
 - `src/app/workspace/chats/[thread_id]/page.tsx` owns composer busy-state wiring.
-- `src/app/workspace/chats/[thread_id]/page.tsx` owns branch-from-turn submission and navigation; sidecar `MessageList` instances do not receive the branch action.
+- `src/app/workspace/chats/[thread_id]/page.tsx` owns branch-from-turn submission and navigation; sidecar `MessageList` instances do not receive the branch action. Branch failures use `t.conversation.branchFailed`; Gateway details remain diagnostic only.
 - `core/threads/thread-branch-tree.ts` projects only loaded, same-pin branch lineage into Recent chats. Missing, malformed, cross-pin, self, or cyclic parents stay top-level; unpinned groups follow their freshest descendant while pinned root order stays stable. `recent-chat-list.tsx` caps visual indentation without changing the recursive order.
 - `src/app/workspace/chats/[thread_id]/page.tsx` and `src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` own edit-and-rerun submission wiring because the page must preserve normal/custom-agent run context; `MessageList` only detects the latest editable user turn and renders the inline editor.
 - `src/app/workspace/chats/[thread_id]/page.tsx` gates the Workspace Browser trigger and browser right panel on `/api/features -> browser_control.enabled`; `src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` applies the same capability gate and additionally requires the Custom Agent's tool groups to be unrestricted or include `browser`. Default/failed feature discovery hides the browser control so optional backend installs do not show a dead Live socket.
 - `src/app/workspace/chats/[thread_id]/page.tsx` and `src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` own active-goal display state for their composer overlays.
 - `src/components/workspace/messages/message-list.tsx` owns human-input card answered/latest/pending gating; entry pages only translate a submitted card response into `sendMessage` calls.
+- `src/components/workspace/sidecar/sidecar-panel.tsx` owns Side Chat send/delete failure feedback. Route failures through `core/sidecar/error-feedback.ts`: retain the original exception in diagnostics, show the operation's localized product message, and keep pending references when a send fails. Cover both operations in the sidecar feedback regression.
 - `src/components/workspace/browser-view/browser-view-panel.tsx` forwards each physical pointer click as one `click` input; do not also emit `down`/`up` for the same gesture because the remote Playwright click would run twice.
 - `src/components/workspace/browser-view/use-browser-stream.ts` requests binary JPEG
   frames with `frame_format=binary`; status, URL, tabs, and navigation rejection
@@ -173,5 +233,19 @@ Array previews coalesce consecutive generated markers only at the end into one o
   frame, publishes through `useSyncExternalStore` at most once per animation
   frame, and owns object-URL revocation. Keep the Gateway's legacy JSON/base64
   frame path for older clients.
+- `src/components/workspace/browser-view/browser-view-panel.tsx` maps direct and
+  live navigation failures to `t.browserView.cannotOpen(url)`. Gateway rejection
+  detail must stay out of user-facing toasts; keep the URL context and localized
+  copy while the backend retains its own diagnostic logs.
 - `src/core/threads/hooks.ts` owns pre-submit upload state and thread submission.
 - `src/components/workspace/chats/chat-box.tsx` owns the desktop right-panel layout, and **all three** right panels (artifacts, sidecar, browser) share one `ResizablePanelGroup` — do not fork a non-resizable branch per panel kind, which is how the artifacts divider silently lost its drag handle (#4465). Open/close is `collapse()` / `resize()` on the side panel's imperative handle, not conditional rendering, so the width can animate. Three constraints hold that together: the size transition is applied from the group as `[&>[data-panel]]:transition-[flex-grow]` because the sized flex item is the library's own `[data-panel]` element rather than the child `className` lands on; it is applied only while an open/close is in flight, so a drag is not interpolated frame by frame; and during the animation the panel content is held at its final width in `cqw` and clipped, because a reflowing message list re-runs its scroll-to-bottom (pinned by `tests/e2e/sidecar-chat.spec.ts`'s no-animated-scroll test) and a re-wrapping composer changes which responsive labels it shows. Because the panel is `collapsible`, the library can also collapse it to `0%` on its own when a drag crosses `minSize`, without going through the state that owns it. `onResize` records the last positive size while the pointer moves, but the owning `sidecar` / `browserView` / `artifactsOpen` state must only mirror a final `0%` layout from `onLayoutChanged`, after pointer release; closing on the first `0%` resize frame breaks a continuous drag that reaches the edge and then reverses before release.
+
+Agent UI uses agents:read; creation requires agents:read/write plus runs:create, edits agents:write, delete agents:delete, and deployment-default SOUL changes agents:admin. Runtime permission snapshots must not enter client config or checkpointed configuration.
+
+Dirty settings sections share one confirmation flow; after continuing, restore the section still displayed. Permission revocation immediately unloads admin content and returns to an allowed section. Product-administration settings, account pages, and audit queries include the authenticated administrator ID in their cache keys; mutation callbacks must write or invalidate the actor scope captured when the request started.
+
+`UserPreferencesBoundary` 按 `preferences:read` 和 `preferences:write` 分别启用远端 GET/PATCH。产品扩展 `/api/product/v1/settings` 共用相同权限：偏好读取按 `preferences:read`，保存和删除按 `preferences:write`；明确拒绝时停查、隐藏并清除该用户缓存，写操作禁用且 mutation 回调使用发起时的用户 ID。只读、只写或两项都没有时，不请求被拒绝的接口；当前用户的本地缓存仍可使用，写权限缺失时本地改动保存到用户分区缓存。权限字段缺失时继续兼容旧 Gateway。不要把本地成功提示描述成跨设备已同步。
+
+Project/file UI mirrors projects:read/write/delete and thread permissions; explicit denial hides stale query data, destructive submit rechecks permission, and Gateway owner/data-scope remains final. `GET /api/projects/config` also requires `projects:read`: every `useProjectsConfig` caller must pass its current grant, and the hook cancels/removes the shared config query on denial while forwarding the query AbortSignal. The project page owns this permission-aware query so revocation is observed even when a child tab unmounts; keep the default server-limit fallback for older Gateways.
+
+Scheduled tasks use threads:read/write/delete and runs:create/read/cancel according to the operation; a bound thread also requires threads:read and its owner/data-scope. Revoke clears cached results and drafts; centralize the map in core/scheduled-tasks/permissions.ts.

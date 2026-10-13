@@ -16,13 +16,25 @@ const mocks = rs.hoisted(() => ({
         updated_at: string;
       }
     | undefined,
+  projectError: undefined as (Error & { status?: number }) | undefined,
+  projectFetching: false,
+  userPermissions: undefined as string[] | null | undefined,
+  projectRefetch: rs.fn(),
   projectsConfig: undefined as
     | { instructions_max_bytes: number; trash_retention_days: number }
     | undefined,
+  projectsConfigEnabled: undefined as boolean | undefined,
   patchMutate: rs.fn(),
   patchPending: false,
   patchSuccess: false,
+  toastError: rs.fn(),
+  archiveMutate: rs.fn(),
+  restoreMutate: rs.fn(),
+  deleteMutate: rs.fn(),
+  deletePending: false,
 }));
+
+rs.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
 
 rs.mock("next/navigation", () => ({
   useParams: () => ({ id: "proj-1" }),
@@ -45,12 +57,25 @@ rs.mock("@/core/static-mode", () => ({
   isStaticWebsiteOnly: () => false,
 }));
 
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: { id: "user-1", permissions: mocks.userPermissions },
+  }),
+}));
+
 rs.mock("@/core/projects", () => ({
   PROJECTS_CONFIG_DEFAULT: {
     instructions_max_bytes: 8192,
     trash_retention_days: 30,
   },
-  useProject: () => ({ data: mocks.project, isError: false }),
+  useProject: () => ({
+    data: mocks.project,
+    isError: mocks.projectError !== undefined,
+    error: mocks.projectError,
+    isLoading: false,
+    isFetching: mocks.projectFetching,
+    refetch: mocks.projectRefetch,
+  }),
   useInfiniteProjectThreads: () => ({
     data: { pages: [[]] },
     isLoading: false,
@@ -59,15 +84,21 @@ rs.mock("@/core/projects", () => ({
     isFetchingNextPage: false,
     fetchNextPage: rs.fn(),
   }),
-  useProjectsConfig: () => ({ data: mocks.projectsConfig }),
+  useProjectsConfig: ({ enabled }: { enabled: boolean }) => {
+    mocks.projectsConfigEnabled = enabled;
+    return { data: mocks.projectsConfig };
+  },
   usePatchProject: () => ({
     mutate: mocks.patchMutate,
     isPending: mocks.patchPending,
     isSuccess: mocks.patchSuccess,
   }),
-  useArchiveProject: () => ({ mutate: rs.fn(), isPending: false }),
-  useRestoreProject: () => ({ mutate: rs.fn(), isPending: false }),
-  useDeleteProject: () => ({ mutate: rs.fn(), isPending: false }),
+  useArchiveProject: () => ({ mutate: mocks.archiveMutate, isPending: false }),
+  useRestoreProject: () => ({ mutate: mocks.restoreMutate, isPending: false }),
+  useDeleteProject: () => ({
+    mutate: mocks.deleteMutate,
+    isPending: mocks.deletePending,
+  }),
 }));
 
 // Chrome around the section under test: layout shell and sibling tabs.
@@ -111,9 +142,19 @@ function openInstructionsTab() {
 
 beforeEach(() => {
   mocks.project = makeProject("");
+  mocks.projectError = undefined;
+  mocks.projectFetching = false;
+  mocks.userPermissions = undefined;
+  mocks.projectRefetch.mockReset().mockResolvedValue({ data: mocks.project });
   mocks.projectsConfig = undefined;
+  mocks.projectsConfigEnabled = undefined;
   mocks.patchPending = false;
   mocks.patchSuccess = false;
+  mocks.archiveMutate.mockReset();
+  mocks.restoreMutate.mockReset();
+  mocks.deleteMutate.mockReset();
+  mocks.deletePending = false;
+  mocks.toastError.mockReset();
 });
 
 afterEach(() => {
@@ -159,6 +200,61 @@ describe("ProjectPage instructions limit", () => {
     mocks.project = makeProject("x".repeat(42));
     openInstructionsTab();
     expect(screen.getByText("42 / 8192 bytes")).toBeDefined();
+  });
+});
+
+describe("ProjectPage project read errors", () => {
+  it("does not render a cached project when project read is explicitly denied", () => {
+    mocks.userPermissions = ["projects:write", "projects:delete"];
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("alert").textContent).toContain("projects:read");
+    expect(screen.queryByRole("heading", { name: "Alpha" })).toBeNull();
+    expect(mocks.projectsConfigEnabled).toBe(false);
+  });
+
+  it("reserves the not-found state for a 404 response", () => {
+    mocks.project = undefined;
+    mocks.projectError = Object.assign(new Error("project missing"), {
+      status: 404,
+    });
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Project not found or deleted.")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Retry loading" })).toBeNull();
+  });
+
+  it("offers a localized retry for a temporary failure without cached data", () => {
+    mocks.project = undefined;
+    mocks.projectError = Object.assign(new Error("private gateway details"), {
+      status: 503,
+    });
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Project could not be loaded.")).toBeDefined();
+    expect(screen.queryByText("private gateway details")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+    expect(mocks.projectRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a cached project visible when a background refresh fails", () => {
+    mocks.project = makeProject("existing instructions");
+    mocks.projectError = Object.assign(new Error("private gateway details"), {
+      status: 503,
+    });
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeDefined();
+    expect(
+      screen.getByText(
+        "Refresh failed. Showing the last successfully loaded project.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("private gateway details")).toBeNull();
   });
 });
 
@@ -335,5 +431,167 @@ describe("ProjectPage rename reconciliation", () => {
 
     expect(nameInput()).toHaveProperty("value", "Alpha");
     expect(screen.getByRole("button", { name: "Restore" })).toBeDefined();
+  });
+});
+
+describe("ProjectPage mutation errors", () => {
+  it("organizes project settings into clear sections with a separate delete zone", () => {
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Project details", level: 3 }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("heading", { name: "Project availability", level: 3 }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("heading", { name: "Delete project", level: 3 }),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/Deleting this project unlinks its chats/),
+    ).toBeDefined();
+  });
+
+  it("uses localized copy for rename failures instead of raw API details", () => {
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), {
+      target: { value: "Beta" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, callbacks] = mocks.patchMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: Error) => void },
+    ];
+    callbacks.onError(new Error("private gateway details"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith("Failed to rename project");
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private gateway details",
+    );
+  });
+
+  it("maps the Gateway instructions 422 to the configured localized limit", () => {
+    mocks.projectsConfig = {
+      instructions_max_bytes: 100,
+      trash_retention_days: 30,
+    };
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Instructions" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Instructions" }), {
+      target: { value: "short draft" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, callbacks] = mocks.patchMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: Error & { status?: number }) => void },
+    ];
+    callbacks.onError(
+      Object.assign(new Error("private gateway details"), { status: 422 }),
+    );
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Instructions are over the 100-byte limit. Shorten them to save.",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private gateway details",
+    );
+  });
+
+  it("uses localized copy for archive and delete failures", () => {
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    const [, archiveCallbacks] = mocks.archiveMutate.mock.calls[0] as [
+      string,
+      { onError: (error: Error) => void },
+    ];
+    archiveCallbacks.onError(new Error("private archive details"));
+    expect(mocks.toastError).toHaveBeenLastCalledWith(
+      "Failed to archive project",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const [, deleteCallbacks] = mocks.deleteMutate.mock.calls[0] as [
+      string,
+      { onError: (error: Error) => void },
+    ];
+    deleteCallbacks.onError(new Error("private delete details"));
+    expect(mocks.toastError).toHaveBeenLastCalledWith(
+      "Failed to delete project",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private archive details",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private delete details");
+  });
+
+  it("uses localized copy for restore failures", () => {
+    mocks.project = { ...makeProject(""), status: "archived" };
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    const [, callbacks] = mocks.restoreMutate.mock.calls[0] as [
+      string,
+      { onError: (error: Error) => void },
+    ];
+    callbacks.onError(new Error("private restore details"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith("Failed to restore project");
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      "private restore details",
+    );
+  });
+
+  it("keeps the delete confirmation locked while deletion is pending", () => {
+    const view = render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+
+    mocks.deletePending = true;
+    view.rerender(<ProjectPage />);
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+});
+
+describe("ProjectPage permission boundaries", () => {
+  it("keeps project settings readable while hiding write and delete actions", () => {
+    mocks.userPermissions = ["projects:read"];
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+
+    expect(
+      screen.getByRole("textbox", { name: "Project name" }),
+    ).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete project" })).toBeNull();
+    const statusText = screen
+      .getAllByRole("status")
+      .map((status) => status.textContent)
+      .join(" ");
+    expect(statusText).toContain("projects:write");
+    expect(statusText).toContain("projects:delete");
+  });
+
+  it("explains the missing thread read permission on the chats tab", () => {
+    mocks.userPermissions = ["projects:read"];
+
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Chats" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("threads:read");
   });
 });

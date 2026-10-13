@@ -10,8 +10,8 @@ export const userSchema = z.object({
   oauth_provider: z.string().nullable().optional().default(null),
   // Effective route permissions (RFC #4063 Phase 4). Optional + nullable:
   // absent = pre-Phase-4 backend, null = credential-creation response that
-  // never resolved them — both are consumed as "permissive, unresolved", see
-  // hasPermission() in ./permissions.
+  // never resolved them. getPermissionState() keeps that distinct as
+  // unresolved; legacy hasPermission() preserves permissive UI compatibility.
   permissions: z.array(z.string()).nullable().optional(),
 });
 

@@ -2,7 +2,7 @@
 
 import { DownloadIcon } from "lucide-react";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -145,7 +145,18 @@ export function ArtifactFilePreview({
     () => createHtmlPreviewScrollKey(scrollKey),
     [scrollKey],
   );
-  const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string>();
+  const htmlPreviewContent = useMemo(() => {
+    if (language !== "html") {
+      return undefined;
+    }
+
+    // Sandbox 中的 iframe 对 blob: 文档兼容性不一致；srcDoc 仍保持相同的
+    // opaque origin 隔离，同时避免预览区退化成空白页。
+    return appendHtmlPreviewScrollRestoration(
+      appendHtmlPreviewBaseHref(content ?? "", url),
+      scrollKey,
+    );
+  }, [content, language, scrollKey, url]);
   const citationSources = useMemo(
     () =>
       language === "markdown" ? extractCitationSources(content ?? "") : [],
@@ -195,27 +206,6 @@ export function ArtifactFilePreview({
     };
   }, [language, scrollMessageKey]);
 
-  useEffect(() => {
-    if (language !== "html") {
-      setHtmlPreviewUrl(undefined);
-      return;
-    }
-
-    const previewContent = appendHtmlPreviewScrollRestoration(
-      appendHtmlPreviewBaseHref(content ?? "", url),
-      scrollKey,
-    );
-    const blob = new Blob([previewContent], {
-      type: "text/html;charset=utf-8",
-    });
-    const objectUrl = URL.createObjectURL(blob);
-    setHtmlPreviewUrl(objectUrl);
-
-    return () => {
-      URL.revokeObjectURL(objectUrl);
-    };
-  }, [content, language, scrollKey, url]);
-
   const delimiter = getTabularDelimiter(language);
   if (delimiter !== null) {
     return (
@@ -254,7 +244,7 @@ export function ArtifactFilePreview({
         // opaque origin prevents access to parent.document and cookies,
         // and postMessage(..., "*") works fine from it.
         sandbox="allow-scripts allow-forms"
-        src={htmlPreviewUrl}
+        srcDoc={htmlPreviewContent}
       />
     );
   }

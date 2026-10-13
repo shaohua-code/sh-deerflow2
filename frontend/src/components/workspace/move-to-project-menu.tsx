@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, FolderInput, FolderMinus, Plus } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,9 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useCreateProject, useProjects } from "@/core/projects";
 import { useMoveThreadToProject } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
@@ -49,7 +51,12 @@ export function MoveToProjectMenu({
   onMoveProject: (projectId: string | null) => void;
 }) {
   const { t } = useI18n();
-  const { data: projects } = useProjects("active");
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
+  const canMove = access.canReadProjects && access.canWriteThreads;
+  const { data: projects } = useProjects("active", {
+    enabled: canMove,
+  });
 
   const currentProjectId = projectIdOfThread(thread);
 
@@ -58,13 +65,17 @@ export function MoveToProjectMenu({
   // a mutation owned here would lose its error handling on failure).
   const handleMove = useCallback(
     (projectId: string | null) => {
-      if (projectId === currentProjectId) {
+      if (!canMove || projectId === currentProjectId) {
         return;
       }
       onMoveProject(projectId);
     },
-    [currentProjectId, onMoveProject],
+    [canMove, currentProjectId, onMoveProject],
   );
+
+  if (!canMove) {
+    return null;
+  }
 
   return (
     <DropdownMenuSub>
@@ -87,10 +98,12 @@ export function MoveToProjectMenu({
           </DropdownMenuItem>
         ))}
         {projects && projects.length > 0 && <DropdownMenuSeparator />}
-        <DropdownMenuItem onSelect={onNewProject}>
-          <Plus className="text-muted-foreground" />
-          <span>{t.projects.newProject}…</span>
-        </DropdownMenuItem>
+        {access.canCreateProject ? (
+          <DropdownMenuItem onSelect={onNewProject}>
+            <Plus className="text-muted-foreground" />
+            <span>{t.projects.newProject}…</span>
+          </DropdownMenuItem>
+        ) : null}
         {currentProjectId !== null && (
           <DropdownMenuItem onSelect={() => handleMove(null)}>
             <FolderMinus className="text-muted-foreground" />
@@ -122,6 +135,8 @@ export function NewProjectDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const { mutate: createProject, isPending: isCreating } = useCreateProject();
   const { mutate: moveThreadToProject } = useMoveThreadToProject();
 
@@ -137,9 +152,21 @@ export function NewProjectDialog({
     [onOpenChange],
   );
 
+  useEffect(() => {
+    if (!access.canCreateProject || !access.canWriteThreads) {
+      setCreateName("");
+      onOpenChange(false);
+    }
+  }, [access.canCreateProject, access.canWriteThreads, onOpenChange]);
+
   const handleCreateSubmit = useCallback(() => {
     const name = createName.trim();
-    if (!name || isCreating) {
+    if (
+      !name ||
+      isCreating ||
+      !access.canCreateProject ||
+      !access.canWriteThreads
+    ) {
       return;
     }
     createProject(
@@ -150,28 +177,24 @@ export function NewProjectDialog({
           moveThreadToProject(
             { threadId: thread.thread_id, projectId: project.id },
             {
-              onError: (error) => {
-                toast.error(
-                  error instanceof Error && error.message
-                    ? error.message
-                    : t.projects.moveFailed,
-                );
+              onError: () => {
+                // 移动失败可能包含存储或 Gateway 细节，界面统一使用安全提示。
+                toast.error(t.projects.moveFailed);
               },
             },
           );
         },
-        onError: (error) => {
-          toast.error(
-            error instanceof Error && error.message
-              ? error.message
-              : t.projects.createFailed,
-          );
+        onError: () => {
+          // 创建失败可能包含 Gateway 的内部 detail，只向用户显示双语产品提示。
+          toast.error(t.projects.createFailed);
         },
       },
     );
   }, [
     createProject,
     createName,
+    access.canCreateProject,
+    access.canWriteThreads,
     isCreating,
     handleOpenChange,
     moveThreadToProject,
@@ -188,6 +211,7 @@ export function NewProjectDialog({
         </DialogHeader>
         <div className="py-4">
           <Input
+            aria-label={t.projects.namePlaceholder}
             value={createName}
             onChange={(e) => setCreateName(e.target.value)}
             placeholder={t.projects.namePlaceholder}
@@ -213,4 +237,8 @@ export function NewProjectDialog({
       </DialogContent>
     </Dialog>
   );
+
+  if (!access.canCreateProject || !access.canWriteThreads) {
+    return null;
+  }
 }

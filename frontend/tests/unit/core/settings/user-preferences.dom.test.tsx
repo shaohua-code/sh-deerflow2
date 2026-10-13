@@ -19,7 +19,7 @@ import {
 import { UserPreferencesBoundary } from "@/core/settings/user-preferences-boundary";
 
 const mocks = rs.hoisted(() => ({
-  user: { id: "alice" },
+  user: { id: "alice", permissions: undefined as string[] | undefined },
   fetch: rs.fn(),
 }));
 rs.mock("@/core/auth/AuthProvider", () => ({
@@ -50,7 +50,7 @@ function Workspace() {
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
-  mocks.user = { id: "alice" };
+  mocks.user = { id: "alice", permissions: undefined };
   mocks.fetch.mockReset();
 });
 afterEach(() => {
@@ -237,7 +237,7 @@ describe("authenticated workspace preferences", () => {
     });
     const view = render(<Workspace />);
     await screen.findByText("true:alice-model:default");
-    mocks.user = { id: "bob" };
+    mocks.user = { id: "bob", permissions: undefined };
     view.rerender(<Workspace />);
     expect(screen.queryByText("true:alice-model:default")).toBeNull();
     await screen.findByText("true:default:default");
@@ -287,6 +287,53 @@ describe("authenticated workspace preferences", () => {
     await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(2));
     expect(writes).not.toHaveBeenCalled();
     writes.mockRestore();
+  });
+
+  it("keeps denied preferences in the account cache without making API requests", async () => {
+    mocks.user.permissions = [];
+    render(<Workspace />);
+
+    await screen.findByText("true:default:default");
+    act(() => updateLocalSettings("notification", { enabled: false }));
+    await waitFor(() => {
+      expect(
+        JSON.parse(localStorage.getItem("deerflow.preferences.alice") ?? "{}"),
+      ).toMatchObject({ notification_enabled: false });
+    });
+
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(
+        sessionStorage.getItem("deerflow.preferences.alice.pending") ?? "{}",
+      ),
+    ).toEqual({});
+  });
+
+  it("does not issue the denied side of a read-only or write-only preference grant", async () => {
+    mocks.user.permissions = ["preferences:read"];
+    mocks.fetch.mockImplementation(async () => Response.json({ mode: "pro" }));
+    const view = render(<Workspace />);
+    await screen.findByText("true:default:pro");
+    act(() => updateLocalSettings("notification", { enabled: false }));
+    await waitFor(() =>
+      expect(sessionStorage.getItem("deerflow.preferences.alice.pending")).toBe(
+        "{}",
+      ),
+    );
+    expect(
+      mocks.fetch.mock.calls.every(([, init]) => init.method === "GET"),
+    ).toBe(true);
+
+    view.unmount();
+    mocks.fetch.mockReset();
+    mocks.user.permissions = ["preferences:write"];
+    mocks.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    render(<Workspace />);
+    act(() => updateLocalSettings("notification", { enabled: true }));
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalled());
+    expect(
+      mocks.fetch.mock.calls.every(([, init]) => init.method === "PATCH"),
+    ).toBe(true);
   });
 
   it("stops requests when another tab changes the authenticated account", async () => {

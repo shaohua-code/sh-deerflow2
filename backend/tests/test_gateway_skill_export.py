@@ -15,6 +15,8 @@ from support.skill_export_platform import requires_safe_capture
 
 from app.gateway import skill_export as service
 from app.gateway.auth.models import User
+from app.gateway.auth_disabled import AUTH_SOURCE_SESSION
+from app.gateway.authz import AuthContext
 from app.gateway.deps import get_config
 from app.gateway.routers import skills
 from deerflow.skills.export import SkillExportArchive
@@ -35,9 +37,13 @@ def app(tmp_path, monkeypatch):
 
     @app.middleware("http")
     async def identity(request, call_next):
+        user = None
+        auth_source = request.headers.get("x-auth-source", AUTH_SOURCE_SESSION)
         if request.headers.get("x-role") != "anonymous":
-            request.state.user = User(id=uuid4(), email="test@example.com", password_hash="x", system_role=request.headers.get("x-role", "admin"))
-        request.state.auth_source = request.headers.get("x-auth-source")
+            user = User(id=uuid4(), email="test@example.com", password_hash="x", system_role=request.headers.get("x-role", "admin"))
+            request.state.user = user
+        request.state.auth_source = auth_source if user is not None else None
+        request.state.auth = AuthContext(user=user, permissions=["skills:read"] if user is not None else [])
         return await call_next(request)
 
     app.dependency_overrides[get_config] = lambda: SimpleNamespace()
@@ -262,9 +268,7 @@ async def test_disconnect_exits_router_without_asgi_error(app, monkeypatch, suff
     monkeypatch.setattr(skills, "require_admin_user", admin)
     monkeypatch.setattr(skills, "export_manifest", work)
     monkeypatch.setattr(skills, "build_skill_export", work)
-    plain_app = FastAPI()
-    plain_app.dependency_overrides[get_config] = lambda: SimpleNamespace()
-    plain_app.include_router(skills.router)
+    plain_app = app
     path, _, query = ("/api/skills/custom/demo/" + suffix).partition("?")
     scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "method": "GET", "scheme": "http", "path": path, "query_string": query.encode(), "headers": []}
     messages = []

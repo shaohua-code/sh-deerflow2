@@ -5,7 +5,7 @@ loaded, in deterministic order, from the startup-only top-level `plugins:` list 
 `config.yaml`. Keep this list out of `extensions_config.json`: the latter is writable
 through Gateway APIs, while importing Python entry points is an operator-controlled code
 execution boundary. A plugin marked `required: true` fails Gateway construction when it
-cannot load; optional plugins fail open with attributed diagnostics.
+cannot load, its contributed router cannot mount, or its service cannot start; optional plugins fail open with attributed diagnostics.
 
 Packaged extensions use one PEP 621 entry point in the
 `deerflow.extensions` group, for example
@@ -23,8 +23,8 @@ paths with `SOURCE=` unless backend-relative behavior is intentional.
 point, and inserts or adopts one
 managed `plugins:` record with `name`, `package`, `use`, `enabled`, `required`, and
 private `config`. New records are written `required: false`, matching the loader default:
-`required: true` turns any later load failure — a broken wheel, a missing native library, a
-deleted snapshot — into a Gateway startup abort recoverable only through shell access, so
+`required: true` turns any later load, router-mount, or service-start failure — a broken wheel, a missing native library, a
+deleted snapshot, a reserved-path conflict, or unavailable product storage — into a Gateway startup abort recoverable only through shell access, so
 it is an explicit `install --required` opt-in rather than the managed default. Adoption of
 an existing hand-written record preserves whatever `required` the operator already chose.
 Enable/disable changes only the host-level `enabled` flag and preserves
@@ -66,7 +66,7 @@ blocks lock/pyproject rollback, then leave that operator edit in place.
 Local-directory installs are snapshots, not editable links. The manager validates the
 source, derives the destination from the normalized distribution name, and copies it to
 `backend/extensions/sources/<distribution>/`. It ignores Git metadata, virtual
-environments, Python caches, and bytecode; rejects symbolic links, path-escaping
+environments, Python caches, `.pytest_cache`, `.ruff_cache`, and bytecode; rejects symbolic links, path-escaping
 distribution names, and likely credential files; and the root `.dockerignore` explicitly
 re-includes the entire managed tree so package READMEs, native modules, and assets reach
 the backend builder. These checks prevent common packaging accidents, not malicious
@@ -141,9 +141,24 @@ entry, the manager owns the controlled locked sync.
 
 The public package is `packages/extension-api/` and must never import `deerflow` or carry
 framework dependencies. Extensions declare any FastAPI, LangChain, or LangGraph imports
-themselves. Its registry contract exposes seven contribution kinds: middleware
-contributors, task-lifecycle contributors, system-model-call observers, agent-assembly
-observers, context-compaction observers, Gateway-lifetime services, and eager routers. Middleware contributions declare lead/subagent scope, stable
+themselves. Its registry contract exposes eight contribution kinds: middleware
+  contributors, task-lifecycle contributors, system-model-call observers, agent-assembly
+  observers, context-compaction observers, completed Gateway action observers (currently
+  exposed through the legacy ``AdminActionObserver`` name),
+Gateway-lifetime services, and eager routers. `AdminActionEvent` carries only stable user
+IDs, fixed action/resource codes, outcome, timestamp, and optional request ID; never add
+credentials, personal profile fields, setting values, or message bodies. The host dispatches
+these observers fail-open after the Gateway action commits, so observer/storage errors are
+reported in diagnostics and do not roll back the account change.
+The public auth helpers expose effective route grants and, from Extension API `0.2.17`,
+an asynchronous `require_data_scope(request, target, action, resource_id)` capability. The
+Gateway owns the callback and central provider; extensions pass only route vocabulary and
+must treat missing or failed callbacks as unavailable authorization. Extension API `0.2.18`
+adds `ExtensionRuntimeDeps.owner_data_authorizer` for durable owner-data workers. The Gateway
+reloads the active user, refreshes the server-side vault session, and checks current route
+grants/data scopes at claim and batch boundaries. A 403 is terminal; a 503 is retryable.
+Never store the request object, IAM credentials, or an authorization snapshot in a job row.
+Middleware contributions declare lead/subagent scope, stable
 order, and a semantic placement (`MODEL_LOGICAL`, `MODEL_PHYSICAL`, `TOOL_VISIBLE`,
 `TOOL_RAW`, or `STANDARD`) rather than a fragile list index. `extensions/stack.py` is the
 single final composition point; do not inject inside
@@ -155,7 +170,7 @@ backwards and closes a cycle as soon as any middleware imports something under
 `extensions/` at module level. Both tables that need middleware classes therefore resolve
 on first use — `ordering.py::core_ordering_constraints()` and `stack.py::_anchors()` —
 which is `assert_ordering` / composition time, already inside the middleware builder.
-Defer by deferring the *call*; do not fake a resolved value with a lazy container
+Defer by deferring the _call_; do not fake a resolved value with a lazy container
 subclass, which reports one answer when iterated and another when measured.
 
 **Agent assembly observation.** `assemble_lead_agent()` returns
@@ -226,7 +241,7 @@ same start/stop pair. Outcomes are conservative (`completed`, `aborted`, or `fai
 contributors run in registration order within one bounded budget, and notification failures
 are logged and fail open.
 
-Fail-open is decided by the *origin* of a failure, not by its base class, because
+Fail-open is decided by the _origin_ of a failure, not by its base class, because
 `CancelledError` reaches a contributor's `except` for two unrelated reasons. Only a genuine
 cancellation of the host task increments `asyncio.Task.cancelling()`, so `_notify_each`
 propagates on that and contains everything else: a contributor that lets a `CancelledError`
@@ -275,11 +290,33 @@ containment. There is no live task to attach at that call site, so observers rec
 detached task store, the same fallback `notify_system_model_call` uses when its caller
 supplies none.
 
-Gateway services start in registration order after the persistence engine and session
-factory are ready. Each receives the same `ExtensionRuntimeDeps` snapshot containing the
-app store, projected host policy, session factory, and optional read-only
-`RunEvidenceReader`. The Gateway constructs the configured run and event stores before
-services so the reader is usable from `start()`. Changed-run discovery uses an opaque,
+Gateway services start in registration order after the persistence, event, and thread
+stores, the `RunManager`, and its configured heartbeat are ready. Each receives the same
+`ExtensionRuntimeDeps` snapshot containing the app store, projected host policy, session
+factory, optional read-only `RunEvidenceReader`, optional owner-scoped `OwnerDataReader`,
+optional `OwnerDataDeleter`, and optional `product_data_directory`. The latter is a
+Gateway-granted persistent home subdirectory for trusted product extensions to keep
+short-lived artifacts; it is not
+request-scoped user authorization, so every router must still derive the owner from
+`resolve_principal()` before reading or serving an artifact.
+
+`OwnerDataReader` is a read-only account-data capability for trusted product jobs. Every
+thread inventory/history call requires an explicit user ID; the host repeats that scope at
+the thread metadata and event store, omits arbitrary thread metadata, and uses the shared
+visible-history filter. Missing, legacy-unowned, and foreign threads return no page. It does
+not expose checkpoint tables or mutations and does not sandbox extension code: Gateway
+services remain trusted operator code and retain the other capabilities in their runtime
+snapshot. `RunEvidenceReader` remains a separate operator-oriented capability whose content
+scope is fixed when the host constructs it.
+
+`OwnerDataDeleter` is separate from the read-only account reader and currently exposes only
+single scheduled-task definition deletion. The host must repeat owner checks in the
+repository mutation boundary, cancel a queued occurrence in that same operation, and refuse
+definitions with a launching/running occurrence. A missing optional deleter means the host
+does not support that mutation; extensions must fail closed rather than infer success.
+
+The Gateway constructs the configured stores before services so both readers are usable
+from `start()`. Changed-run discovery uses an opaque,
 scope-bound cursor over `(change_seq, run_id)`; a run that changes after it was returned may
 be replayed, but an unreturned run cannot be skipped. Legacy rows start at `change_seq=0`
 and sort by run id. Deletion is deliberately not represented by a tombstone, so the feed
@@ -321,7 +358,10 @@ WebSocket routes are rejected until the host can supply authentication and Origi
 Because `include_router()` recompiles contributed routes, preflight projects the converter
 registry at include time. Nonstandard converters fail closed against reserved security
 paths but otherwise prove a shadow only when their normalized matchers are identical.
-Host authentication- and CSRF-exempt paths are reserved, and contributed Mounts, unsupported
+Host authentication- and CSRF-exempt paths are reserved, except the exact GET-only
+`/api/product/v1/public-brand` route from the operator-installed
+`flow_desk_product_extension:install` entry point. Other sources, methods and
+parameterized paths remain blocked. Contributed Mounts, unsupported
 route items, startup/shutdown hooks, and custom router lifespans are rejected; lifetime
 resources must use `ExtensionService`. Auth and CSRF classify
 `get_request_route_path(request)`, the same root-path-adjusted ASGI path Starlette routes

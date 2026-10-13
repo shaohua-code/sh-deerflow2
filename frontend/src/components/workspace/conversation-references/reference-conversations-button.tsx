@@ -21,12 +21,18 @@ import { ConversationReferencePicker } from "./conversation-reference-picker";
 export function ReferenceConversationsButton({
   className,
   currentThreadId,
+  canReadReferences,
+  cacheScope,
   disabled,
   references,
   onChange,
 }: {
   className?: string;
   currentThreadId: string;
+  /** Both thread search and the Gateway read_conversation tool are authorized. */
+  canReadReferences: boolean;
+  /** Current authenticated account ID for query-cache isolation. */
+  cacheScope?: string;
   disabled?: boolean;
   references: ConversationReference[];
   onChange: (references: ConversationReference[]) => void;
@@ -34,6 +40,15 @@ export function ReferenceConversationsButton({
   const { t } = useI18n();
   const { enabled, maxReferences } = useConversationReferencesCapability();
   const [open, setOpen] = useState(false);
+  const canOpenPicker = enabled && canReadReferences && maxReferences > 0;
+  const [previousPickerAvailability, setPreviousPickerAvailability] =
+    useState(canOpenPicker);
+  if (previousPickerAvailability !== canOpenPicker) {
+    setPreviousPickerAvailability(canOpenPicker);
+    if (!canOpenPicker) {
+      setOpen(false);
+    }
+  }
 
   const toggle = useCallback(
     (reference: ConversationReference) => {
@@ -51,7 +66,7 @@ export function ReferenceConversationsButton({
     [references, maxReferences, onChange],
   );
 
-  if (!enabled || maxReferences <= 0) {
+  if (!canOpenPicker) {
     return null;
   }
 
@@ -73,6 +88,8 @@ export function ReferenceConversationsButton({
       </Tooltip>
       <ConversationReferencePicker
         currentThreadId={currentThreadId}
+        enabled={canReadReferences}
+        cacheScope={cacheScope}
         maxReferences={maxReferences}
         onOpenChange={setOpen}
         onToggle={toggle}

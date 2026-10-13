@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,7 +32,9 @@ def test_find_pnpm_command_prefers_resolved_executable(monkeypatch):
 
     monkeypatch.setattr(pnpm_script.shutil, "which", fake_which)
 
-    assert pnpm_script.find_pnpm_command() == [r"C:\Users\tester\AppData\Roaming\npm\pnpm.CMD"]
+    executable_name = "pnpm.cmd" if os.name == "nt" else "pnpm.CMD"
+    expected_path = rf"C:\Users\tester\AppData\Roaming\npm\{executable_name}"
+    assert pnpm_script.find_pnpm_command() == [expected_path]
 
 
 def test_find_pnpm_command_falls_back_to_corepack(monkeypatch):

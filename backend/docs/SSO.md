@@ -49,7 +49,7 @@ Browser                      Gateway                    OIDC Provider
 - **State via signed cookie** — No server-side session store or Redis needed. The OIDC state (provider, nonce, code_verifier, next path) is signed with the JWT secret and stored in an HttpOnly cookie.
 - **PKCE + nonce enabled by default** — Even though confidential clients could use `client_secret`, PKCE provides an extra layer of security.
 - **No email auto-linking** — a pre-existing local (email/password) account is never auto-linked to an SSO identity. If the IdP-reported email collides with an existing local account, the SSO login is blocked with a 409 so an SSO login can never seize a password account.
-- **Existing DeerFlow JWT** — After successful OIDC authentication, DeerFlow creates its own JWT session cookie. The OIDC provider's tokens are never exposed to the browser.
+- **Existing DeerFlow JWT** — After successful OIDC authentication, DeerFlow creates its own JWT session cookie. The OIDC provider's tokens are never exposed to the browser. An explicitly enabled IAM vault uses the local JWT `sid` only to select that browser session's server-side encrypted token row.
 
 ## Configuration
 
@@ -71,7 +71,45 @@ auth:
           - openid
           - email
           - profile
+        # For the IAM integration only, opt in to the encrypted token vault:
+        # iam_token_vault_enabled: true
+        # scopes:
+        #   - openid
+        #   - email
+        #   - profile
+        #   - offline_access
 ```
+
+`iam_token_vault_enabled` defaults to `false` and should remain off for ordinary
+social OIDC providers. When enabled for the IAM Provider, the Gateway requires
+the `offline_access` scope and `DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY` in the API
+environment. Generate a random 32-byte key and encode it with standard Base64;
+keep it in the Gateway's backend Secret Manager or local `.env`, never in
+`config.yaml`, browser variables, or source control. The Gateway encrypts token
+values with AES-256-GCM and stores one row per `(user_id, local_session_id)` in
+`iam_oidc_token_vault`; migration `0026_iam_oidc_token_vault` adds that table.
+Local logout deletes that session's row, which prevents this Gateway from using
+the stored refresh token again. OIDC discovery now retains the optional
+`revocation_endpoint`, and `OIDCService.revoke_token()` implements the RFC 7009
+HTTPS form request with client-secret-post/basic/public-client auth and
+credential-redacted errors. The Gateway logout route does not call it: sending
+stored bearer credentials to the external issuer remains disabled until the
+operator explicitly approves that token egress. For now, logout is local-only;
+an upstream session may remain active until its own expiry or IAM-side revocation.
+`OIDCService.refresh_tokens()` and `IamTokenVaultRepository.load_or_refresh_for_identity()`
+are used by Gateway authorization to revalidate the matching vault session and
+rotate near-expiry credentials. Route, model-catalog, sandbox, Agent model/tool,
+and request-time memory data-scope checks use the run-scoped capability. The
+passive memory worker carries no capability: before every storage commit it
+submits a fresh check to the Gateway loop, reloads the active local user and
+matching vault session, then rechecks exact owner/self read+write scopes. A
+revoked or unavailable session/grant, missing loop, or timeout skips the write.
+Upstream IAM token revocation is not wired into logout yet. Do not call the
+revocation method from logout until the deployment explicitly authorizes sending
+its server-held access and refresh tokens to the configured issuer.
+Changing the key without re-encrypting
+existing rows makes those rows undecryptable; plan a controlled re-encryption or
+require fresh logins.
 
 ### Step 2: Set the client secret as an environment variable
 
@@ -112,7 +150,11 @@ providers:
     auto_create_users: true         # Auto-create DeerFlow account on first SSO login (default: true)
     require_verified_email: true    # Reject logins without verified email (default: true)
     allowed_email_domains: []       # Restrict to specific domains (default: no restriction)
-    admin_emails: []                # Auto-grant admin role to these emails (default: none)
+    admin_emails: []                # Deprecated compatibility field; ignored, never grants admin
+
+    # For IAM only: opt in to encrypted access/refresh token storage.
+    # Requires offline_access and DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY in Gateway env.
+    # iam_token_vault_enabled: true
 
     # Security features (both enabled by default)
     pkce_enabled: true
@@ -275,6 +317,7 @@ The frontend handles the post-SSO flow at `/auth/callback`:
 - **PKCE** prevents authorization code interception attacks
 - **Nonce** prevents ID token replay attacks
 - **UserInfo sub check** ensures the UserInfo response matches the ID token subject
+- **IAM token vault** is opt-in, AES-GCM encrypted, session-scoped and server-only. When the configured AuthorizationProvider requires IAM identity, Gateway resolves a signed local `sid` to the active account's encrypted session and provides a redacted in-memory credential Mapping for route/model-catalog/sandbox-sync and Agent model/tool authorization. Agent memory tools and passive memory queue admission enforce owner/self data scopes before touching the manager. Before persistence the async worker reloads the active owner and matching vault session on the Gateway loop, then rechecks memory read+write scope; credentials never enter the queue, and missing/revoked authorization fails closed. The vault does not grant permissions by itself and does not revoke the upstream IAM session.
 - **Reject alg=none** — ID tokens with algorithm "none" are always rejected
 - **No email auto-linking** — SSO accounts are always separate from email/password accounts. An email collision with an existing local account blocks the SSO login (409) rather than merging the two.
 - **Verified email requirement** — SSO users must have verified emails by default

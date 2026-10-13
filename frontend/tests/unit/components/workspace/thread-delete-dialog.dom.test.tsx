@@ -64,7 +64,11 @@ afterEach(() => {
 
 describe("thread deletion failure feedback", () => {
   for (const [name, error, message] of [
-    ["specific error", new Error("Permission denied"), "Permission denied"],
+    [
+      "specific error",
+      new Error("Permission denied"),
+      "Failed to delete chat. Please try again.",
+    ],
     ["empty error", new Error(""), "Failed to delete chat. Please try again."],
     ["non-Error rejection", null, "Failed to delete chat. Please try again."],
   ] as const) {
@@ -93,6 +97,9 @@ describe("thread deletion failure feedback", () => {
       del.focus();
       fireEvent.click(del);
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
+      if (error instanceof Error && error.message) {
+        expect(toast.error).not.toHaveBeenCalledWith(error.message);
+      }
       await waitFor(() => expect(document.activeElement).toBe(cancel));
       expect(log).toHaveBeenCalledWith("Failed to delete chat:", error);
       expect(screen.getByRole("dialog")).not.toBeNull();

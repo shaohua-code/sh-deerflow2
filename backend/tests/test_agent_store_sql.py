@@ -54,6 +54,16 @@ def test_display_name_is_config_data_not_storage_identity(store):
     assert store.get_soul("reviewer", user_id="u1") == "Soul"
 
 
+def test_list_owned_pages_only_the_requested_owner_and_carries_matching_soul(store):
+    store.create("alpha", {"name": "alpha"}, "alpha soul", user_id="u1")
+    store.create("gamma", {"name": "gamma"}, "gamma soul", user_id="u1")
+    store.create("beta", {"name": "beta"}, "foreign soul", user_id="u2")
+
+    rows = store.list_owned(user_id="u1", limit=1, offset=1)
+
+    assert [(owner, config.name, soul) for owner, config, soul in rows] == [("u1", "gamma", "gamma soul")]
+
+
 def test_name_is_stored_lowercase_and_excluded_from_document(store):
     store.create("Mixed", {"name": "Mixed", "description": "d"}, "s", user_id="u1")
     # Stored lowercase (matches the on-disk layout), and the JSON document does

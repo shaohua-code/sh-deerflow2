@@ -777,6 +777,7 @@ def _get_memory_context(
     *,
     app_config: AppConfig | None = None,
     user_id: str | None = None,
+    runtime_context: object | None = None,
 ) -> str:
     """Get memory context for injection into system prompt.
 
@@ -795,6 +796,7 @@ def _get_memory_context(
     config = None
     try:
         from deerflow.agents.memory import get_memory_manager
+        from deerflow.agents.memory.authorization import is_memory_scope_authorized_sync
         from deerflow.runtime.user_context import resolve_runtime_user_id
 
         if app_config is None:
@@ -807,8 +809,16 @@ def _get_memory_context(
         if not config.enabled or not config.injection_enabled:
             return ""
 
+        resolved_user_id = user_id or resolve_runtime_user_id(None)
+        if not is_memory_scope_authorized_sync(
+            runtime_context,
+            local_user_id=resolved_user_id,
+            actions=("read",),
+        ):
+            raise MemoryReadError("Memory authorization denied")
+
         memory_content = get_memory_manager().get_context(
-            user_id=user_id or resolve_runtime_user_id(None),
+            user_id=resolved_user_id,
             agent_name=agent_name,
         )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class OIDCProviderConfig(BaseModel):
@@ -23,6 +23,20 @@ class OIDCProviderConfig(BaseModel):
         default="client_secret_post",
         description="How the client authenticates at the token endpoint",
     )
+    iam_token_vault_enabled: bool = Field(
+        default=False,
+        description=(
+            "Persist this provider's IAM access/refresh tokens in the encrypted Gateway vault. "
+            "Requires the offline_access scope and DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def require_refresh_scope_for_iam_vault(self) -> OIDCProviderConfig:
+        """Do not enable IAM token vaulting without a refreshable OIDC grant."""
+        if self.iam_token_vault_enabled and "offline_access" not in self.scopes:
+            raise ValueError("auth.oidc.providers[*].iam_token_vault_enabled requires the offline_access scope")
+        return self
 
     # ── User provisioning ─────────────────────────────────────────────
     auto_create_users: bool = Field(
@@ -39,7 +53,10 @@ class OIDCProviderConfig(BaseModel):
     )
     admin_emails: list[str] = Field(
         default_factory=list,
-        description="Users with these email addresses are automatically granted the admin role on first login",
+        description=(
+            "Deprecated compatibility setting; ignored. OIDC email addresses never grant admin access. "
+            "Elevated access requires explicit IAM authorization after server-side integration is enabled."
+        ),
     )
 
     # ── PKCE / nonce ──────────────────────────────────────────────────

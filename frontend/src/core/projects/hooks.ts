@@ -7,6 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { isStaticWebsiteOnly } from "../static-mode";
 import { INFINITE_THREADS_QUERY_KEY_PREFIX } from "../threads/hooks";
@@ -64,36 +65,70 @@ export function useProjects(
   status?: ProjectStatus,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
-  return useQuery<Project[]>({
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useQuery<Project[]>({
     queryKey: [...PROJECTS_QUERY_KEY, { status }],
     queryFn: () => listProjects(status),
     // Static-demo mode has no Gateway; never fire project requests there.
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  // A disabled query can still hold an earlier successful result in cache.
+  // Never expose that result after a permission revocation.
+  return active ? query : { ...query, data: undefined };
 }
+
+const PROJECTS_CONFIG_QUERY_KEY = [...PROJECTS_QUERY_KEY, "config"] as const;
 
 /**
  * Server-configured projects limits (``GET /api/projects/config``). Callers
  * fall back to ``PROJECTS_CONFIG_DEFAULT`` while loading or on error — older
  * gateways 404 the endpoint, so ``retry: false`` avoids spending the default
- * retry backoff before the fallback kicks in.
+ * retry backoff before the fallback kicks in. Callers must pass the current
+ * ``projects:read`` grant so revocation can cancel the request and clear cache.
  */
-export function useProjectsConfig({
-  enabled = true,
-}: { enabled?: boolean } = {}) {
-  return useQuery<ProjectsConfig>({
-    queryKey: [...PROJECTS_QUERY_KEY, "config"],
-    queryFn: getProjectsConfig,
+export function useProjectsConfig({ enabled }: { enabled: boolean }) {
+  const active = enabled && !isStaticWebsiteOnly();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (active) return;
+
+    // 撤销 projects:read 后取消配置读取并清掉旧查询，避免继续展示或复用授权前结果。
+    void queryClient.cancelQueries({
+      queryKey: PROJECTS_CONFIG_QUERY_KEY,
+      exact: true,
+    });
+    queryClient.removeQueries({
+      queryKey: PROJECTS_CONFIG_QUERY_KEY,
+      exact: true,
+    });
+  }, [active, queryClient]);
+
+  const query = useQuery<ProjectsConfig>({
+    queryKey: PROJECTS_CONFIG_QUERY_KEY,
+    queryFn: ({ signal }) => getProjectsConfig({ signal }),
     retry: false,
     // Config changes only via server redeploy; a stale read is harmless next
     // to the 422 guard of last resort.
     staleTime: 5 * 60_000,
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  return active
+    ? query
+    : {
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+      };
 }
 
-export function useProject(id: string) {
-  return useQuery<Project>({
+export function useProject(
+  id: string,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useQuery<Project>({
     queryKey: [...PROJECTS_QUERY_KEY, "detail", id],
     queryFn: () => getProject(id),
     // A deleted or foreign project 404s deterministically and the page has a
@@ -101,8 +136,9 @@ export function useProject(id: string) {
     // backoff (~7s) in "loading" first. Matches useThreadMetadata /
     // useThreadTokenUsage.
     retry: false,
-    enabled: !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
 export const PROJECT_THREADS_PAGE_SIZE = 100;
@@ -117,7 +153,8 @@ export function useInfiniteProjectThreads(
   id: string,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
-  return useInfiniteQuery<
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useInfiniteQuery<
     ProjectThread[],
     Error,
     InfiniteData<ProjectThread[]>,
@@ -135,8 +172,9 @@ export function useInfiniteProjectThreads(
       lastPage.length === PROJECT_THREADS_PAGE_SIZE
         ? allPages.reduce((total, page) => total + page.length, 0)
         : undefined,
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
 export type ProjectThreadsQueryResult = UseInfiniteQueryResult<
@@ -211,7 +249,8 @@ export function useInfiniteProjectDocuments(
   projectId: string,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
-  return useInfiniteQuery<
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useInfiniteQuery<
     ProjectDocumentListResponse,
     Error,
     InfiniteData<ProjectDocumentListResponse>,
@@ -229,8 +268,9 @@ export function useInfiniteProjectDocuments(
       const loaded = lastPage.offset + lastPage.documents.length;
       return loaded < lastPage.total ? loaded : undefined;
     },
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
 /**
@@ -251,7 +291,8 @@ export function useInfiniteProjectThreadFiles(
   }: { thread_limit?: number; file_limit?: number } = {},
   { enabled = true }: { enabled?: boolean } = {},
 ) {
-  return useInfiniteQuery<
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useInfiniteQuery<
     ProjectThreadFilesResponse,
     Error,
     InfiniteData<ProjectThreadFilesResponse>,
@@ -273,8 +314,9 @@ export function useInfiniteProjectThreadFiles(
       }),
     getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
     // Static-demo mode has no Gateway; never fire project requests there.
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
 export function useUploadProjectDocument(projectId: string) {

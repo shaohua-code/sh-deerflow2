@@ -11,6 +11,7 @@ import {
 const artifactState = rs.hoisted(() => ({
   select: rs.fn(),
   setOpen: rs.fn(),
+  user: null as { system_role: string } | null,
 }));
 const archiveState = rs.hoisted(() => {
   class RequestError extends Error {
@@ -25,13 +26,15 @@ const archiveState = rs.hoisted(() => {
   return {
     download: rs.fn(),
     manifest: rs.fn(),
+    install: rs.fn(),
     RequestError,
     toastError: rs.fn(),
+    toastSuccess: rs.fn(),
   };
 });
 
 rs.mock("@/core/auth/AuthProvider", () => ({
-  useAuth: () => ({ user: null }),
+  useAuth: () => ({ user: artifactState.user }),
 }));
 rs.mock("@/components/workspace/artifacts/context", () => ({
   useArtifacts: () => artifactState,
@@ -42,8 +45,17 @@ rs.mock("@/core/artifacts/api", () => ({
   getArtifactArchiveManifest: archiveState.manifest,
   MAX_ARTIFACT_ARCHIVE_FILES: 50,
 }));
+rs.mock("@/core/skills/api", () => ({
+  installSkill: archiveState.install,
+  SkillRequestError: class SkillRequestError extends Error {
+    readonly isAdminRequired = false;
+  },
+}));
 rs.mock("sonner", () => ({
-  toast: { error: archiveState.toastError, success: rs.fn() },
+  toast: {
+    error: archiveState.toastError,
+    success: archiveState.toastSuccess,
+  },
 }));
 
 import { ArtifactFileList } from "@/components/workspace/artifacts/artifact-file-list";
@@ -85,6 +97,10 @@ function renderList(
 
 afterEach(cleanup);
 afterEach(() => {
+  artifactState.user = null;
+  archiveState.install.mockReset();
+  archiveState.toastError.mockReset();
+  archiveState.toastSuccess.mockReset();
   rs.restoreAllMocks();
 });
 
@@ -274,13 +290,11 @@ describe("ArtifactFileList archive download", () => {
     });
   });
 
-  it("shows actionable archive errors returned by the server", async () => {
+  it("maps archive-limit errors to safe localized feedback", async () => {
     archiveState.manifest.mockResolvedValue({ fileCount: 2 });
+    const privateDetail = "Archive path /mnt/user-data/private/report.pdf";
     archiveState.download.mockRejectedValue(
-      new ArtifactRequestError(
-        413,
-        "An artifact archive can contain at most 50 files",
-      ),
+      new ArtifactRequestError(413, privateDetail),
     );
     renderList({ runId: "run-1" });
 
@@ -292,8 +306,76 @@ describe("ArtifactFileList archive download", () => {
 
     await waitFor(() => {
       expect(archiveState.toastError).toHaveBeenCalledWith(
-        "An artifact archive can contain at most 50 files",
+        enUS.artifactArchive.archiveTooLarge,
+      );
+      expect(archiveState.toastError).not.toHaveBeenCalledWith(privateDetail);
+    });
+  });
+
+  it("maps busy archive requests to localized retry guidance", async () => {
+    archiveState.manifest.mockResolvedValue({ fileCount: 2 });
+    archiveState.download.mockRejectedValue(
+      new ArtifactRequestError(429, "internal worker queue details"),
+    );
+    renderList({ runId: "run-1" });
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Download current versions (2 files)",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(archiveState.toastError).toHaveBeenCalledWith(
+        enUS.artifactArchive.archiveBusy,
+      );
+      expect(archiveState.toastError).not.toHaveBeenCalledWith(
+        "internal worker queue details",
       );
     });
+  });
+
+  it("hides unexpected Gateway archive details behind the generic message", async () => {
+    archiveState.manifest.mockResolvedValue({ fileCount: 2 });
+    archiveState.download.mockRejectedValue(
+      new ArtifactRequestError(500, "database password and private path"),
+    );
+    renderList({ runId: "run-1" });
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Download current versions (2 files)",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(archiveState.toastError).toHaveBeenCalledWith(
+        enUS.artifactArchive.downloadFailed,
+      );
+      expect(archiveState.toastError).not.toHaveBeenCalledWith(
+        "database password and private path",
+      );
+    });
+  });
+
+  it("shows safe localized feedback when installing a skill from the file list fails", async () => {
+    artifactState.user = { system_role: "admin" };
+    archiveState.install.mockResolvedValue({
+      success: false,
+      skill_name: "demo",
+      message: "private gateway path",
+    });
+    renderList({ files: ["/mnt/user-data/outputs/demo.skill"] });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Install" }));
+
+    await waitFor(() => {
+      expect(archiveState.toastError).toHaveBeenCalledWith(
+        enUS.settings.skills.installFailed,
+      );
+    });
+    expect(archiveState.toastError).not.toHaveBeenCalledWith(
+      "private gateway path",
+    );
   });
 });

@@ -1,8 +1,42 @@
 # DeerFlow 后端
 
+**2026-10-12 Central IAM Provider 路径审计：** 对仓内内置生产模型调用做静态审计：共享工厂模型、Gateway 单次调用、DeerMem 直连 `init_chat_model()`（Gateway hook）均在 LangChain callback 生命周期内；自定义 Codex Responses 模型也通过共享工厂创建并返回 usage metadata。外部扩展动态 Provider 未穷尽。当前 `request_id` 是每个 LangChain invocation 的幂等标识，Codex 内部 HTTP 重试尚未拆分成多个计量 attempt，Provider 实际计费语义待确认。本轮仅只读静态审计，未运行测试或真实 IAM/Provider 请求。
+
+**2026-10-13 Central IAM B04 聚焦核验：** 最近完整 Windows Python 3.12 离线快照仍是修正前的 17,004 passed、186 failed、349 skipped、3 deselected、5 errors。独立定向结果：migration/bootstrap 五模块 62；Studio 6；Gateway 启动/checkpoint/regenerate 45；FastCRW/thread routes 142；PAT auth/repository/vault 63；extension task runtime 15；context compaction + Gateway services 212 passed。旧库迁移测试现在只创建 `_BASELINE_TABLE_NAMES`；相关 Ruff check/format 通过。本轮仅改测试夹具/文档，未改生产 runtime。全量未重跑，`uv`、`WinError 10106` 和其余失败仍待处理。未运行目标 migration、真实 IAM/Provider 或 quota enforcement。
+
+**2026-10-12 Central IAM 记忆模型用量：** DeerMem timer 后台模型调用现在按次从当前用户及 OIDC vault 会话创建 usage callback，绑定服务端模型档案，并在 LangChain 终态结果后关闭。启用计量但 admission 不可用时在 Provider 外呼前失败关闭；队列不含凭证/capability。Windows Python 3.12 隔离环境下两组现有回归 20/20、Harness boundary 1/1 通过，6 个变更 Python 文件 Ruff check/format 通过；全量及真实 IAM/Provider 验证未运行。
+
+**2026-10-12 Central IAM 模型调用授权：** Gateway run 内的每个模型档案在每次 provider 调用前校验精确 `model:use`，包含标题/摘要/评估器/子 Agent 等辅助调用。DeerMem 后台模型通过 Gateway 注入的 Harness 回调重载当前用户与 vault 会话，并同时检查记忆本人读/写范围及该模型档案权限；拒绝、超时或异常均停止外呼。Harness 不依赖 `app.*`。定向授权回归 28/28、Harness 分层检查 1/1 通过。Python readabilipy fallback 已保留安全链接/图片目标，现有 web-fetch 回归 50/50、Ruff 通过。修复前 Windows 全量后端为 16,750 通过、442 失败、345 跳过、3 deselected；阻塞 I/O 为 116 通过、26 失败、1 跳过。修复后未重跑全量，其余失败尚未逐项归因。临时测试和 pytest 产物已清理，真实 IAM/Provider E2E 待验收。
+
+**2026-10-11 webhook 生产门禁：** 显式未验证 webhook 开关在 production 环境失效；没有签名 secret 时不挂载 webhook 路由，直接调用 handler 也会拒绝未签名请求。浏览器与 webhook 完整聚焦回归 76/76，包含数据范围拒绝和授权服务故障关闭场景；公网 URL SSRF 用例使用固定 DNS 结果；Ruff 通过，未连接线上 webhook 或 IAM。
+
+**2026-10-11 Central IAM 浏览器实时流：** WebSocket 在查询 thread 或访问保留浏览器 session 前，要求 `threads:read`、`threads:write` 及对应线程的读写 owner/self 范围；已签名本地会话 `sid` 会用于中央 IAM resolver，原本地 owner/origin 检查继续保留。浏览器与 webhook 合并回归 76/76、Ruff 通过；未新增 migration 或角色授权，真实 IAM/WebSocket E2E 待完成。
+
+**2026-10-11 Central IAM 个人偏好授权：** `/api/v1/auth/preferences` 的 GET/PATCH 分别要求 `preferences:read/write` 和匹配验签 OIDC 主体的 owner/self data_scope，检查发生在本地偏好仓储访问之前；原有浏览器 session、本地账号归属校验继续保留。IAM migration `0030_deerflow_preference_permissions` 只登记权限目录、不授予角色。偏好路由回归 19/19、Ruff check/format 通过；真实 grant、数据库迁移和浏览器 E2E 尚未验收。
+
+**2026-10-11 runtime 镜像状态：** dev 镜像已生成，镜像内 uv 环境成功导入 deerflow.authz.iam_deerflow。默认 runtime 镜像未生成：Docker Hub Python manifest 和 GHCR uv 匿名 token 请求返回 EOF，pull=false 也失败。uv locked dry-run 通过，backend/uv.lock 未改动；待 registry 可达或配置镜像源后重建，未启动业务服务或数据库。
+
+**2026-10-11 Docker build context 安全：** config.yaml、extensions_config.json、备份副本和所有 .env* 变体现已从 Docker context 排除，避免运行配置凭证进入构建上下文。Docker daemon 在构建客户端退出后仍生成镜像 iam-deerflow-package-check:20261011（sha256:f2203cacf14d7a324dadcaa4d803145fcd9fd48129a9e9f15751e4beb4947456），一次性容器通过 uv run 导入 deerflow.authz.iam_deerflow；未启动完整服务或改动数据库。
+
+**2026-10-11 中央 IAM 模型用量待核对：** 开启计量后，即使配额拦截关闭，IAM 也会在 Provider 调用前持久化每次请求的预留。10 分钟后未结预留进入管理员核对队列并继续占用保守 TPM；不会自动按上限收费或自动释放。平台管理员依据 Provider 日志/账单补记实测或估算用量，或在确认 Provider 从未执行后释放，所有处理均写入审计。fd_0028 SQL outbox 能重试已本地提交的记录，但无法还原 Provider 已完成、outbox 尚未提交时丢失的 Token。IAM migration `0031_model_usage_reconciliation` 尚未迁移/验证，实时验收通过前保持配额拦截关闭。
+
 **语言：** [English](README.md) | 简体中文
 
+**Central IAM Console 报表授权（2026-10-11）：** `/api/console/stats` 在访问 SQL 前要求 `runs:read`、`threads:read`、`agents:read` 及对应 owner/self data_scope；`/runs` 需 runs 和 threads 读取权限/范围，因为响应包含 thread title；`/usage` 需 runs 读取权限/范围。SQL 仍按 DeerFlow 本地 `user_id` 过滤。console router 定向回归 25/25，两个修改 Python 文件 Ruff check 通过；未新增 migration 或自动角色 grant，真实 IAM 与浏览器验收仍待完成。
+
 DeerFlow 是一个基于 LangGraph 的 AI 超级智能体，具备沙箱执行、持久记忆和可扩展工具集成能力。后端使 AI 智能体能够执行代码、浏览网页、管理文件、将任务委派给子智能体，并在多轮对话之间保留上下文——所有操作都在按线程隔离的环境中进行。
+
+### OIDC 账号开通
+
+定时任务路由在访问 repository 前执行中央 IAM 本人数据范围检查：任务读取用 `threads:read`；创建同时要求 `threads:write` 与 `runs:create`；编辑/暂停要求 `threads:write`；恢复/手动触发还要求 `runs:create`；删除要求 `threads:delete`；运行历史要求 `threads:read` 与 `runs:read`。复用已有会话时另校验该会话的 `threads:read` 范围。后台调度在入队前和从队列启动前重新核验 active 用户、grant、data_scope 与匹配的加密 OIDC vault session；授权失效会暂停任务并取消排队 occurrence。必须保留本地 owner 过滤。
+
+### owner-scoped 读取的数据范围
+
+项目列表/详情/项目会话读取校验 `projects:read`；全局 `POST /api/threads/search` 校验 `threads:read`；owner-checked 线程/运行读取在本地归属检查后、handler 前校验 `threads:read` / `runs:read`。项目文档列表/内容、项目线程文件聚合、回收站也在读取存储前校验范围。记忆路由要求 `memory:read/write/delete/admin`；所有返回完整记忆文档的接口（包含写接口）还需先通过 `memory:read` data_scope，配置查看只给 `memory:admin`。自建 Agent 管理使用 `agents:read/write/delete` 和 owner/self data_scope，并与 DeerFlow 本地 `user_id` 过滤求交；写接口回传完整 Agent 配置，因此还需要 read 权限/范围。部署级共享 `USER.md` 使用独立 `agents:admin`，PAT 不可访问；其余 PAT 记忆/Agent 路由按方法和路径显式放行。Agent 鉴权/PAT/`/auth/me` 与互操作回归 90/90 通过（1 条 Starlette/httpx 弃用警告），8 个修改 Python 文件 Ruff check/format 通过；Windows pytest 需允许 asyncio 本机 socketpair 的进程上下文。记忆/权限/PAT 回归 118/118 通过；文档/回收站 72 通过、2 跳过，1 个 Windows 255-byte 文件名测试因 `WinError 3` 未通过。租户/组织共享、正式 IAM 映射和真实环境仍待验收。
+
+新 OIDC 账号始终以 `system_role=user` 创建；`admin_emails` 仅兼容旧配置，不授予管理员。显式配置 IAM Provider 后，Gateway 按本地 session 保存 AES-256-GCM 加密的 access/refresh token，签名 JWT 只携带随机 `sid`。需配置 Base64 编码的 32 字节 `DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY`、OIDC `offline_access` scope，并应用 DeerFlow migration `0026_iam_oidc_token_vault`。中央 IAM Python 客户端和 DeerFlow Provider 已随 `deerflow.authz` 分发。请求级权限与 Agent 模型/工具判权使用 vault capability，并支持临期 refresh。项目列表/详情/项目会话读取请求 IAM `projects:read` data_scope；全局 `/api/threads/search` 在查询前请求 `threads:read` data_scope。所有这些读取继续与本地 `user_id` owner 条件取交集；当前只接受与验签 OIDC subject 一致的本人范围，租户/组织范围失败关闭。新增会话搜索数据范围回归 2/2 通过，改动文件 Ruff 检查与格式检查通过。其它资源范围、上游撤销、镜像分发、真实 IAM/浏览器互操作及产品数据库验收仍待完成。
+项目 CRUD、项目文档上传/会话文件提升/回收站恢复在副作用前校验项目写范围与完整响应所需的读范围；文档软删除、单项/批量清理及保留期清理检查 `projects:delete`，回收站列表遇到删除范围拒绝时跳过自动清理。会话文件提升/挂载也检查 `threads:read/write`。相关路由 92/92 通过，Ruff 通过。
+使用 `owner_check=True` 的线程/运行写入口也会在本地 owner 检查之后、handler 前检查 Central IAM data_scope：线程 `write/delete` 与运行 `create/cancel`；运行取消按现存 run ID，创建运行时尚无 ID，因此不伪造资源 ID。鉴权回归 101/101，离线组合路由 532 项通过，1 个公网 DNS 用例被排除。其它未使用该 decorator 的用户数据写入口仍需逐路由审计。
 
 ---
 

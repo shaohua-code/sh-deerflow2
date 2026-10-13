@@ -25,6 +25,26 @@ export function readCachedAgentsApiEnabled(): boolean | undefined {
   return undefined;
 }
 
+/**
+ * Subscribe to cross-tab changes so React can read the browser cache as an
+ * external store without synchronizing localStorage through render effects.
+ */
+export function subscribeCachedAgentsApiEnabled(
+  onStoreChange: () => void,
+): () => void {
+  if (!isBrowser()) {
+    return () => undefined;
+  }
+
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === AGENTS_API_ENABLED_KEY || event.key === null) {
+      onStoreChange();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
 export function writeCachedAgentsApiEnabled(value: boolean): void {
   if (!isBrowser()) {
     return;

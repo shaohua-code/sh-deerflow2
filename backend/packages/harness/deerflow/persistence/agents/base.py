@@ -103,6 +103,21 @@ class AgentStore(abc.ABC):
         """Return every custom agent owned by ``user_id``, sorted by name."""
 
     @abc.abstractmethod
+    def list_owned(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[str, AgentConfig, str | None]]:
+        """Return an exact user's custom Agents with SOUL, never shared fallback rows.
+
+        Unlike :meth:`list`, this portable-data surface deliberately excludes
+        legacy deployment-wide file definitions. The owner is repeated in each
+        row so a caller can fail closed if an adapter violates the boundary.
+        """
+
+    @abc.abstractmethod
     def list_all(self) -> list[tuple[str, AgentConfig]]:
         """Return ``(user_id, config)`` for every agent across all owners.
 

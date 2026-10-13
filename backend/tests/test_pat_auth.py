@@ -47,6 +47,7 @@ def _fake_user(user_id: str = "user-1", *, system_role: str = "user"):
         id=user_id,
         email=f"{user_id}@example.com",
         system_role=system_role,
+        is_active=True,
         needs_setup=False,
         token_version=0,
         oauth_provider=None,
@@ -87,7 +88,10 @@ def _make_pat_app(with_pat_repo: bool = True):
     async def run_stream(request: Request):
         return {"ok": True, "permissions": list(request.state.auth.permissions)}
 
+    from app.gateway.authz import require_permission
+
     @app.delete("/api/memory")
+    @require_permission("memory", "delete")
     async def memory_delete(request: Request):
         return {"deleted": True}
 
@@ -98,8 +102,6 @@ def _make_pat_app(with_pat_repo: bool = True):
     # Mirrors the real stateless run entrypoint (routers/runs.py), including
     # the @require_permission decorator, so scope enforcement is exercised
     # end-to-end through the middleware's permission intersection.
-    from app.gateway.authz import require_permission
-
     @app.post("/api/runs/stream")
     @require_permission("runs", "create")
     async def stateless_run_stream(request: Request):
@@ -479,9 +481,32 @@ def test_pat_default_denied_on_route_outside_pat_policy(client):
     would otherwise accept a runs:read-only token."""
     created = _create_pat(client, scopes=["threads:read", "threads:write", "threads:delete", "runs:create", "runs:read", "runs:cancel"])
     client.cookies.clear()
-    response = client.delete("/api/memory", headers={"Authorization": f"Bearer {created['token']}"})
+    response = client.get("/api/admin-check", headers={"Authorization": f"Bearer {created['token']}"})
     assert response.status_code == 403
     assert "PAT" in response.json()["detail"]
+
+
+def test_pat_policy_explicitly_admits_scoped_memory_routes_only():
+    from app.gateway.auth.pat import is_pat_allowed_route
+
+    assert is_pat_allowed_route("GET", "/api/memory") is True
+    assert is_pat_allowed_route("PATCH", "/api/memory/facts/fact-1") is True
+    assert is_pat_allowed_route("GET", "/api/memory/config") is True
+    assert is_pat_allowed_route("PUT", "/api/memory") is False
+    assert is_pat_allowed_route("POST", "/api/memory/config") is False
+
+
+def test_pat_policy_explicitly_admits_personal_agent_routes_but_not_global_profile():
+    from app.gateway.auth.pat import is_pat_allowed_route
+
+    assert is_pat_allowed_route("GET", "/api/agents") is True
+    assert is_pat_allowed_route("POST", "/api/agents") is True
+    assert is_pat_allowed_route("GET", "/api/agents/check") is True
+    assert is_pat_allowed_route("PUT", "/api/agents/researcher") is True
+    assert is_pat_allowed_route("DELETE", "/api/agents/researcher") is True
+    assert is_pat_allowed_route("PATCH", "/api/agents/researcher") is False
+    assert is_pat_allowed_route("GET", "/api/user-profile") is False
+    assert is_pat_allowed_route("PUT", "/api/user-profile") is False
 
 
 def test_session_cookie_reaches_route_that_denies_pat(client):

@@ -4,6 +4,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -95,6 +96,50 @@ function ModelConsumer() {
 }
 
 describe("ModelLoadErrorBanner", () => {
+  it("refreshes the cached model catalog after its short freshness window", async () => {
+    const { queryClient, QueryWrapper } = createWrapper();
+    const cached: ModelsResponse = {
+      models: [
+        {
+          id: "previously-allowed",
+          name: "previously-allowed",
+          model: "provider/previously-allowed",
+          display_name: "Previously allowed",
+          description: null,
+          supports_thinking: false,
+          supports_reasoning_effort: false,
+        },
+      ],
+      token_usage: { enabled: false },
+    };
+    const refreshed: ModelsResponse = {
+      models: [
+        {
+          id: "currently-allowed",
+          name: "currently-allowed",
+          model: "provider/currently-allowed",
+          display_name: "Currently allowed",
+          description: null,
+          supports_thinking: false,
+          supports_reasoning_effort: false,
+        },
+      ],
+      token_usage: { enabled: true },
+    };
+    queryClient.setQueryData(MODELS_QUERY_KEY, cached, {
+      updatedAt: Date.now() - 10 * 60 * 1000,
+    });
+    mockedLoadModels.mockResolvedValue(refreshed);
+
+    const { result } = renderHook(() => useModels(), { wrapper: QueryWrapper });
+
+    await waitFor(() =>
+      expect(result.current.models[0]?.name).toBe("currently-allowed"),
+    );
+    expect(result.current.tokenUsageEnabled).toBe(true);
+    expect(mockedLoadModels).toHaveBeenCalledTimes(1);
+  });
+
   it("observes model failures without starting an extra request", async () => {
     const { QueryWrapper } = createWrapper();
     render(<ModelLoadErrorBanner />, { wrapper: QueryWrapper });

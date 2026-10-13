@@ -12,16 +12,20 @@ construct this after ``init_engine_from_config()`` has run.
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.gateway.auth.models import User
-from app.gateway.auth.repositories.base import UserNotFoundError, UserRepository
+from app.gateway.auth.repositories.base import LastActiveAdminError, UserNotFoundError, UserRepository
+from deerflow.persistence.personal_access_tokens.model import PersonalAccessTokenRow
 from deerflow.persistence.user.model import OAUTH_IDENTITY_INDEX_NAME, UserRow
+
+# Serializes admin deactivation checks across Gateway workers on PostgreSQL.
+_ACTIVE_ADMIN_MUTATION_LOCK_KEY = 5064664224210885452
 
 # ``email`` is ``mapped_column(unique=True, index=True)``, which SQLAlchemy
 # (and 0001_baseline) realise as a single UNIQUE INDEX -- not a named UNIQUE
@@ -154,6 +158,7 @@ class SQLiteUserRepository(UserRepository):
             oauth_id=row.oauth_id,
             needs_setup=row.needs_setup,
             token_version=row.token_version,
+            is_active=row.is_active,
         )
 
     @staticmethod
@@ -168,6 +173,7 @@ class SQLiteUserRepository(UserRepository):
             oauth_id=user.oauth_id,
             needs_setup=user.needs_setup,
             token_version=user.token_version,
+            is_active=user.is_active,
         )
 
     # ── CRUD ──────────────────────────────────────────────────────────
@@ -276,8 +282,75 @@ class SQLiteUserRepository(UserRepository):
             row.oauth_id = user.oauth_id
             row.needs_setup = user.needs_setup
             row.token_version = user.token_version
+            row.is_active = user.is_active
             await session.commit()
         return user
+
+    async def list_users(self, *, limit: int, offset: int) -> list[User]:
+        """List only the safe User projection; route DTOs never expose hashes."""
+        stmt = select(UserRow).order_by(UserRow.created_at, UserRow.id).limit(limit).offset(offset)
+        async with self._sf() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_user(row) for row in rows]
+
+    async def set_user_active(self, user_id: str, is_active: bool) -> User | None:
+        """Change access under one cross-worker lock and revoke old credentials.
+
+        SQLite reserves its single writer before counting active admins;
+        PostgreSQL uses a stable advisory lock plus a row lock. PAT revocation,
+        session-version invalidation, and the status change share one commit.
+        """
+        async with self._sf() as session:
+            dialect = session.get_bind().dialect.name
+            if dialect == "postgresql":
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                    {"lock_key": _ACTIVE_ADMIN_MUTATION_LOCK_KEY},
+                )
+            elif dialect == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+
+            row = (
+                await session.execute(
+                    select(UserRow).where(UserRow.id == user_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                await session.rollback()
+                return None
+
+            if row.is_active == is_active:
+                result = self._row_to_user(row)
+                await session.rollback()
+                return result
+
+            if not is_active and row.system_role == "admin":
+                active_admins = await session.scalar(
+                    select(func.count())
+                    .select_from(UserRow)
+                    .where(UserRow.system_role == "admin", UserRow.is_active.is_(True))
+                )
+                if int(active_admins or 0) <= 1:
+                    await session.rollback()
+                    raise LastActiveAdminError("The last active administrator cannot be disabled")
+
+            row.is_active = is_active
+            if not is_active:
+                # Bump the JWT version and revoke stored PATs in the same DB
+                # transaction, so reactivation never revives an old login.
+                row.token_version += 1
+                await session.execute(
+                    update(PersonalAccessTokenRow)
+                    .where(
+                        PersonalAccessTokenRow.user_id == user_id,
+                        PersonalAccessTokenRow.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=datetime.now(UTC))
+                )
+
+            result = self._row_to_user(row)
+            await session.commit()
+            return result
 
     async def count_users(self) -> int:
         stmt = select(func.count()).select_from(UserRow)

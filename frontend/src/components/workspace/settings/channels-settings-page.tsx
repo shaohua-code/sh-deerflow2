@@ -25,8 +25,15 @@ import {
   useChannelConnections,
   useChannelProviders,
   useConnectChannelProvider,
+  useDisconnectChannelConnection,
   useDisconnectChannelProvider,
 } from "@/core/channels/hooks";
+import {
+  canManageChannelRuntime,
+  canReadChannels,
+  canWriteChannels,
+} from "@/core/channels/permissions";
+import { getChannelMutationFailureMessage } from "@/core/channels/mutation-errors";
 import {
   closeConnectWindow,
   openConnectUrl,
@@ -38,6 +45,7 @@ import {
   providerNeedsRuntimeConfig,
 } from "@/core/channels/provider-state";
 import type { ChannelConnection, ChannelProvider } from "@/core/channels/types";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
@@ -113,27 +121,33 @@ function ChannelProviderItem({
   connection?: ChannelConnection;
 }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const canWrite = canWriteChannels(user);
+  const canManageRuntime = canManageChannelRuntime(user);
   const connectMutation = useConnectChannelProvider();
   const configureMutation = useConfigureChannelProvider();
   const disconnectProviderMutation = useDisconnectChannelProvider();
+  const disconnectConnectionMutation = useDisconnectChannelConnection();
   const [setupOpen, setSetupOpen] = useState(false);
   const runtimeAvailable = provider.configured && !provider.unavailable_reason;
   const isConnected =
     runtimeAvailable &&
     (connection?.status === "connected" ||
       provider.connection_status === "connected");
-  const canEditRuntimeConfig = providerCanEditRuntimeConfig(provider);
-  const canConnect =
-    (provider.connectable ?? (provider.enabled && provider.configured)) &&
-    !isConnected;
+  const canEditRuntimeConfig =
+    providerCanEditRuntimeConfig(provider) && canManageRuntime;
+  const canConnect = providerCanConnect(provider) && canWrite;
   const isConnecting =
     (connectMutation.isPending &&
       connectMutation.variables === provider.provider) ||
     (configureMutation.isPending &&
       configureMutation.variables?.provider === provider.provider);
   const isDisconnecting =
-    disconnectProviderMutation.isPending &&
-    disconnectProviderMutation.variables === provider.provider;
+    (disconnectProviderMutation.isPending &&
+      disconnectProviderMutation.variables === provider.provider) ||
+    (disconnectConnectionMutation.isPending &&
+      disconnectConnectionMutation.variables === connection?.id);
+  const canDisconnect = connection?.id ? canWrite : canManageRuntime;
   const connectionLabel = connection ? getConnectionLabel(connection) : null;
   const statusLabel = getStatusLabel(provider, connection, t);
   const unavailableReason = getProviderUnavailableReason(provider, t);
@@ -142,6 +156,11 @@ function ChannelProviderItem({
     connectProvider: ChannelProvider,
     preparedWindow?: Window | null,
   ) => {
+    if (!canWrite) {
+      closeConnectWindow(preparedWindow ?? null);
+      toast.error(t.channels.writePermissionRequired);
+      return;
+    }
     const connectWindow =
       preparedWindow !== undefined
         ? preparedWindow
@@ -158,11 +177,9 @@ function ChannelProviderItem({
         closeConnectWindow(connectWindow);
         toast.success(result.instruction);
       })
-      .catch((error) => {
+      .catch(() => {
         closeConnectWindow(connectWindow);
-        toast.error(
-          error instanceof Error ? error.message : t.channels.unavailable,
-        );
+        toast.error(getChannelMutationFailureMessage("connect", t.channels));
       });
   };
 
@@ -195,6 +212,26 @@ function ChannelProviderItem({
               ? ` ${provider.unavailable_reason}`
               : ""}
           </ItemDescription>
+          {!canWrite && providerCanConnect(provider) ? (
+            <p className="text-muted-foreground text-xs" role="status">
+              {t.channels.writePermissionRequired}
+            </p>
+          ) : null}
+          {!canManageRuntime && providerCanEditRuntimeConfig(provider) ? (
+            <p className="text-muted-foreground text-xs" role="status">
+              {t.channels.adminPermissionRequired}
+            </p>
+          ) : null}
+          {isConnected && connection?.id && !canWrite ? (
+            <p className="text-muted-foreground text-xs" role="status">
+              {t.channels.writePermissionRequired}
+            </p>
+          ) : null}
+          {isConnected && !connection?.id && !canManageRuntime ? (
+            <p className="text-muted-foreground text-xs" role="status">
+              {t.channels.adminPermissionRequired}
+            </p>
+          ) : null}
         </ItemContent>
         <ItemActions className="ml-auto">
           {isConnected ? (
@@ -219,18 +256,50 @@ function ChannelProviderItem({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={isDisconnecting}
+                disabled={!canDisconnect || isDisconnecting}
+                title={
+                  !canDisconnect
+                    ? connection?.id
+                      ? t.channels.writePermissionRequired
+                      : t.channels.adminPermissionRequired
+                    : undefined
+                }
                 onClick={() => {
+                  if (connection?.id) {
+                    if (!canWrite) {
+                      toast.error(t.channels.writePermissionRequired);
+                      return;
+                    }
+                    void disconnectConnectionMutation
+                      .mutateAsync(connection.id)
+                      .then(() => {
+                        toast.success(t.channels.revoked);
+                      })
+                      .catch(() => {
+                        toast.error(
+                          getChannelMutationFailureMessage(
+                            "disconnect",
+                            t.channels,
+                          ),
+                        );
+                      });
+                    return;
+                  }
+                  if (!canManageRuntime) {
+                    toast.error(t.channels.adminPermissionRequired);
+                    return;
+                  }
                   void disconnectProviderMutation
                     .mutateAsync(provider.provider)
                     .then(() => {
                       toast.success(t.channels.revoked);
                     })
-                    .catch((error) => {
+                    .catch(() => {
                       toast.error(
-                        error instanceof Error
-                          ? error.message
-                          : t.channels.unavailable,
+                        getChannelMutationFailureMessage(
+                          "disconnect",
+                          t.channels,
+                        ),
                       );
                     });
                 }}
@@ -259,16 +328,35 @@ function ChannelProviderItem({
               <Button
                 type="button"
                 size="sm"
-                disabled={isConnecting}
-                title={unavailableReason}
+                disabled={
+                  isConnecting ||
+                  (providerNeedsRuntimeConfig(provider)
+                    ? !canEditRuntimeConfig
+                    : !canConnect)
+                }
+                title={
+                  providerNeedsRuntimeConfig(provider) && !canEditRuntimeConfig
+                    ? t.channels.adminPermissionRequired
+                    : !canWrite && providerCanConnect(provider)
+                      ? t.channels.writePermissionRequired
+                      : unavailableReason
+                }
                 onClick={() => {
                   if (providerNeedsRuntimeConfig(provider)) {
+                    if (!canEditRuntimeConfig) {
+                      toast.error(t.channels.adminPermissionRequired);
+                      return;
+                    }
                     setSetupOpen(true);
                     return;
                   }
 
                   if (!canConnect) {
-                    toast.error(unavailableReason ?? t.channels.unavailable);
+                    toast.error(
+                      !canWrite
+                        ? t.channels.writePermissionRequired
+                        : (unavailableReason ?? t.channels.unavailable),
+                    );
                     return;
                   }
 
@@ -294,6 +382,10 @@ function ChannelProviderItem({
         submitting={configureMutation.isPending}
         onOpenChange={setSetupOpen}
         onSubmit={(submitProvider, values) => {
+          if (!canManageRuntime) {
+            toast.error(t.channels.adminPermissionRequired);
+            return;
+          }
           const connectWindow =
             submitProvider.auth_mode === "deep_link"
               ? prepareConnectWindow()
@@ -303,16 +395,21 @@ function ChannelProviderItem({
             .then((updated) => {
               setSetupOpen(false);
               if (providerCanConnect(updated)) {
+                if (!canWrite) {
+                  closeConnectWindow(connectWindow);
+                  toast.success(t.channels.runtimeConfigSaved);
+                  return;
+                }
                 startConnect(updated, connectWindow);
                 return;
               }
               closeConnectWindow(connectWindow);
               toast.success(t.channels.connected);
             })
-            .catch((error) => {
+            .catch(() => {
               closeConnectWindow(connectWindow);
               toast.error(
-                error instanceof Error ? error.message : t.channels.unavailable,
+                getChannelMutationFailureMessage("configure", t.channels),
               );
             });
         }}
@@ -323,19 +420,29 @@ function ChannelProviderItem({
 
 export function ChannelsSettingsPage() {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const canRead = canReadChannels(user);
   const {
     enabled,
     providers,
     isLoading: providersLoading,
+    isFetching: providersFetching,
+    hasData: hasProviders,
     error: providersError,
-  } = useChannelProviders();
+    refetch: refetchProviders,
+  } = useChannelProviders(canRead);
   const {
     connections,
     isLoading: connectionsLoading,
+    isFetching: connectionsFetching,
+    hasData: hasConnections,
     error: connectionsError,
-  } = useChannelConnections();
+    refetch: refetchConnections,
+  } = useChannelConnections(canRead);
   const isLoading = providersLoading || connectionsLoading;
+  const isFetching = providersFetching || connectionsFetching;
   const error = providersError ?? connectionsError;
+  const hasCompleteSnapshot = hasProviders && hasConnections;
   const visibleProviders = providers.filter((provider) => provider.enabled);
 
   const connectionByProvider = new Map<string, ChannelConnection>();
@@ -351,27 +458,73 @@ export function ChannelsSettingsPage() {
       title={t.settings.channels.title}
       description={t.settings.channels.description}
     >
-      {isLoading ? (
+      {!canRead ? (
+        <p className="text-muted-foreground text-sm" role="status">
+          {t.channels.readPermissionRequired}
+        </p>
+      ) : isLoading ? (
         <div className="text-muted-foreground text-sm">{t.common.loading}</div>
-      ) : error ? (
-        <div className="text-destructive text-sm">{t.channels.unavailable}</div>
-      ) : !enabled ? (
-        <div className="text-muted-foreground text-sm">
-          {t.settings.channels.disabled}
-        </div>
-      ) : visibleProviders.length === 0 ? (
-        <div className="text-muted-foreground text-sm">
-          {t.settings.channels.disabled}
-        </div>
       ) : (
-        <div className="flex w-full flex-col gap-4">
-          {visibleProviders.map((provider) => (
-            <ChannelProviderItem
-              key={provider.provider}
-              provider={provider}
-              connection={connectionByProvider.get(provider.provider)}
-            />
-          ))}
+        <div className="space-y-4">
+          {error && !hasCompleteSnapshot ? (
+            <div
+              role="alert"
+              className="border-destructive/30 flex flex-col items-start gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+            >
+              <p>{t.settings.channels.loadFailed}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isFetching}
+                onClick={() =>
+                  void Promise.all([refetchProviders(), refetchConnections()])
+                }
+              >
+                {isFetching
+                  ? t.settings.channels.retrying
+                  : t.settings.channels.retry}
+              </Button>
+            </div>
+          ) : null}
+          {error && hasCompleteSnapshot ? (
+            <div
+              role="alert"
+              className="border-destructive/30 flex flex-col items-start gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+            >
+              <p>{t.settings.channels.refreshFailed}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isFetching}
+                onClick={() =>
+                  void Promise.all([refetchProviders(), refetchConnections()])
+                }
+              >
+                {isFetching
+                  ? t.settings.channels.retrying
+                  : t.settings.channels.retry}
+              </Button>
+            </div>
+          ) : null}
+          {error && !hasCompleteSnapshot ? null : !enabled ? (
+            <div className="text-muted-foreground text-sm">
+              {t.settings.channels.disabled}
+            </div>
+          ) : visibleProviders.length === 0 ? (
+            <div className="text-muted-foreground text-sm">
+              {t.settings.channels.disabled}
+            </div>
+          ) : (
+            <div className="flex w-full flex-col gap-4">
+              {visibleProviders.map((provider) => (
+                <ChannelProviderItem
+                  key={provider.provider}
+                  provider={provider}
+                  connection={connectionByProvider.get(provider.provider)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </SettingsSection>

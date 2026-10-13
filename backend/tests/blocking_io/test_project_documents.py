@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.gateway.authz import AuthContext
 from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
 from deerflow.persistence.projects import ProjectDocumentRepository, ProjectRepository
 from deerflow.projects import documents as documents_mod
@@ -108,7 +109,10 @@ async def test_list_content_missing_check_dispatches_off_the_loop(tmp_path, monk
         result = await add_staged_document(env.docs, env.paths, user_id=_USER, project_id=env.project_id, name="notes.txt", staged=staged)
         assert result is not None
         state = SimpleNamespace(project_repo=ProjectRepository(get_session_factory()), project_document_repo=env.docs)
-        request = SimpleNamespace(app=SimpleNamespace(state=state))
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=state),
+            state=SimpleNamespace(auth=AuthContext(user=SimpleNamespace(id=_USER), permissions=[])),
+        )
         from deerflow.runtime.user_context import reset_current_user, set_current_user
 
         token = set_current_user(SimpleNamespace(id=_USER))

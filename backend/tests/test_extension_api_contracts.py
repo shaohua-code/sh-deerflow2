@@ -27,6 +27,10 @@ from deerflow_extension_api import (
     InvalidRunEvidenceCursor,
     MiddlewareContributor,
     MiddlewarePlacement,
+    OwnerDataAuthorizer,
+    OwnerDataReader,
+    OwnerDataScope,
+    OwnerRunPage,
     Placement,
     RunEventPage,
     RunEventView,
@@ -130,6 +134,7 @@ def test_agent_build_context_optional_fields_keep_their_defaults():
         ExtensionService,
         MiddlewareContributor,
         RunEvidenceReader,
+        OwnerDataReader,
         TaskLifecycleContributor,
         SystemModelCallObserver,
     ],
@@ -159,6 +164,26 @@ def test_contributor_defaults_return_empty():
 
     bare = _Bare()
     assert MiddlewareContributor.contribute_middlewares(bare, ExtensionData("app"), AgentBuildContext(scope=AgentScope.LEAD)) == ()
+
+
+def test_owner_run_reader_contract_is_public_and_defaults_to_unavailable():
+    class _Bare:
+        pass
+
+    page = OwnerRunPage()
+    assert page.runs == ()
+    assert page.has_more is False
+    assert (
+        asyncio.run(
+            OwnerDataReader.list_thread_runs(
+                _Bare(),
+                user_id="user-a",
+                thread_id="thread-a",
+                limit=100,
+            )
+        )
+        is None
+    )
 
 
 def test_task_lifecycle_contract_is_public_and_defaults_to_noop():
@@ -342,7 +367,7 @@ def test_runtime_api_version_matches_the_installed_contract_package():
     """Every additive contract slice bumps both gates together."""
     from importlib.metadata import version
 
-    assert API_VERSION == "0.2.1"
+    assert API_VERSION == "0.2.18"
     assert API_VERSION == version("deerflow-extension-api")
 
 
@@ -355,5 +380,16 @@ def test_extension_service_contract_is_public_and_defaults_to_noop():
     assert deps.app_store is None
     assert deps.session_factory is None
     assert deps.run_evidence_reader is None
+    assert deps.owner_data_reader is None
+    assert deps.owner_data_deleter is None
+    assert deps.owner_data_authorizer is None
     assert asyncio.run(ExtensionService.start(_Bare(), deps)) is None
     assert asyncio.run(ExtensionService.stop(_Bare())) is None
+
+
+def test_owner_data_authorizer_is_a_public_noop_protocol_contract():
+    class _Bare:
+        pass
+
+    scope = OwnerDataScope(target="threads:read", action="read")
+    assert asyncio.run(OwnerDataAuthorizer.authorize(_Bare(), user_id="u1", scopes=(scope,))) is None

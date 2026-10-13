@@ -8,6 +8,7 @@ import { buildLocalizedDocsPageMap } from "@/components/docs/docs-page-map";
 import { Footer } from "@/components/landing/footer";
 import { Header } from "@/components/landing/header";
 import { getLocaleByLang } from "@/core/i18n/locale";
+import { env } from "@/env";
 import "nextra-theme-docs/style.css";
 
 const i18n = [
@@ -24,6 +25,7 @@ export default async function DocLayout({ children, params }) {
   return (
     <DocsLanguageProvider lang={lang}>
       <Layout
+        docsRepositoryBase={env.FLOW_DESK_DOCS_REPOSITORY_BASE}
         navbar={
           <Header
             className="sticky max-w-full px-10"
@@ -32,7 +34,6 @@ export default async function DocLayout({ children, params }) {
           />
         }
         pageMap={pageMap}
-        docsRepositoryBase="https://github.com/bytedance/deer-flow/tree/main/frontend"
         footer={<Footer className="mt-0" />}
         i18n={i18n}
         // ... Your additional layout options

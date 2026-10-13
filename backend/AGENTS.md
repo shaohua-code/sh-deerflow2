@@ -2,20 +2,35 @@
 
 ## Project Overview
 
+For Central IAM model authorization, Gateway run context binds a server-owned
+principal, the effective route-permission snapshot, and ephemeral vault capability before Agent construction. The shared
+model factory checks the exact configured profile's `model:use` immediately
+before every provider dispatch, including auxiliary Agent models. DeerMem's
+separate background model path receives host callbacks from Gateway startup;
+Harness must never import `app.*`. Keep memory model authorization and storage
+write rechecks fail-closed, and see `docs/中央IAM边界.md` plus the model/memory
+module guides for details.
+
+## 中央 IAM 接入边界
+
+控制台汇总、模型额度、Skill/子智能体/MCP 和 IM 渠道的权限与数据范围细则见 [中央 IAM 边界](docs/中央IAM边界.md)。实现时先做 IAM 拒绝前置，再保持本地 owner 过滤；迁移不得自动授权。模型额度仍为显式 opt-in，缺少持久结算与真实 Provider 验收前不得启用。
 The backend runs a LangGraph-based super agent with sandbox execution, persistent memory, subagent delegation, and extensible tools in isolated per-thread environments.
 
 **Architecture**:
+
 - **Gateway API** (port 8001): REST API plus embedded LangGraph-compatible agent runtime
 - **Frontend** (port 3000): Next.js web interface
 - **Nginx** (port 2026): Unified reverse proxy entry point
 - **Provisioner** (port 8002, optional in Docker dev): Started only when sandbox is configured for provisioner/Kubernetes mode
 
 **Runtime**:
+
 - `make dev`, Docker dev, and production all run the agent runtime in Gateway via `RunManager` + `run_agent()` + `StreamBridge` (`packages/harness/deerflow/runtime/`). Nginx exposes that runtime at `/api/langgraph/*` and rewrites it to Gateway's native `/api/*` routers.
 - Gateway streams `write_file` and `str_replace` argument deltas in bounded batches for multi-mode `messages-tuple` consumers; single-mode message consumers retain the original per-chunk contract. Non-message frames flush pending batches, and `values` remains an optional complete-state snapshot rather than a prerequisite for batching.
 - With `stream_subgraphs`, subgraph frames keep their namespace in the SSE event name (`values|<ns>`, LangGraph Platform style) instead of impersonating root frames — a delegated subagent inherits the parent checkpoint namespace, so publishing its `values` snapshot as bare `values` replaces the whole thread view in SDK clients (#4399). Root-only consumers (file-tool chunk batcher, subagent event persistence, LLM error-fallback detection) ignore namespaced frames. The web frontend does not request subgraph streaming; subtask progress rides root-namespace `task_*` custom events.
 - Background subagent identity is deliberately split: the provider `tool_call_id` remains the correlation key for `ToolMessage`, `task_*` SSE events, persisted lifecycle events, frontend cards, and the public `ExtensionData.scope_id` contract (stored as `SubagentResult.external_task_id`), while `SubagentExecutor.execute_async()` generates a full server-side `execution_id` for `SubagentResult.task_id`, the process-wide registry, polling, cancellation, timeout handling, and cleanup. Provider IDs are not globally unique across parent runs, so they must never become registry ownership keys; scheduler closures retain their own `SubagentResult` rather than resolving ownership again through the mutable registry. Terminal subagent token usage travels in the current run's `ToolMessage.additional_kwargs` and is attributed from message state, never through a process-global provider-ID cache.
 - Scheduled tasks dispatch through the normal Gateway run path. `launch_scheduled_thread_run` reads `get_app_config()` at dispatch and passes `scheduler.recursion_limit` (default 1000, matching the web UI; clamped by `max_recursion_limit`), so YAML changes apply on the next run without restarting Gateway.
+- When the Central IAM Provider is active, every scheduled occurrence must be authorized twice: before durable admission and again after queue wait, immediately before claim/launch. `resolve_scheduled_task_authorization()` reloads the active local user, resolves a currently valid vault session by exact `(user_id, provider_id, issuer, subject)` identity, and re-evaluates route permissions plus self data scopes. The credential capability must remain ephemeral in `ScheduledTaskAuthorizationContext` / `RunContext`; never persist it in task rows, run metadata, checkpoints, or logs. Missing identity, revoked grant, or unavailable authorization fails closed, pauses the task, and cancels queued work. The synthetic session-shaped run request must preserve the authenticated owner's `user_id` even though it did not originate from an HTTP browser session.
 - Run-history `status` filters are occurrence states, not task states. `ScheduledTaskRunStatus` in `persistence/scheduled_tasks/model.py` is the shared API/repository vocabulary and must match the active and terminal occurrence-status sets. Keep owner lookup before reading history, and apply SQL task/status predicates before pagination; omitted status preserves the existing response.
 - The background scheduler is single-instance by default. `scheduler.multi_instance=true` opts into lease-aware recovery across Gateway instances and requires shared Postgres, `run_ownership.heartbeat_enabled=true`, and `run_events.backend=db`; otherwise startup rejects the configuration. Live scheduled runs are preserved when a peer starts; expired launch claims return to the durable queue, expired run leases are atomically taken over, stale launch writes are fenced by lease ownership, and the Postgres advisory-locked budget makes `max_concurrent_runs` a shared global cap for `launching`/`running` rows.
 - Long-running MCP work uses a separate durable task runtime (`McpTaskService` + `mcp_tasks`, lease-based recovery) rather than keeping remote task IDs or status polling inside the Agent loop; only submit remains Agent-visible, the database is the source of truth, and `ThreadState` receives only a bounded current-thread projection. Full contract (leases, cancellation fencing, delivery idempotency, management-tool exposure): [packages/harness/deerflow/mcp/AGENTS.md](packages/harness/deerflow/mcp/AGENTS.md).
@@ -25,6 +40,7 @@ The backend runs a LangGraph-based super agent with sandbox execution, persisten
 - `extensions_config.json` is written at runtime by the Gateway (`PUT`/`PATCH /api/mcp/config`, the MCP enable switch, skill updates), so the production compose mounts it read-write while `config.yaml` stays `:ro`; Helm copies its ConfigMap seed into a writable home-volume directory before Gateway starts. Every read-modify-write holds both `extensions_config_write_lock` and the sidecar advisory `extensions_config_file_lock`, because the process-local lock alone loses updates across workers. Docker mounts the compose file as its own mount point, and Linux refuses `rename()` over a mount point with `EBUSY` even when the mount is writable — so `atomic_write_extensions_config` keeps the temp-file-plus-rename path and falls back to an in-place overwrite only on `EBUSY`. That fallback is deliberately non-atomic (a crash mid-write truncates the file); it exists because the alternative is a write that can never succeed, and only its first occurrence per target is logged at warning level. Any other `errno` still propagates. Pinned by `tests/test_compose_extensions_config_writable.py`, `tests/test_extensions_config_atomic_write.py`, and `tests/test_helm_extensions_config_writable.py`.
 
 **Project Structure**:
+
 ```
 deer-flow/
 ├── Makefile                    # Root commands (check, install, dev, stop)
@@ -71,6 +87,7 @@ deer-flow/
 │   ├── scripts/benchmark/       # Standalone reproducible backend benchmarks
 │   ├── tests/                 # Test suite
 │   └── docs/                  # Documentation
+├── product/backend-extension/ # Self-owned Flow Desk Gateway routes; depends only on deerflow-extension-api
 ├── frontend/                   # Next.js frontend application
 └── skills/                     # Agent skills directory
     ├── public/                # Public skills (committed)
@@ -84,9 +101,23 @@ regression exercises the production extractor under a generous process deadline.
 ## Important Development Guidelines
 
 ### Documentation Update Policy
+
 Every code change must keep docs accurate and current: update `README.md` for
 user-facing behavior and the relevant `AGENTS.md` for development changes.
 `CLAUDE.md` imports `AGENTS.md`; do not edit the shim.
+
+Product-only HTTP routes and persistence belong in the top-level `product/`
+tree, outside `app/` and the Harness. Build Gateway additions through the
+public extension API, derive identity from its principal projection, and keep
+product tables on their own migration chain. Read
+`../docs/自有项目改造指南.md` and `../docs/上游补丁台账.md` before
+changing the product boundary.
+
+产品删除能力发现由 `product/backend-extension/` 的已认证
+`GET /api/product/v1/data-capabilities` 提供，并遵守运维数据任务开关。
+仅投影七项严格布尔范围，不执行宿主数据操作，也不暴露配置或失败原因；
+创建任务和 worker 仍保留最终能力、权限与 owner 检查。
+数据任务与文件目录的跨语言约定见 `../contracts/product/`。
 
 ### Backend Benchmarks
 
@@ -149,6 +180,7 @@ uv run pytest tests/test_bench_concurrency.py tests/test_bench_worker.py -q
 ## Commands
 
 **Root directory** (for full application):
+
 ```bash
 make check      # Check system requirements
 make install    # Install all dependencies (frontend + backend)
@@ -165,11 +197,14 @@ make stop       # Stop all services
 ```
 
 **Backend directory** (for backend development only):
+
 ```bash
 make install            # Install backend dependencies
 make dev                # Gateway API, reload (port 8001)
 make gateway            # Gateway API only (port 8001)
 make test               # offline tests (no live/blocking-io)
+make test-product-extension  # Flow Desk private Gateway extension API and migrations
+make test-product-extension-postgres  # gated smoke test; localhost/deerflow_test only
 make test-live          # live tests (real APIs)
 make test-blocking-io   # strict Blockbuster gate on tests/blocking_io/
 make test-shard SPLITS=4 GROUP=2  # one duration-aware shard
@@ -199,6 +234,7 @@ The backend is split into two layers with a strict dependency direction:
 **Dependency rule**: App imports deerflow, but deerflow never imports app. This boundary is enforced by `tests/test_harness_boundary.py` which runs in CI.
 
 **Import conventions**:
+
 ```python
 # Harness internal
 from deerflow.agents import make_lead_agent
@@ -234,7 +270,7 @@ float filters accept integer or real JSON numbers through `json_value_matches`.
 A server-produced run-context key must be gated on both client-writable feeds:
 `body.context` (whitelist-merged) and free-form `body.config` (copied verbatim).
 `merge_run_context_overrides` forwards it only when `internal=True`;
-`strip_internal_context_keys` scrubs it from the assembled `context` *and*
+`strip_internal_context_keys` scrubs it from the assembled `context` _and_
 `configurable`. Trust and destination are separate axes, so a new key needs both
 decisions — and `disable_clarification` is no milder than `non_interactive`.
 
@@ -278,17 +314,18 @@ Run `make dev` from the repo root to start all services at `http://localhost:202
 
 **All startup modes:**
 
-| | **Local Foreground** | **Local Daemon** | **Docker Dev** | **Docker Prod** |
-|---|---|---|---|---|
-| **Dev** | `./scripts/serve.sh --dev`<br/>`make dev` | `./scripts/serve.sh --dev --daemon`<br/>`make dev-daemon` | `./scripts/docker.sh start`<br/>`make docker-start` | — |
-| **Prod** | `./scripts/serve.sh --prod`<br/>`make start` | `./scripts/serve.sh --prod --daemon`<br/>`make start-daemon` | — | `./scripts/deploy.sh`<br/>`make up` |
+|          | **Local Foreground**                         | **Local Daemon**                                             | **Docker Dev**                                      | **Docker Prod**                     |
+| -------- | -------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------- | ----------------------------------- |
+| **Dev**  | `./scripts/serve.sh --dev`<br/>`make dev`    | `./scripts/serve.sh --dev --daemon`<br/>`make dev-daemon`    | `./scripts/docker.sh start`<br/>`make docker-start` | —                                   |
+| **Prod** | `./scripts/serve.sh --prod`<br/>`make start` | `./scripts/serve.sh --prod --daemon`<br/>`make start-daemon` | —                                                   | `./scripts/deploy.sh`<br/>`make up` |
 
-| Action | Local | Docker Dev | Docker Prod |
-|---|---|---|---|
-| **Stop** | `./scripts/serve.sh --stop`<br/>`make stop` | `./scripts/docker.sh stop`<br/>`make docker-stop` | `./scripts/deploy.sh down`<br/>`make down` |
-| **Restart** | `./scripts/serve.sh --restart [flags]` | `./scripts/docker.sh restart` | — |
+| Action      | Local                                       | Docker Dev                                        | Docker Prod                                |
+| ----------- | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------ |
+| **Stop**    | `./scripts/serve.sh --stop`<br/>`make stop` | `./scripts/docker.sh stop`<br/>`make docker-stop` | `./scripts/deploy.sh down`<br/>`make down` |
+| **Restart** | `./scripts/serve.sh --restart [flags]`      | `./scripts/docker.sh restart`                     | —                                          |
 
 **Nginx routing**:
+
 - `/api/langgraph/*` → Gateway embedded runtime (8001), rewritten to `/api/*`
 - `/api/*` (other) → Gateway API (8001)
 - `/` (non-API) → Frontend (3000)
@@ -303,11 +340,13 @@ make gateway
 ```
 
 Direct access (without nginx):
+
 - Gateway: `http://localhost:8001`
 
 ### Frontend Configuration
 
 The frontend uses environment variables to connect to backend services:
+
 - `NEXT_PUBLIC_LANGGRAPH_BASE_URL` - Defaults to `/api/langgraph` (through nginx)
 - `NEXT_PUBLIC_BACKEND_BASE_URL` - Defaults to empty string (through nginx)
 
@@ -332,6 +371,7 @@ Title fallback: result URL, then request URL.
 ### File Upload
 
 Outlines use ATX syntax (1–6 hashes, space/tab separator, ≤3 leading spaces), strip closing hashes and skip fenced code.
+
 - Endpoint: `POST /api/threads/{thread_id}/uploads`
 - Supports: PDF, PPT, Excel, Word documents (converted via `markitdown`)
 - Rejects directories before copying to keep uploads all-or-nothing
@@ -340,14 +380,17 @@ Outlines use ATX syntax (1–6 hashes, space/tab separator, ≤3 leading spaces)
 - Duplicate filenames within one request get `_N` suffixes to prevent overwrites.
 - Gateway HTTP uploads stage bytes as `.upload-*.part` files and atomically replace the destination only after size validation. These staging files are hidden from upload listings, agent upload context, and sandbox listing/search tools, and swept on Gateway startup if a hard crash leaves one behind.
 - Gateway HTTP upload/list/delete handlers offload filesystem work through `deerflow.utils.file_io.run_file_io`, a dedicated ContextVar-preserving file IO executor. Non-mounted sandbox uploads acquire sandboxes with `SandboxProvider.acquire_async()` and offload `read_bytes()` plus `sandbox.update_file()` together.
+- Upload and file-delete handlers must keep server-side exception details out of 5xx response bodies; the frontend relies on localized safe fallbacks. Preserve deliberate 4xx upload-limit and validation messages, and cover internal `HTTPException` plus unexpected-error paths in router tests.
 - Mounted uploads skip sandbox acquire/sync. AIO remote/provisioner requires accurate `sandbox.thread_data_mounts: true`; omission keeps backend auto-detection.
 - `UploadsMiddleware` caps outline titles at 200 characters and previews at 2000 including markers. Titles use `original_user_content`, not upload-prefixed content; attachment-only titles use a sanitized, bounded filename or count.
+- Project document shelves keep their display name in the database. On Windows, `projects/documents.py` uses a compact physical basename when the complete path exceeds 240 UTF-16 code units, retaining only converter-supported extensions; content MIME detection must use the display name. The resolver keeps reading existing `original/{name}` paths.
 
 See [docs/FILE_UPLOAD.md](docs/FILE_UPLOAD.md) for details.
 
 ### Plan Mode
 
 TodoList middleware for complex multi-step tasks:
+
 - Controlled via runtime config: `config.configurable.is_plan_mode = True`
 - Provides `write_todos` tool for task tracking
 - One task in_progress at a time, real-time updates
@@ -357,6 +400,7 @@ See [docs/plan_mode_usage.md](docs/plan_mode_usage.md) for details.
 ### Context Summarization
 
 Automatic conversation summarization when approaching token limits:
+
 - Configured in `config.yaml` under `summarization` key
 - Trigger types: tokens, messages, or fraction of max input
 - Keeps recent messages while summarizing older ones
@@ -373,6 +417,7 @@ See [docs/summarization.md](docs/summarization.md) for details.
 ### Vision Support
 
 For models with `supports_vision: true`:
+
 - `ViewImageMiddleware` processes images in conversation
 - `view_image_tool` added to agent's toolset
 - Images are converted to base64 and appended to the model request as a hidden message carrying both a reserved ID prefix and a server-owned metadata marker; Gateway strips that marker from untrusted input, and the middleware requires both identifiers to recognize its own message. The middleware injects inside `wrap_model_call`, so the payload never enters graph state: checkpoints retain only lightweight `viewed_images` metadata, while client-chosen IDs survive. It also sweeps its own message out of every request before rebuilding it, so a payload stranded in an older checkpoint by an interrupted run stops being resent
@@ -387,6 +432,7 @@ For models with `supports_vision: true`:
 ## Documentation
 
 See `docs/` directory for detailed documentation:
+
 - [CONFIGURATION.md](docs/CONFIGURATION.md) - Configuration options
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Architecture details
 - [API.md](docs/API.md) - API reference

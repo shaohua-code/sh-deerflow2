@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from app.gateway.auth_disabled import is_explicit_production_environment
 from app.gateway.github.dispatcher import fanout_event
 
 logger = logging.getLogger(__name__)
@@ -73,11 +74,14 @@ def _get_webhook_secret() -> str | None:
 
 
 def _unverified_webhooks_allowed() -> bool:
-    """Return True iff the explicit dev opt-in for unverified deliveries is set.
+    """Return True iff an explicit non-production opt-in is set.
 
     Truthy values: ``1``, ``true``, ``yes``, ``on`` (case-insensitive).
-    Anything else (including unset) is False.
+    Anything else (including unset) is False. Explicit production mode always
+    disables this escape hatch, even when the environment variable is present.
     """
+    if is_explicit_production_environment():
+        return False
     raw = os.environ.get(_ALLOW_UNVERIFIED_ENV_VAR, "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 

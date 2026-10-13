@@ -70,6 +70,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { fetch } from "@/core/api/fetcher";
 import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import { getBackendBaseURL } from "@/core/config";
 import {
   buildConversationReferenceMetadata,
@@ -142,6 +143,7 @@ import {
   findSuggestionTemplatePlaceholder,
   finishGoalRequest,
   filterSkillsForAgent,
+  getComposerOperationErrorMessage,
   getGoalObjectiveCounter,
   getInputSubmitAction,
   getLeadingSlashSkillQuery,
@@ -309,6 +311,8 @@ export function InputBox({
   onPrepareThread,
   onSubmit,
   onStop,
+  canUploadFiles = true,
+  canSubmit = true,
   canStopStreaming = true,
   agentSkillNames,
   agentSkillsLoading = false,
@@ -375,6 +379,10 @@ export function InputBox({
     options?: InputBoxSubmitOptions,
   ) => void | Promise<void>;
   onStop?: () => void;
+  /** Whether this user may create an Agent run for the current conversation. */
+  canSubmit?: boolean;
+  /** Whether this user may upload files to the current thread (`threads:write`). */
+  canUploadFiles?: boolean;
   /**
    * Whether the caller's role holds `runs:cancel` (RFC #4063 Phase 4).
    * Defaults to true so callers that don't resolve permissions (pre-Phase-4
@@ -389,6 +397,14 @@ export function InputBox({
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const { models } = useModels();
   const { user } = useAuth();
+  // Suggestions and upload limits read thread data, so share the same read grant.
+  const canReadThread = hasPermission(user, PERMISSIONS.THREADS_READ);
+  // The picker searches threads, while the Gateway read_conversation tool reads runs.
+  const canReadReferencedConversations =
+    canReadThread && hasPermission(user, PERMISSIONS.RUNS_READ);
+  // Input polish calls the model directly and follows runs:create, even when a
+  // first project-scoped send has an additional threads:write requirement.
+  const canCreateRuns = hasPermission(user, PERMISSIONS.RUNS_CREATE);
   const { thread, isMock } = useThread();
   const { attachments, textInput } = usePromptInputController();
   const setTextInput = textInput.setInput;
@@ -399,9 +415,29 @@ export function InputBox({
   const [conversationReferences, setConversationReferences] = useState<
     ConversationReference[]
   >([]);
-  useEffect(() => {
+  const [conversationReferencesScope, setConversationReferencesScope] =
+    useState({
+      threadId,
+      userId: user?.id,
+      canRead: canReadReferencedConversations,
+    });
+  // 引用只属于当前会话。按 React 的派生状态模式在渲染阶段切换作用域，
+  // 或权限撤回时同步清理，不等 effect 事后清理，避免旧引用随运行请求提交。
+  if (
+    conversationReferencesScope.threadId !== threadId ||
+    conversationReferencesScope.userId !== user?.id ||
+    conversationReferencesScope.canRead !== canReadReferencedConversations
+  ) {
+    setConversationReferencesScope({
+      threadId,
+      userId: user?.id,
+      canRead: canReadReferencedConversations,
+    });
     setConversationReferences([]);
-  }, [threadId]);
+  }
+  const activeConversationReferences = canReadReferencedConversations
+    ? conversationReferences
+    : [];
   const removeAttachment = attachments.remove;
   // Project documents attached from the shelf arrive already ingested
   // thread-side (spec §9): the composer shows them as completed attachments
@@ -409,9 +445,15 @@ export function InputBox({
   // attach success; the hook consumes the staged entry once per thread and
   // keeps it across a Strict-Mode effect replay.
   const [projectAttachments, setProjectAttachments] =
-    useStagedProjectAttachments(threadId);
-  const { skills, isLoading: skillsLoading } = useSkills();
-  const { data: uploadLimits } = useUploadLimits(threadId);
+    useStagedProjectAttachments(user?.id ?? "anonymous", threadId);
+  // 技能斜杠建议受 skills:read 控制；权限明确撤销时停止加载技能目录。
+  const { skills, isLoading: skillsLoading } = useSkills(
+    hasPermission(user, PERMISSIONS.SKILLS_READ),
+  );
+  // Upload limits are protected by threads:read; the upload itself uses threads:write.
+  const { data: uploadLimits } = useUploadLimits(threadId, {
+    enabled: canReadThread,
+  });
   const promptRootRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const inlineSkillTextRef = useRef<HTMLSpanElement | null>(null);
@@ -461,7 +503,6 @@ export function InputBox({
     rewrittenText: string;
   } | null>(null);
   const [textareaFocused, setTextareaFocused] = useState(false);
-  const [skillSuggestionIndex, setSkillSuggestionIndex] = useState(0);
   const [selectedSlashSkill, setSelectedSlashSkill] =
     useState<SlashSuggestion | null>(null);
   const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
@@ -469,6 +510,7 @@ export function InputBox({
     useState<string | null>(null);
   const lastGeneratedForAiIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(false);
+  const followupRequestRef = useRef<AbortController | null>(null);
   // Set when the user stops a streaming turn. Such a turn ends on a
   // half-finished response, so we must NOT generate follow-up suggestions for it.
   const stoppedByUserRef = useRef(false);
@@ -877,6 +919,13 @@ export function InputBox({
     return () => abortInputPolishRequest();
   }, [abortInputPolishRequest, threadId]);
 
+  // Polishing makes a model request; cancel it as soon as runs:create is revoked.
+  useEffect(() => {
+    if (!canCreateRuns) {
+      abortInputPolishRequest();
+    }
+  }, [abortInputPolishRequest, canCreateRuns]);
+
   useEffect(() => {
     const currentIndex = promptHistoryIndexRef.current;
     if (currentIndex !== null && currentIndex >= promptHistory.length) {
@@ -953,7 +1002,7 @@ export function InputBox({
             { method: "GET", signal },
           );
           if (!response.ok) {
-            throw new Error(await readGoalResponseError(response));
+            throw await readGoalResponseError(response);
           }
           goal =
             ((await response.json()) as { goal?: GoalState | null }).goal ??
@@ -984,7 +1033,7 @@ export function InputBox({
             { method: "DELETE", signal },
           );
           if (!response.ok) {
-            throw new Error(await readGoalResponseError(response));
+            throw await readGoalResponseError(response);
           }
           if (
             !isCurrentGoalRequest(
@@ -1010,7 +1059,7 @@ export function InputBox({
             },
           );
           if (!response.ok) {
-            throw new Error(await readGoalResponseError(response));
+            throw await readGoalResponseError(response);
           }
           goal =
             ((await response.json()) as { goal?: GoalState | null }).goal ??
@@ -1036,8 +1085,13 @@ export function InputBox({
         ) {
           return false;
         }
+        console.error("Failed to update the conversation goal:", error);
         toast.error(
-          error instanceof Error ? error.message : t.inputBox.goalFailed,
+          getComposerOperationErrorMessage(
+            error,
+            t.inputBox.goalFailed,
+            t.inputBox.goalConflict,
+          ),
         );
         return false;
       } finally {
@@ -1048,6 +1102,7 @@ export function InputBox({
       onGoalChange,
       t.inputBox.goalActive,
       t.inputBox.goalCleared,
+      t.inputBox.goalConflict,
       t.inputBox.goalFailed,
       t.inputBox.goalNone,
       t.inputBox.goalSet,
@@ -1101,8 +1156,13 @@ export function InputBox({
       ) {
         return;
       }
+      console.error("Failed to compact conversation context:", error);
       toast.error(
-        error instanceof Error ? error.message : t.inputBox.compactFailed,
+        getComposerOperationErrorMessage(
+          error,
+          t.inputBox.compactFailed,
+          t.inputBox.compactConflict,
+        ),
       );
     } finally {
       finishGoalRequest(compactRequestStateRef.current, request);
@@ -1111,6 +1171,7 @@ export function InputBox({
     context.agent_name,
     context.model_name,
     queryClient,
+    t.inputBox.compactConflict,
     t.inputBox.compactFailed,
     t.inputBox.compactSkipped,
     t.inputBox.compactSuccess,
@@ -1154,7 +1215,7 @@ export function InputBox({
       const quoteIds = quotes.map((quote) => quote.id);
       const quoteContexts = quotes.map((quote) => quote.context);
       pendingDraftSubmissionKeyRef.current = draftKey;
-      const referenceIds = conversationReferences.map(
+      const referenceIds = activeConversationReferences.map(
         (reference) => reference.threadId,
       );
       // Project-shelf attachments are already ingested thread-side (§9):
@@ -1172,7 +1233,7 @@ export function InputBox({
       const additionalKwargs = {
         ...(quotes.length ? buildReferenceMessageMetadata(quoteContexts) : {}),
         ...(referenceIds.length
-          ? buildConversationReferenceMetadata(conversationReferences)
+          ? buildConversationReferenceMetadata(activeConversationReferences)
           : {}),
         ...(stagedFiles.length > 0 ? { files: stagedFiles } : {}),
       };
@@ -1231,7 +1292,7 @@ export function InputBox({
     },
     [
       context,
-      conversationReferences,
+      activeConversationReferences,
       draftKey,
       invalidateDraftSaveTimer,
       onContextChange,
@@ -1271,13 +1332,18 @@ export function InputBox({
         toast.info(t.inputBox.pleaseWaitStreaming);
         return Promise.reject(new Error("streaming"));
       }
-      abortVoiceInput();
       const messageWithSlashSkill = selectedSlashSkill
         ? {
             ...message,
             text: `/${selectedSlashSkill.name} ${message.text}`,
           }
         : message;
+      if (!canUploadFiles && messageWithSlashSkill.files.length > 0) {
+        toast.error(t.inputBox.uploadPermissionRequired);
+        return Promise.reject(new Error("upload-permission-denied"));
+      }
+      // 文件权限可能在选择附件后被撤销；保留草稿并在上传前拦截。
+      abortVoiceInput();
       const submitAction = getInputSubmitAction({
         text: messageWithSlashSkill.text,
         // Staged project-shelf attachments count exactly like uploaded
@@ -1290,6 +1356,10 @@ export function InputBox({
         status,
       });
       if (submitAction.kind === "goal") {
+        if (submitAction.command.kind === "set" && !canSubmit) {
+          toast.error(t.inputBox.runPermissionRequired);
+          return Promise.reject(new Error("run-permission-denied"));
+        }
         if (
           submitAction.command.kind === "set" &&
           isGoalObjectiveTooLong(submitAction.command.objective)
@@ -1358,6 +1428,10 @@ export function InputBox({
       if (submitAction.kind === "empty") {
         return;
       }
+      if (!canSubmit) {
+        toast.error(t.inputBox.runPermissionRequired);
+        return Promise.reject(new Error("run-permission-denied"));
+      }
       await submitThreadMessage(messageWithSlashSkill);
       if (selectedSlashSkill) {
         setSelectedSlashSkill(null);
@@ -1365,6 +1439,8 @@ export function InputBox({
     },
     [
       abortVoiceInput,
+      canUploadFiles,
+      canSubmit,
       handleCompactCommand,
       handleGoalCommand,
       handleStopStreaming,
@@ -1375,6 +1451,8 @@ export function InputBox({
       submitThreadMessage,
       t.inputBox.goalTooLong,
       t.inputBox.pleaseWaitStreaming,
+      t.inputBox.runPermissionRequired,
+      t.inputBox.uploadPermissionRequired,
     ],
   );
 
@@ -1461,6 +1539,35 @@ export function InputBox({
     selectedSlashSkill,
     slashSkillQuery,
   ]);
+  const skillSuggestionSelectionKey = JSON.stringify([
+    slashSkillQuery,
+    skillSuggestions.length,
+  ]);
+  const [skillSuggestionSelection, setSkillSuggestionSelection] = useState({
+    key: skillSuggestionSelectionKey,
+    index: 0,
+  });
+  // 查询或候选数量改变时在提交渲染前重置高亮，避免 effect 产生一帧过期选择。
+  if (skillSuggestionSelection.key !== skillSuggestionSelectionKey) {
+    setSkillSuggestionSelection({ key: skillSuggestionSelectionKey, index: 0 });
+  }
+  const skillSuggestionIndex =
+    skillSuggestionSelection.key === skillSuggestionSelectionKey
+      ? skillSuggestionSelection.index
+      : 0;
+  const setSkillSuggestionIndex = useCallback(
+    (action: number | ((current: number) => number)) => {
+      setSkillSuggestionSelection((current) => {
+        const index =
+          current.key === skillSuggestionSelectionKey ? current.index : 0;
+        return {
+          key: skillSuggestionSelectionKey,
+          index: typeof action === "function" ? action(index) : action,
+        };
+      });
+    },
+    [skillSuggestionSelectionKey],
+  );
   // A selected skill does not close the catalog: `/` reopens it so a skill can
   // be found by browsing and swapped without first clearing the chip.
   const showSkillSuggestions =
@@ -1475,6 +1582,28 @@ export function InputBox({
   // A denied runs:cancel role sees a disabled stop affordance, not a removed
   // one — the composer must still show that a turn is in flight.
   const stopDenied = status === "streaming" && !canStopStreaming;
+  const permissionSubmitAction = getInputSubmitAction({
+    text: selectedSlashSkill
+      ? `/${selectedSlashSkill.name} ${textInput.value ?? ""}`
+      : (textInput.value ?? ""),
+    fileCount: attachments.files.length + projectAttachments.length,
+    status,
+  });
+  const submissionDenied =
+    !canSubmit &&
+    status !== "streaming" &&
+    (permissionSubmitAction.kind === "message" ||
+      (permissionSubmitAction.kind === "goal" &&
+        permissionSubmitAction.command.kind === "set"));
+  // 发送和停止按钮名称随当前语言及流式状态变化，避免沿用基础按钮的英文默认标签。
+  const submitButtonAriaLabel =
+    status === "streaming"
+      ? stopDenied
+        ? t.inputBox.stopStreamingUnavailable
+        : t.inputBox.stopStreaming
+      : status === "submitted"
+        ? t.inputBox.sendingMessage
+        : t.inputBox.sendMessage;
   const inputPolishUndoAvailable =
     !polishingInput &&
     inputPolishUndo !== null &&
@@ -1484,7 +1613,8 @@ export function InputBox({
     isMockThread ||
     polishingInput ||
     (!inputPolishUndoAvailable &&
-      (status === "streaming" ||
+      (!canCreateRuns ||
+        status === "streaming" ||
         slashSkillQuery !== null ||
         !canPolishInput(textInput.value ?? "")));
   const speechRecognitionConstructor = useMemo(
@@ -1675,10 +1805,6 @@ export function InputBox({
     return () => abortVoiceInput();
   }, [abortVoiceInput, threadId]);
 
-  useEffect(() => {
-    setSkillSuggestionIndex(0);
-  }, [slashSkillQuery, skillSuggestions.length]);
-
   const applySkillSuggestion = useCallback(
     (suggestion: SlashSuggestion) => {
       if (suggestion.kind === "skill") {
@@ -1748,6 +1874,7 @@ export function InputBox({
     },
     [
       applySkillSuggestion,
+      setSkillSuggestionIndex,
       showSkillSuggestions,
       skillSuggestionIndex,
       skillSuggestions,
@@ -1771,7 +1898,7 @@ export function InputBox({
   );
 
   const handlePolishInput = useCallback(async () => {
-    if (inputPolishDisabled) {
+    if (inputPolishDisabled || !canCreateRuns) {
       return;
     }
 
@@ -1826,8 +1953,9 @@ export function InputBox({
       if (isAbortError(error) || !isCurrentRequest) {
         return;
       }
+      console.error("Failed to polish the composer draft:", error);
       toast.error(
-        error instanceof Error ? error.message : t.inputBox.inputPolishFailed,
+        getComposerOperationErrorMessage(error, t.inputBox.inputPolishFailed),
       );
     } finally {
       if (
@@ -1839,6 +1967,7 @@ export function InputBox({
       }
     }
   }, [
+    canCreateRuns,
     inputPolishDisabled,
     locale,
     setPromptHistoryValue,
@@ -2029,6 +2158,10 @@ export function InputBox({
 
       if (pastedFiles.length > 0) {
         event.preventDefault();
+        if (!canUploadFiles) {
+          toast.error(t.inputBox.uploadPermissionRequired);
+          return;
+        }
         const { accepted, message } = splitUnsupportedUploadFiles(pastedFiles);
         if (message) {
           toast.error(message);
@@ -2049,7 +2182,12 @@ export function InputBox({
         updateInlineSkillTextInput(event.currentTarget);
       }
     },
-    [attachments, updateInlineSkillTextInput],
+    [
+      attachments,
+      canUploadFiles,
+      t.inputBox.uploadPermissionRequired,
+      updateInlineSkillTextInput,
+    ],
   );
 
   const handleInlineSkillKeyDown = useCallback(
@@ -2127,10 +2265,21 @@ export function InputBox({
   }, [thread.messages]);
 
   useEffect(() => {
+    // Route-level authorization is threads:read. Clear old chips and abort an
+    // in-flight request immediately when this account loses that read grant.
+    if (!canReadThread) {
+      wasStreamingRef.current = status === "streaming";
+      setFollowups([]);
+      setFollowupsHidden(true);
+      setFollowupsLoading(false);
+      return;
+    }
+
     const streaming = status === "streaming";
     const wasStreaming = wasStreamingRef.current;
     wasStreamingRef.current = streaming;
     if (!wasStreaming || streaming) {
+      setFollowupsLoading(false);
       return;
     }
 
@@ -2142,6 +2291,7 @@ export function InputBox({
     }
 
     if (disabled || isMock) {
+      setFollowupsLoading(false);
       return;
     }
 
@@ -2178,6 +2328,7 @@ export function InputBox({
     }
 
     const controller = new AbortController();
+    followupRequestRef.current = controller;
     setFollowupsHidden(false);
     setFollowupsLoading(true);
     setFollowups([]);
@@ -2199,6 +2350,12 @@ export function InputBox({
         return (await res.json()) as { suggestions?: string[] };
       })
       .then((data) => {
+        if (
+          controller.signal.aborted ||
+          followupRequestRef.current !== controller
+        ) {
+          return;
+        }
         const suggestions = (data.suggestions ?? [])
           .map((s) => (typeof s === "string" ? s.trim() : ""))
           .filter((s) => s.length > 0)
@@ -2206,14 +2363,25 @@ export function InputBox({
         setFollowups(suggestions);
       })
       .catch(() => {
-        setFollowups([]);
+        if (followupRequestRef.current === controller) {
+          setFollowups([]);
+        }
       })
       .finally(() => {
-        setFollowupsLoading(false);
+        if (followupRequestRef.current === controller) {
+          followupRequestRef.current = null;
+          setFollowupsLoading(false);
+        }
       });
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (followupRequestRef.current === controller) {
+        followupRequestRef.current = null;
+      }
+    };
   }, [
+    canReadThread,
     context.model_name,
     disabled,
     isMock,
@@ -2330,6 +2498,7 @@ export function InputBox({
           className,
         )}
         disabled={composerLocked}
+        fileUploadsEnabled={canUploadFiles}
         globalDrop
         multiple
         onSubmit={handleSubmit}
@@ -2381,7 +2550,7 @@ export function InputBox({
               </button>
             </div>
           ))}
-          {conversationReferences.map((reference) => (
+          {activeConversationReferences.map((reference) => (
             <ConversationReferenceChip
               key={reference.threadId}
               onRemove={() =>
@@ -2485,19 +2654,29 @@ export function InputBox({
             />
           )}
         </div>
+        {!canUploadFiles && (
+          <p role="status" className="text-muted-foreground px-3 pt-2 text-xs">
+            {t.inputBox.uploadPermissionRequired}
+          </p>
+        )}
         <PromptInputFooter className="flex flex-wrap gap-2 sm:flex-nowrap">
           <PromptInputTools className="min-w-0 flex-1 flex-wrap">
             <AddAttachmentsButton
               className="px-2!"
-              disabled={composerLocked}
+              disabled={composerLocked || !canUploadFiles}
+              permissionHint={
+                canUploadFiles ? undefined : t.inputBox.uploadPermissionRequired
+              }
               uploadLimits={uploadLimits}
             />
             <ReferenceConversationsButton
               className="px-2!"
               currentThreadId={threadId}
+              canReadReferences={canReadReferencedConversations}
+              cacheScope={user?.id}
               disabled={composerLocked}
               onChange={setConversationReferences}
-              references={conversationReferences}
+              references={activeConversationReferences}
             />
             <VoiceInputButton
               disabled={composerLocked}
@@ -2511,7 +2690,9 @@ export function InputBox({
                   ? t.inputBox.inputPolishing
                   : inputPolishUndoAvailable
                     ? t.inputBox.inputPolishUndo
-                    : t.inputBox.inputPolish
+                    : !canCreateRuns
+                      ? t.inputBox.runPermissionRequired
+                      : t.inputBox.inputPolish
               }
             >
               <PromptInputButton
@@ -2523,6 +2704,11 @@ export function InputBox({
                 className="px-2!"
                 data-testid="polish-input-button"
                 disabled={inputPolishDisabled}
+                title={
+                  !canCreateRuns && !inputPolishUndoAvailable
+                    ? t.inputBox.runPermissionRequired
+                    : undefined
+                }
                 onClick={
                   inputPolishUndoAvailable
                     ? handleUndoInputPolish
@@ -2877,21 +3063,22 @@ export function InputBox({
             </ModelPicker>
             <PromptInputSubmit
               className="rounded-full"
-              disabled={composerLocked || stopDenied}
+              disabled={composerLocked || stopDenied || submissionDenied}
               variant="outline"
               status={status}
+              aria-label={submitButtonAriaLabel}
               // A bare disabled stop square reads as a broken composer;
               // explain the permission boundary (native title, since a
               // Radix tooltip won't fire on a disabled button). Spread
-              // conditionally: an explicitly-undefined aria-label would
-              // clobber PromptInputSubmit's default aria-label="Submit"
-              // and strip the submit control's accessible name.
+              // only the permission hint conditionally so other states keep
+              // the localized action name above.
               {...(stopDenied
                 ? {
-                    "aria-label": t.inputBox.stopStreamingUnavailable,
                     title: t.inputBox.stopStreamingUnavailable,
                   }
-                : {})}
+                : submissionDenied
+                  ? { title: t.inputBox.runPermissionRequired }
+                  : {})}
               onClick={(e) => {
                 if (status === "streaming") {
                   e.preventDefault();
@@ -3057,21 +3244,25 @@ function SuggestionList({
 function AddAttachmentsButton({
   className,
   disabled,
+  permissionHint,
   uploadLimits,
 }: {
   className?: string;
   disabled?: boolean;
+  permissionHint?: string;
   uploadLimits?: UploadLimits;
 }) {
   const { t } = useI18n();
   const attachments = usePromptInputAttachments();
-  const tooltipContent = uploadLimits
-    ? t.uploads.limitsHint(
-        uploadLimits.max_files,
-        formatUploadSize(uploadLimits.max_file_size),
-        formatUploadSize(uploadLimits.max_total_size),
-      )
-    : t.inputBox.addAttachments;
+  const tooltipContent =
+    permissionHint ??
+    (uploadLimits
+      ? t.uploads.limitsHint(
+          uploadLimits.max_files,
+          formatUploadSize(uploadLimits.max_file_size),
+          formatUploadSize(uploadLimits.max_total_size),
+        )
+      : t.inputBox.addAttachments);
   return (
     <Tooltip content={<span className="block max-w-80">{tooltipContent}</span>}>
       <PromptInputButton
@@ -3079,6 +3270,7 @@ function AddAttachmentsButton({
         className={cn("px-2!", className)}
         data-testid="add-attachments-button"
         disabled={disabled}
+        title={permissionHint}
         onClick={() => attachments.openFileDialog()}
       >
         <PaperclipIcon className="size-3" />

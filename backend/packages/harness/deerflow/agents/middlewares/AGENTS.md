@@ -92,7 +92,7 @@ Model authorization uses `authz.py::resolve_model_authorization()` (same cached-
 
 Sandbox authorization (`sandbox:execute`) gates every sandbox acquisition before `provider.acquire` — including this middleware's eager path (`before_agent` / `abefore_agent` skip acquisition on deny instead of raising, deferring to the lazy per-tool gate). See the [sandbox module guide](../../sandbox/AGENTS.md) authorization-gate paragraph and `tests/test_sandbox_authorization.py`.
 
-Before changing a later authorization phase, read the [authorization RFC](../../../../../../docs/plans/2026-07-10-pluggable-authorization-rfc.md) and its [implementation notes](../../../../../../docs/plans/2026-07-10-pluggable-authorization-implementation-notes.md). The notes are the cumulative handoff record for merged PR behavior, reviewer feedback, trust-boundary decisions, deferred scope, and required regression coverage.
+Before changing a later authorization phase, read the [authorization RFC](../../../../../../docs/plans/身份与授权设计记录.md#source-1) and its [implementation notes](../../../../../../docs/plans/身份与授权设计记录.md#source-2). The notes are the cumulative handoff record for merged PR behavior, reviewer feedback, trust-boundary decisions, deferred scope, and required regression coverage.
 
 **Lead-only middlewares** (`build_middlewares`, appended after the base):
 

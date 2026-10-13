@@ -8,6 +8,7 @@ from typing import Any, Literal, NamedTuple, NoReturn
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from app.gateway.authz import require_permission
 from app.gateway.deps import require_admin_user
 from deerflow.config.extensions_config import (
     ExtensionsConfig,
@@ -1113,6 +1114,7 @@ def _merge_preserving_secrets(
     summary="Get MCP Configuration",
     description="Retrieve the current Model Context Protocol (MCP) server configurations.",
 )
+@require_permission("mcp", "admin")
 async def get_mcp_configuration(request: Request) -> McpConfigResponse:
     """Get the current MCP configuration.
 
@@ -1420,6 +1422,7 @@ def _apply_mcp_server_delete(server_name: str) -> dict:
     summary="Reset MCP Tools Cache",
     description=("Reset cached MCP tools and pooled sessions process-wide so tools are reloaded on next use. This affects all threads and users in the current Gateway process."),
 )
+@require_permission("mcp", "admin")
 async def reset_mcp_tools_cache_endpoint(request: Request) -> McpCacheResetResponse:
     """Reset cached MCP tools and persistent sessions process-wide.
 
@@ -1441,6 +1444,7 @@ async def reset_mcp_tools_cache_endpoint(request: Request) -> McpCacheResetRespo
     summary="Update MCP Configuration",
     description="Update Model Context Protocol (MCP) server configurations and save to file.",
 )
+@require_permission("mcp", "admin")
 async def update_mcp_configuration(request: Request, body: McpConfigUpdateRequest) -> McpConfigResponse:
     """Update the MCP configuration.
 
@@ -1501,6 +1505,7 @@ async def update_mcp_configuration(request: Request, body: McpConfigUpdateReques
     summary="Add MCP Servers",
     description="Add one or more MCP servers without replacing existing configurations.",
 )
+@require_permission("mcp", "admin")
 async def create_mcp_servers(request: Request, body: McpConfigUpdateRequest) -> McpConfigResponse:
     """Add servers atomically and reject names that already exist."""
     try:
@@ -1524,6 +1529,7 @@ async def create_mcp_servers(request: Request, body: McpConfigUpdateRequest) -> 
     summary="Update MCP Server",
     description="Replace one MCP server without replacing sibling configurations.",
 )
+@require_permission("mcp", "admin")
 async def update_mcp_server(request: Request, body: McpServerConfigUpdateRequest) -> McpConfigResponse:
     """Update one existing server and reload the MCP tool cache."""
     try:
@@ -1550,6 +1556,7 @@ async def update_mcp_server(request: Request, body: McpServerConfigUpdateRequest
     summary="Delete MCP Server",
     description="Delete one MCP server without replacing sibling configurations.",
 )
+@require_permission("mcp", "admin")
 async def delete_mcp_server(request: Request, server_name: str) -> McpConfigResponse:
     """Delete one existing server and reload the MCP tool cache."""
     try:
@@ -1572,6 +1579,7 @@ async def delete_mcp_server(request: Request, server_name: str) -> McpConfigResp
     summary="Update MCP Server State",
     description="Enable or disable one MCP server without replacing the full extensions configuration.",
 )
+@require_permission("mcp", "admin")
 async def update_mcp_server_state(request: Request, body: McpServerStateUpdateRequest) -> McpConfigResponse:
     """Enable or disable one MCP server and reload the MCP tool cache."""
     try:

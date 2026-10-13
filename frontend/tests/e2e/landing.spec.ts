@@ -7,14 +7,18 @@ test.describe("Landing page", () => {
     await page.goto("/");
 
     await expect(
-      page.locator("header").first().getByText("DeerFlow", { exact: true }),
+      page.getByRole("link", { name: "Flow Desk", exact: true }),
     ).toBeVisible();
     await expect(page.locator("h1")).toHaveCount(1);
-    await expect(page.locator("h1")).toContainText("DeerFlow");
+    await expect(page.locator("h1")).toContainText(
+      "Good work starts with a clear next step.",
+    );
 
-    // "Get Started" call-to-action button in hero
+    // 主 CTA 使用 Flow Desk 的产品文案。
     await expect(
-      page.getByRole("link", { name: /get started/i }),
+      page
+        .getByRole("link", { name: "Open your workspace", exact: true })
+        .last(),
     ).toBeVisible();
   });
 
@@ -30,16 +34,40 @@ test.describe("Landing page", () => {
     });
   }
 
-  test("Get Started link navigates to workspace", async ({ page }) => {
+  test("keeps the product name visible in the compact mobile header", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/");
+
+    const header = page.locator("header");
+    await expect(
+      header.getByRole("link", { name: "Flow Desk", exact: true }),
+    ).toBeVisible();
+    await expect(
+      header.getByRole("link", {
+        name: "Open your workspace",
+        exact: true,
+      }),
+    ).toBeHidden();
+    await expect(
+      page
+        .getByRole("link", { name: "Open your workspace", exact: true })
+        .last(),
+    ).toBeVisible();
+  });
+
+  test("Open your workspace link navigates to workspace", async ({ page }) => {
     mockLangGraphAPI(page);
 
     await page.goto("/");
 
-    const getStarted = page.getByRole("link", { name: /get started/i });
-    await getStarted.click();
+    await page
+      .getByRole("link", { name: "Open your workspace", exact: true })
+      .last()
+      .click();
 
-    // Should redirect to /workspace/chats/new
-    await page.waitForURL("**/workspace/chats/new");
-    await expect(page).toHaveURL(/\/workspace\/chats\/new/);
+    await page.waitForURL("**/workspace");
+    await expect(page).toHaveURL(/\/workspace$/);
   });
 });

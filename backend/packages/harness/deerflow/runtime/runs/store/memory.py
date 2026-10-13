@@ -215,6 +215,27 @@ class MemoryRunStore(RunStore):
         if run is not None:
             self._unindex_run(run_id, run["thread_id"])
 
+    async def delete_by_thread(self, thread_id: str, *, user_id: str | None = None) -> int:
+        """Purge this thread's run history while preserving operation leases."""
+        run_ids = list(self._runs_by_thread.get(thread_id, {}))
+        run_rows = [self._runs[run_id] for run_id in run_ids if run_id in self._runs and self._runs[run_id].get("operation_kind", "run") == "run"]
+
+        if user_id is not None:
+            conflicting_owners = {row.get("user_id") for row in run_rows if row.get("user_id") is not None and row.get("user_id") != user_id}
+            if conflicting_owners:
+                raise RuntimeError("Cannot delete thread run history with a conflicting owner")
+
+        deleted = 0
+        for row in run_rows:
+            row_user_id = row.get("user_id")
+            if user_id is not None and row_user_id not in (None, user_id):
+                continue
+            run_id = row["run_id"]
+            self._runs.pop(run_id, None)
+            self._unindex_run(run_id, thread_id)
+            deleted += 1
+        return deleted
+
     async def update_run_completion(self, run_id, *, status, **kwargs):
         run = self._runs.get(run_id)
         if run is None:

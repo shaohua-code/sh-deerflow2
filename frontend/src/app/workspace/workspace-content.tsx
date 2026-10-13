@@ -1,7 +1,6 @@
 import { cookies } from "next/headers";
 import { Toaster } from "sonner";
 
-import { QueryClientProvider } from "@/components/query-client-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { CommandPalette } from "@/components/workspace/command-palette";
 import { GatewayOfflineBanner } from "@/components/workspace/gateway-offline-banner";
@@ -10,6 +9,9 @@ import { SettingsDialogHost } from "@/components/workspace/settings";
 import { WorkspaceSettingsDeepLink } from "@/components/workspace/workspace-settings-deep-link";
 import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
 import { UserPreferencesBoundary } from "@/core/settings/user-preferences-boundary";
+import { ProductDocumentTitle } from "@/product/document-title";
+import { WorkspaceDensityBoundary } from "@/product/workspace-density-boundary";
+import { WorkspaceQueryBoundary } from "@/product/workspace-query-boundary";
 
 function parseSidebarOpenCookie(
   value: string | undefined,
@@ -32,21 +34,27 @@ export async function WorkspaceContent({
   );
 
   return (
-    <QueryClientProvider>
-      <UserPreferencesBoundary>
-        <SidebarProvider className="h-screen" defaultOpen={initialSidebarOpen}>
-          <WorkspaceSidebar />
-          <SidebarInset className="min-w-0">
-            <GatewayOfflineBanner gatewayUnavailable={gatewayUnavailable} />
-            <ModelLoadErrorBanner gatewayUnavailable={gatewayUnavailable} />
-            {children}
-          </SidebarInset>
-        </SidebarProvider>
-        <CommandPalette />
-        <SettingsDialogHost />
-        <WorkspaceSettingsDeepLink />
-        <Toaster position="top-center" />
-      </UserPreferencesBoundary>
-    </QueryClientProvider>
+    <WorkspaceQueryBoundary>
+      <ProductDocumentTitle />
+      <WorkspaceDensityBoundary>
+        <UserPreferencesBoundary>
+          <SidebarProvider
+            className="h-screen"
+            defaultOpen={initialSidebarOpen}
+          >
+            <WorkspaceSidebar />
+            <SidebarInset className="min-w-0">
+              <GatewayOfflineBanner gatewayUnavailable={gatewayUnavailable} />
+              <ModelLoadErrorBanner gatewayUnavailable={gatewayUnavailable} />
+              {children}
+            </SidebarInset>
+          </SidebarProvider>
+          <CommandPalette />
+          <SettingsDialogHost />
+          <WorkspaceSettingsDeepLink />
+          <Toaster position="top-center" />
+        </UserPreferencesBoundary>
+      </WorkspaceDensityBoundary>
+    </WorkspaceQueryBoundary>
   );
 }

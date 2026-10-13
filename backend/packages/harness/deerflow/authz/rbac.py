@@ -5,7 +5,7 @@ structures at construction time. Deny always wins over allow. Unknown or
 missing roles raise ``ValueError`` (not a silent allow) so that the execution
 layer's ``fail_closed`` can make the final decision.
 
-See ``docs/plans/2026-07-15-authz-phase1a-implementation-plan.md`` §3.3 for
+See ``docs/plans/身份与授权设计记录.md`` §3.3 for
 the full semantic table.
 """
 

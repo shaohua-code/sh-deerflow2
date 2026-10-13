@@ -30,6 +30,7 @@ class User(BaseModel):
     # Auth lifecycle
     needs_setup: bool = Field(default=False, description="True when a reset account must complete setup")
     token_version: int = Field(default=0, description="Incremented on password change to invalidate old JWTs")
+    is_active: bool = Field(default=True, description="Disabled accounts cannot start authenticated work")
 
 
 class UserResponse(BaseModel):

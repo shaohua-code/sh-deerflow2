@@ -4,6 +4,7 @@ import asyncio
 import logging
 import socket
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -38,6 +39,7 @@ class ScheduledTaskService:
         queue_timeout_seconds: int = 3600,
         multi_instance: bool = False,
         run_lease_grace_seconds: int = 10,
+        authorize_dispatch: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self._task_repo = task_repo
         self._task_run_repo = task_run_repo
@@ -48,6 +50,7 @@ class ScheduledTaskService:
         self._queue_timeout_seconds = queue_timeout_seconds
         self._multi_instance = multi_instance
         self._run_lease_grace_seconds = run_lease_grace_seconds
+        self._authorize_dispatch = authorize_dispatch
         self._lease_owner = f"{socket.gethostname()}:{uuid.uuid4().hex}"
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -159,6 +162,34 @@ class ScheduledTaskService:
                 await self._release_admission_lease(task, trigger=trigger)
             return self._existing_active_result(active, execution_thread_id, trigger=trigger)
 
+        authorization_context = None
+        if self._authorize_dispatch is not None:
+            try:
+                authorization_context = await self._authorize_dispatch(task)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else "Scheduled task authorization was denied"
+                await self._pause_unauthorized_task(task, now=now, error=detail)
+                return {
+                    "outcome": "denied",
+                    "status_code": exc.status_code,
+                    "task_run_id": None,
+                    "run_id": None,
+                    "thread_id": execution_thread_id,
+                    "error": detail,
+                }
+            except Exception:
+                logger.exception("Scheduled task authorization failed for task %s", task.get("id"))
+                detail = "Scheduled task authorization is unavailable"
+                await self._pause_unauthorized_task(task, now=now, error=detail)
+                return {
+                    "outcome": "denied",
+                    "status_code": 503,
+                    "task_run_id": None,
+                    "run_id": None,
+                    "thread_id": execution_thread_id,
+                    "error": detail,
+                }
+
         task_run_id = f"task-run-{uuid.uuid4().hex}"
         try:
             await self._task_run_repo.create(
@@ -208,7 +239,29 @@ class ScheduledTaskService:
             "thread_id": execution_thread_id,
             "trigger": trigger,
         }
-        return await self._attempt_queued_run(task, queued, now=now)
+        return await self._attempt_queued_run(
+            task,
+            queued,
+            now=now,
+            authorization_context=authorization_context,
+        )
+
+    async def _pause_unauthorized_task(self, task: dict[str, Any], *, now: datetime, error: str) -> None:
+        """Stop future launches when the owner's live authorization is gone."""
+        task_id = task.get("id")
+        user_id = task.get("user_id")
+        if not isinstance(task_id, str) or not isinstance(user_id, str):
+            return
+        try:
+            await self._task_repo.pause_with_queue_cancellation(
+                task_id,
+                user_id=user_id,
+                error=f"scheduled task paused because authorization was denied: {error}",
+                now=now,
+                allow_executing=False,
+            )
+        except Exception:
+            logger.exception("Unable to pause scheduled task %s after authorization denial", task_id)
 
     async def _release_admission_lease(self, task: dict[str, Any], *, trigger: str) -> None:
         status = "enabled" if trigger == "scheduled" else (task.get("status") or "enabled")
@@ -224,6 +277,7 @@ class ScheduledTaskService:
         queued: dict[str, Any],
         *,
         now: datetime,
+        authorization_context: Any | None = None,
     ) -> dict[str, Any]:
         """Turn one queued occurrence into a live run under its own trace scope.
 
@@ -234,7 +288,12 @@ class ScheduledTaskService:
         the launched run stays correlated with the call that asked for it.
         """
         with ensure_trace_context():
-            return await self._launch_queued_occurrence(task, queued, now=now)
+            return await self._launch_queued_occurrence(
+                task,
+                queued,
+                now=now,
+                authorization_context=authorization_context,
+            )
 
     async def _launch_queued_occurrence(
         self,
@@ -242,10 +301,37 @@ class ScheduledTaskService:
         queued: dict[str, Any],
         *,
         now: datetime,
+        authorization_context: Any | None = None,
     ) -> dict[str, Any]:
         task_run_id = queued["id"]
         execution_thread_id = queued["thread_id"]
         trigger = queued["trigger"]
+        if authorization_context is None and self._authorize_dispatch is not None:
+            try:
+                authorization_context = await self._authorize_dispatch(task)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else "Scheduled task authorization was denied"
+                await self._pause_unauthorized_task(task, now=now, error=detail)
+                return {
+                    "outcome": "denied",
+                    "status_code": exc.status_code,
+                    "task_run_id": task_run_id,
+                    "run_id": None,
+                    "thread_id": execution_thread_id,
+                    "error": detail,
+                }
+            except Exception:
+                logger.exception("Queued scheduled task authorization failed for task %s", task.get("id"))
+                detail = "Scheduled task authorization is unavailable"
+                await self._pause_unauthorized_task(task, now=now, error=detail)
+                return {
+                    "outcome": "denied",
+                    "status_code": 503,
+                    "task_run_id": task_run_id,
+                    "run_id": None,
+                    "thread_id": execution_thread_id,
+                    "error": detail,
+                }
         claimed = await self._task_run_repo.claim_queued_run(
             task_run_id,
             lease_owner=self._lease_owner,
@@ -263,16 +349,21 @@ class ScheduledTaskService:
         launched_thread_id: str | None = None
         launch_succeeded = False
         try:
-            result = await self._launch_run(
-                thread_id=execution_thread_id,
-                assistant_id=task.get("assistant_id"),
-                prompt=task["prompt"],
-                owner_user_id=task.get("user_id"),
-                metadata={
+            launch_arguments: dict[str, Any] = {
+                "thread_id": execution_thread_id,
+                "assistant_id": task.get("assistant_id"),
+                "prompt": task["prompt"],
+                "owner_user_id": task.get("user_id"),
+                "metadata": {
                     "scheduled_task_id": task["id"],
                     "scheduled_task_run_id": task_run_id,
                     "scheduled_trigger": trigger,
                 },
+            }
+            if authorization_context is not None:
+                launch_arguments["authorization_context"] = authorization_context
+            result = await self._launch_run(
+                **launch_arguments,
             )
             launch_succeeded = True
             launched_run_id = result["run_id"]

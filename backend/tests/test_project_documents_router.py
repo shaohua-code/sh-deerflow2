@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import anyio
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -30,6 +30,8 @@ _STUB_PERMISSIONS: list[str] = [
     Permissions.PROJECTS_READ,
     Permissions.PROJECTS_WRITE,
     Permissions.PROJECTS_DELETE,
+    Permissions.THREADS_READ,
+    Permissions.THREADS_WRITE,
 ]
 
 _USER_HEADER = "x-test-user"
@@ -92,6 +94,111 @@ def _create_project(client: TestClient, name: str = "P", **kwargs) -> dict:
 
 def _upload(client: TestClient, project_id: str, name: str, data: bytes, **kwargs) -> Any:
     return client.post(f"/api/projects/{project_id}/documents", files={"file": (name, data)}, **kwargs)
+
+
+def _deny_scope_at(monkeypatch, module, denied_index: int):
+    original = module.require_iam_data_scope_for_request
+    observed: list[tuple[str, str, str | None]] = []
+
+    async def check(_request, _user, *, target, action="read", resource_id=None):
+        observed.append((target, action, resource_id))
+        if len(observed) - 1 == denied_index:
+            raise HTTPException(status_code=403, detail="test scope denial")
+
+    monkeypatch.setattr(module, "require_iam_data_scope_for_request", check)
+    return observed, original
+
+
+def _seed_thread(app: FastAPI, thread_id: str, *, user_id: str = "user-a") -> dict:
+    async def _run() -> dict:
+        token = set_current_user(SimpleNamespace(id=user_id))
+        try:
+            return await app.state.thread_store.create(thread_id)
+        finally:
+            reset_current_user(token)
+
+    return anyio.run(_run)
+
+
+@pytest.mark.parametrize("denied_index", [0, 1])
+def test_upload_requires_write_and_response_read_scope_before_staging(tmp_path, monkeypatch, denied_index):
+    app = _build_app(tmp_path)
+    with TestClient(app) as client:
+        project_id = _create_project(client)["id"]
+        observed, original = _deny_scope_at(monkeypatch, project_documents, denied_index)
+
+        async def unexpected_stage(*_args, **_kwargs):
+            pytest.fail("upload staging must not run after an IAM scope denial")
+
+        monkeypatch.setattr(project_documents, "stage_document_bytes", unexpected_stage)
+        response = _upload(client, project_id, "scope.txt", b"must not persist")
+        assert response.status_code == 403
+        assert (
+            observed
+            == [
+                ("projects:write", "write", project_id),
+                ("projects:read", "read", project_id),
+            ][: denied_index + 1]
+        )
+
+        monkeypatch.setattr(project_documents, "require_iam_data_scope_for_request", original)
+        assert client.get(f"/api/projects/{project_id}/documents").json()["documents"] == []
+
+
+@pytest.mark.parametrize("denied_index", [0, 1, 2])
+def test_promote_thread_file_requires_project_and_thread_scopes_first(tmp_path, monkeypatch, denied_index):
+    app = _build_app(tmp_path)
+    with TestClient(app) as client:
+        project_id = _create_project(client)["id"]
+        body = {"thread_id": "thread-a", "kind": "upload", "name": "source.txt"}
+        observed, original = _deny_scope_at(monkeypatch, project_documents, denied_index)
+        response = client.post(f"/api/projects/{project_id}/documents/from-thread", json=body)
+        assert response.status_code == 403
+        assert (
+            observed
+            == [
+                ("projects:write", "write", project_id),
+                ("projects:read", "read", project_id),
+                ("threads:read", "read", "thread-a"),
+            ][: denied_index + 1]
+        )
+
+        monkeypatch.setattr(project_documents, "require_iam_data_scope_for_request", original)
+        assert client.get(f"/api/projects/{project_id}/documents").json()["documents"] == []
+
+
+def test_attach_requires_project_read_scope_before_copy(tmp_path, monkeypatch):
+    app = _build_app(tmp_path)
+    with TestClient(app) as client:
+        project_id = _create_project(client)["id"]
+        document = _upload(client, project_id, "source.txt", b"shelf content").json()["document"]
+        _seed_thread(app, "thread-a")
+        observed, original = _deny_scope_at(monkeypatch, project_documents, 0)
+
+        def unexpected_copy(*_args, **_kwargs):
+            pytest.fail("document copy must not be staged after an IAM scope denial")
+
+        monkeypatch.setattr(project_documents, "stage_document_copy_for_attach", unexpected_copy)
+        response = client.post(f"/api/projects/{project_id}/documents/{document['id']}/attach-to-thread/thread-a")
+        assert response.status_code == 403
+        assert observed == [("projects:read", "read", project_id)]
+        monkeypatch.setattr(project_documents, "require_iam_data_scope_for_request", original)
+
+
+def test_delete_document_requires_delete_scope_before_trashing(tmp_path, monkeypatch):
+    app = _build_app(tmp_path)
+    with TestClient(app) as client:
+        project_id = _create_project(client)["id"]
+        document = _upload(client, project_id, "keep.txt", b"still active").json()["document"]
+        observed, original = _deny_scope_at(monkeypatch, project_documents, 0)
+
+        response = client.delete(f"/api/projects/{project_id}/documents/{document['id']}")
+        assert response.status_code == 403
+        assert observed == [("projects:delete", "delete", project_id)]
+
+        monkeypatch.setattr(project_documents, "require_iam_data_scope_for_request", original)
+        listed = client.get(f"/api/projects/{project_id}/documents").json()["documents"]
+        assert [row["id"] for row in listed] == [document["id"]]
 
 
 class TestRoundTrip:
@@ -217,6 +324,10 @@ class TestUploadValidation:
             ok = _upload(client, pid, name_255, b"x")
             assert ok.status_code == 201
             assert ok.json()["document"]["name"] == name_255
+            document_id = ok.json()["document"]["id"]
+            content = client.get(f"/api/projects/{pid}/documents/{document_id}/content", params={"download": "true"})
+            assert content.status_code == 200
+            assert content.content == b"x"
 
             name_256 = "a" * 253 + "项"
             assert len(name_256.encode("utf-8")) == 256

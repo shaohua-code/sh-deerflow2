@@ -16,6 +16,7 @@ from app.channels.runtime_config_store import (
     apply_runtime_connection_config,
     merge_runtime_channel_configs,
 )
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import require_admin_user
 from deerflow.config.channel_connections_config import ChannelConnectionsConfig
 from deerflow.persistence.channel_connections import ChannelConnectionRepository
@@ -23,6 +24,12 @@ from deerflow.persistence.engine import get_session_factory
 
 router = APIRouter(prefix="/api/channels", tags=["channel-connections"])
 logger = logging.getLogger(__name__)
+
+
+async def _require_channel_data_scope(request: Request, *, target: str, action: str = "read") -> None:
+    """Check the verified user self-scope before reading or changing a channel binding."""
+    await require_iam_data_scope_for_request(request, None, target=target, action=action)
+
 
 _STATE_TTL_SECONDS = 600
 _MAX_PENDING_CONNECT_CODES_PER_PROVIDER = 5
@@ -512,7 +519,9 @@ async def _sync_runtime_channel_after_removal(provider: str, channels_config: di
 
 
 @router.get("/providers", response_model=ChannelProvidersResponse)
+@require_permission("channels", "read")
 async def get_channel_providers(request: Request) -> ChannelProvidersResponse:
+    await _require_channel_data_scope(request, target="channels:read")
     config = await _get_channel_connections_config(request)
     channels_config = await _get_channels_config(request)
     repo = None
@@ -542,7 +551,9 @@ async def get_channel_providers(request: Request) -> ChannelProvidersResponse:
 
 
 @router.get("/connections", response_model=ChannelConnectionsResponse)
+@require_permission("channels", "read")
 async def get_channel_connections(request: Request) -> ChannelConnectionsResponse:
+    await _require_channel_data_scope(request, target="channels:read")
     config = await _get_channel_connections_config(request)
     if not config.enabled:
         return ChannelConnectionsResponse(connections=[])
@@ -552,7 +563,9 @@ async def get_channel_connections(request: Request) -> ChannelConnectionsRespons
 
 
 @router.delete("/connections/{connection_id}", status_code=204)
+@require_permission("channels", "write")
 async def disconnect_channel_connection(connection_id: str, request: Request) -> Response:
+    await _require_channel_data_scope(request, target="channels:write", action="write")
     config = await _get_channel_connections_config(request)
     if not config.enabled:
         raise HTTPException(status_code=400, detail="Channel connections are disabled")
@@ -568,6 +581,7 @@ async def disconnect_channel_connection(connection_id: str, request: Request) ->
 
 
 @router.delete("/{provider}/runtime-config", response_model=ChannelProviderResponse)
+@require_permission("channels", "admin")
 async def disconnect_channel_provider_runtime(provider: str, request: Request) -> ChannelProviderResponse:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     config = await _get_channel_connections_config(request)
@@ -615,7 +629,9 @@ async def disconnect_channel_provider_runtime(provider: str, request: Request) -
 
 
 @router.post("/{provider}/connect", response_model=ChannelConnectResponse)
+@require_permission("channels", "write")
 async def connect_channel_provider(provider: str, request: Request) -> ChannelConnectResponse:
+    await _require_channel_data_scope(request, target="channels:write", action="write")
     config = await _get_channel_connections_config(request)
     channels_config = await _get_channels_config(request)
     if not config.enabled:
@@ -650,6 +666,7 @@ async def connect_channel_provider(provider: str, request: Request) -> ChannelCo
 
 
 @router.post("/{provider}/runtime-config", response_model=ChannelProviderResponse)
+@require_permission("channels", "admin")
 async def configure_channel_provider_runtime(
     provider: str,
     body: ChannelRuntimeConfigRequest,

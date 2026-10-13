@@ -11,6 +11,10 @@ const batchState = rs.hoisted(() => ({
   itemPages: [] as Array<Array<Record<string, unknown>>>,
   fetchNextPage: rs.fn(),
   hasNextPage: false,
+  error: undefined as Error | undefined,
+  isError: false,
+  itemError: undefined as Error | undefined,
+  itemsIsError: false,
 }));
 
 rs.mock("@/core/features", () => ({
@@ -78,7 +82,8 @@ rs.mock("@/core/subagent-batches", () => ({
   useSubagentBatchItems: () => ({
     data: { pages: batchState.itemPages },
     isLoading: false,
-    isError: false,
+    isError: batchState.itemsIsError,
+    error: batchState.itemError,
     hasNextPage: batchState.hasNextPage,
     isFetchingNextPage: false,
     fetchNextPage: batchState.fetchNextPage,
@@ -86,7 +91,8 @@ rs.mock("@/core/subagent-batches", () => ({
   useSubagentBatches: () => ({
     data: batchState.batches,
     isLoading: false,
-    isError: false,
+    isError: batchState.isError,
+    error: batchState.error,
   }),
 }));
 
@@ -124,6 +130,10 @@ afterEach(() => {
   batchState.itemPages = [];
   batchState.fetchNextPage.mockReset();
   batchState.hasNextPage = false;
+  batchState.error = undefined;
+  batchState.isError = false;
+  batchState.itemError = undefined;
+  batchState.itemsIsError = false;
 });
 
 describe("ThreadSubagentBatches capability gating", () => {
@@ -176,5 +186,29 @@ describe("ThreadSubagentBatches capability gating", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
 
     expect(batchState.fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a safe message when the batch list query fails", async () => {
+    batchState.isError = true;
+    batchState.error = new Error("private database connection string");
+    render(<ThreadSubagentBatches threadId="thread-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Batches" }));
+
+    expect(await screen.findByText("Load failed")).toBeDefined();
+    expect(screen.queryByText("private database connection string")).toBeNull();
+  });
+
+  it("does not show raw API details when loading batch items fails", async () => {
+    batchState.batches = [HISTORICAL_BATCH];
+    batchState.itemsIsError = true;
+    batchState.itemError = new Error("private batch storage detail");
+    render(<ThreadSubagentBatches threadId="thread-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Batches" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View items" }));
+
+    expect(await screen.findByText("Items failed")).toBeDefined();
+    expect(screen.queryByText("private batch storage detail")).toBeNull();
   });
 });

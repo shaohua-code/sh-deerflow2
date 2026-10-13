@@ -37,7 +37,7 @@ class LocalAuthProvider(AuthProvider):
             return None
 
         user = await self._repo.get_user_by_email(email)
-        if user is None:
+        if user is None or not user.is_active:
             return None
 
         if user.password_hash is None:
@@ -94,6 +94,14 @@ class LocalAuthProvider(AuthProvider):
     async def count_admin_users(self) -> int:
         """Return number of admin users."""
         return await self._repo.count_admin_users()
+
+    async def list_users(self, *, limit: int, offset: int) -> list[User]:
+        """Forward a bounded account page to the persistence adapter."""
+        return await self._repo.list_users(limit=limit, offset=offset)
+
+    async def set_user_active(self, user_id: str, is_active: bool) -> User | None:
+        """Change login eligibility through the repository's atomic path."""
+        return await self._repo.set_user_active(user_id, is_active)
 
     async def update_user(self, user: User) -> User:
         """Update an existing user."""

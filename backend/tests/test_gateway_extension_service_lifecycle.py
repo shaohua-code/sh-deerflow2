@@ -116,8 +116,8 @@ async def test_later_startup_failure_stops_same_snapshot_and_appends_diagnostics
 
     _patch_runtime_resources(monkeypatch, events)
     monkeypatch.setattr(
-        "deerflow.persistence.thread_meta.make_thread_store",
-        lambda _sf, _store: (_ for _ in ()).throw(RuntimeError("thread store failed")),
+        "deerflow.persistence.iam_model_usage_outbox.build_iam_model_usage_outbox_service",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("outbox setup failed")),
     )
 
     app = FastAPI()
@@ -125,7 +125,7 @@ async def test_later_startup_failure_stops_same_snapshot_and_appends_diagnostics
     live_diagnostics = initialize_runtime_diagnostics([])
     app.state.extension_diagnostics = live_diagnostics
 
-    with pytest.raises(RuntimeError, match="thread store failed"):
+    with pytest.raises(RuntimeError, match="outbox setup failed"):
         async with langgraph_runtime(
             app,
             SimpleNamespace(database=_database_config()),
@@ -146,6 +146,37 @@ async def test_later_startup_failure_stops_same_snapshot_and_appends_diagnostics
         "bad-start:install",
         "bad-stop:install",
     ]
+
+
+@pytest.mark.asyncio
+async def test_required_service_start_failure_stops_attempted_service_and_engine(monkeypatch):
+    from app.gateway.deps import langgraph_runtime
+    from deerflow.extensions.loader import ExtensionLoadError
+
+    events: list[str] = []
+
+    class _RequiredService:
+        async def start(self, _deps) -> None:
+            events.append("start:required")
+            raise RuntimeError("product storage unavailable")
+
+        async def stop(self) -> None:
+            events.append("stop:required")
+
+    registry = ExtensionRegistry()
+    with registry.attributed_to("required-product:install"):
+        registry.service(_RequiredService())
+
+    _patch_runtime_resources(monkeypatch, events)
+    app = FastAPI()
+    app.state.extensions = registry.build()
+    app.state.required_extension_sources = frozenset({"required-product:install"})
+
+    with pytest.raises(ExtensionLoadError, match="required-product:install"):
+        async with langgraph_runtime(app, SimpleNamespace(database=_database_config())):
+            pytest.fail("required service failure must stop startup")
+
+    assert events == ["start:required", "stop:required", "engine_close"]
 
 
 @pytest.mark.asyncio

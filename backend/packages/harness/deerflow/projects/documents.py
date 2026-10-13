@@ -12,10 +12,12 @@ loop via :func:`deerflow.utils.file_io.run_file_io`.
 Files are immutable and hash-qualified: ``stored_relpath`` (relative to
 ``users/{user_id}/projects/``) embeds the content hash and the row's own
 document ID, so rows never share bytes and a re-upload after trash lands in a
-fresh namespace (§6.2). Conversion is lazy: a convertible original is turned
-into ``derived/converted.md`` on first read, written through a temporary file
-and an atomic rename, and only when ``uploads.auto_convert_documents`` is on
-(§6.4, §7.3).
+fresh namespace (§6.2). The display name is separate from the physical name;
+Windows uses a compact physical name when the original full path would exceed
+the conservative path budget. Conversion is lazy: a convertible original is
+turned into a Markdown companion on first read, written through a temporary
+file and an atomic rename, and only when ``uploads.auto_convert_documents`` is
+on (§6.4, §7.3).
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_FILENAME_BYTES = 255
+_WINDOWS_PATH_SOFT_LIMIT = 240
 
 
 class ShelfUploadTooLargeError(Exception):
@@ -75,6 +78,17 @@ def shelf_relpath(project_id: str, sha256: str, document_id: str) -> str:
     return f"{project_id}/documents/{sha256[:2]}/{sha256}/{document_id}"
 
 
+def _windows_path_units(path: Path) -> int:
+    """Count UTF-16 code units, the unit Windows uses for MAX_PATH checks."""
+    return len(str(path).encode("utf-16-le")) // 2
+
+
+def _compact_original_filename(name: str) -> str:
+    """Keep only a converter-required suffix in a Windows-safe disk name."""
+    suffix = Path(name).suffix.lower()
+    return f"o{suffix}" if suffix in CONVERTIBLE_EXTENSIONS else "o"
+
+
 def original_file_path(paths: Paths, *, user_id: str, row: dict) -> Path:
     """Absolute host path of a row's immutable original bytes."""
     return resolve_document_paths(paths, user_id=user_id, relpath=row["stored_relpath"], name=row["name"])[0]
@@ -94,7 +108,15 @@ def resolve_document_paths(paths: Paths, *, user_id: str, relpath: str, name: st
     is also used from worker contexts already off the loop.
     """
     namespace = paths.project_document_path(user_id, relpath)
-    return namespace / "original" / name, namespace / "derived" / "converted.md"
+    legacy_original = namespace / "original" / name
+    # Keep the historical layout whenever it already exists. For a new
+    # upload, shorten only the physical filename when Windows' conservative
+    # path budget would be exceeded; API responses continue to use `name`.
+    # A short converter suffix is retained so the existing conversion engine
+    # still selects the correct parser from the source path.
+    if os.name == "nt" and _windows_path_units(legacy_original) > _WINDOWS_PATH_SOFT_LIMIT and not legacy_original.is_file():
+        return namespace / _compact_original_filename(name), namespace / "d.md"
+    return legacy_original, namespace / "derived" / "converted.md"
 
 
 def _content_intact(paths: Paths, *, user_id: str, row: dict) -> bool:

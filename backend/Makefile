@@ -22,6 +22,17 @@ gateway:
 test:
 	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run pytest -m "not live" --ignore=tests/blocking_io tests/ -v
 
+# Flow Desk has its own extension API and Alembic chain; test it in the locked
+# host environment without adding product code to DeerFlow's backend package.
+test-product-extension:
+	PYTHONPATH=.:../product/backend-extension PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run --locked pytest -p no:cacheprovider ../product/backend-extension/tests/ -v
+
+# This destructive-capable check is gated twice: an explicit opt-in and a
+# test-only loopback database URL validated by the test itself.
+test-product-extension-postgres:
+	@if [ "$${FLOWDESK_TEST_POSTGRES:-}" != "1" ]; then echo "Set FLOWDESK_TEST_POSTGRES=1 and TEST_POSTGRES_URI to localhost/deerflow_test."; exit 2; fi
+	PYTHONPATH=.:../product/backend-extension PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run --locked --extra postgres pytest -p no:cacheprovider ../product/backend-extension/tests/test_postgres_migrations.py -v
+
 test-live:
 	DEER_FLOW_RUN_LIVE_TESTS=1 PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run pytest -m live tests/ -v -s
 

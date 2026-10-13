@@ -56,6 +56,12 @@ def _url(tmp_path: Path, name: str = "test.db") -> str:
     return f"sqlite+aiosqlite:///{(tmp_path / name).as_posix()}"
 
 
+def _create_baseline_tables_sync(connection) -> None:
+    """Create the historical Alembic baseline, excluding later revisions."""
+    tables = [Base.metadata.tables[name] for name in _BASELINE_TABLE_NAMES]
+    Base.metadata.create_all(connection, tables=tables)
+
+
 async def _table_names(engine) -> set[str]:
     async with engine.connect() as conn:
         return await conn.run_sync(lambda c: set(sa.inspect(c).get_table_names()))
@@ -92,9 +98,9 @@ async def _alembic_version(engine) -> str | None:
 
 
 async def _seed_legacy_without_column(engine) -> None:
-    """Build the pre-#3658 schema: create_all, then drop the new column."""
+    """Build a baseline-era schema, then drop the post-baseline column."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_create_baseline_tables_sync)
     async with engine.begin() as conn:
         # SQLite supports DROP COLUMN from 3.35.0; the test runner pins recent
         # Python which bundles a 3.40+ sqlite, so this is safe.
@@ -103,7 +109,7 @@ async def _seed_legacy_without_column(engine) -> None:
 
 async def _seed_legacy_with_column(engine) -> None:
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_create_baseline_tables_sync)
 
 
 async def _seed_legacy_missing_channel_tables(engine) -> None:
@@ -111,12 +117,12 @@ async def _seed_legacy_missing_channel_tables(engine) -> None:
 
     Models the worst-case legacy DB the bootstrap layer has to repair -- a
     user who upgraded across multiple releases and never had the channel_*
-    tables provisioned in the first place. We achieve it by running the full
-    ``create_all`` and then dropping the channel_* tables in FK-dependency
+    tables provisioned in the first place. We achieve it by creating only the
+    baseline tables and then dropping the channel_* tables in FK-dependency
     order (credentials/conversations reference channel_connections).
     """
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_create_baseline_tables_sync)
     async with engine.begin() as conn:
         for table in (
             "channel_credentials",
@@ -655,11 +661,9 @@ async def test_legacy_backfill_creates_missing_index_on_existing_table(tmp_path:
     engine = create_async_engine(_url(tmp_path))
     try:
         # Simulate a legacy DB where ``channel_connections`` was provisioned
-        # before the ``uq_channel_connection_active_identity`` partial unique
-        # index was added to the model -- create everything, then drop just
-        # that index.
+        # at the baseline shape before the active-identity index existed.
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_create_baseline_tables_sync)
         async with engine.begin() as conn:
             await conn.execute(sa.text("DROP INDEX IF EXISTS uq_channel_connection_active_identity"))
 
@@ -684,7 +688,7 @@ async def test_legacy_backfill_idempotent_when_index_already_exists(tmp_path: Pa
     engine = create_async_engine(_url(tmp_path))
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_create_baseline_tables_sync)
 
         indexes_before = await _channel_connections_index_names(engine)
         assert "uq_channel_connection_active_identity" in indexes_before

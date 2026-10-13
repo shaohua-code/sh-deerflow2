@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from app.gateway.action_audit import notify_action_audit
 from app.gateway.authz import require_permission, try_acquire_sandbox_for_request
 from app.gateway.deps import get_config
 from app.gateway.upload_ingestion import ThreadUploadIngestionService, UnsafeFilenameError, UnsafeUploadDestinationError
@@ -31,6 +32,7 @@ from deerflow.uploads.manager import (
     get_uploads_dir,
     list_files_in_dir,
     normalize_filename,
+    output_artifact_url,
     upload_artifact_url,
     upload_virtual_path,
     validate_path_traversal,
@@ -114,6 +116,28 @@ class UploadLimits(BaseModel):
     max_files: int
     max_file_size: int
     max_total_size: int
+
+
+# 这些常量只用于对外 HTTP 提示；详细异常保留在 Gateway 服务端诊断中。
+_UPLOAD_INTERNAL_ERROR_DETAIL = "File upload failed due to an internal error."
+_UPLOAD_DELETE_INTERNAL_ERROR_DETAIL = "File deletion failed due to an internal error."
+
+
+class ThreadOutputFileInfo(BaseModel):
+    """Metadata for one regular file in the owner's generated-output folder."""
+
+    filename: str
+    size: int
+    modified: float
+    artifact_url: str
+
+
+class ThreadOutputFileListResponse(BaseModel):
+    """A bounded output listing; clients must surface rather than hide truncation."""
+
+    files: list[ThreadOutputFileInfo]
+    count: int
+    truncated: bool
 
 
 def _make_file_sandbox_writable(file_path: os.PathLike[str] | str) -> None:
@@ -409,10 +433,19 @@ async def upload_files(
             except Exception as e:
                 logger.error(f"Failed to upload {file.filename}: {e}")
                 await service.cleanup_written()
-                raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}: {str(e)}")
+                raise HTTPException(status_code=500, detail=_UPLOAD_INTERNAL_ERROR_DETAIL) from e
             uploaded_files.append(file_info)
 
         await service.finalize()
+
+        if uploaded_files:
+            # 只记录线程 ID 和固定动作码，不把文件名或内容写入管理审计。
+            await notify_action_audit(
+                request,
+                action="upload.create",
+                resource_type="thread_upload",
+                resource_id=str(thread_id),
+            )
 
         message = f"Successfully uploaded {len(uploaded_files)} file(s)"
         if skipped_files:
@@ -424,6 +457,15 @@ async def upload_files(
             message=message,
             skipped_files=skipped_files,
         )
+    except HTTPException as e:
+        # ingestion service 也可能用 HTTPException 携带内部信息；保留可操作的 4xx，
+        # 对 5xx 只返回通用提示，避免把宿主路径或存储详情传给浏览器。
+        if e.status_code >= 500:
+            raise HTTPException(status_code=e.status_code, detail=_UPLOAD_INTERNAL_ERROR_DETAIL) from e
+        raise
+    except Exception as e:
+        logger.exception("Failed to process file upload for thread %s", thread_id)
+        raise HTTPException(status_code=500, detail=_UPLOAD_INTERNAL_ERROR_DETAIL) from e
     finally:
         await service.aclose()
 
@@ -451,12 +493,52 @@ async def list_uploaded_files(thread_id: ThreadId, request: Request) -> UploadLi
     return UploadListResponse(**result)
 
 
+def _list_thread_output_files(thread_id: str, user_id: str, limit: int) -> dict:
+    """Read only the current owner's output directory and cap the API payload."""
+    outputs_dir = get_paths().sandbox_outputs_dir(thread_id, user_id=user_id)
+    listing = list_files_in_dir(outputs_dir)
+    files = listing["files"]
+    return {
+        "files": [
+            {
+                "filename": item["filename"],
+                "size": item["size"],
+                "modified": item["modified"],
+                "artifact_url": output_artifact_url(thread_id, item["filename"]),
+            }
+            for item in files[:limit]
+        ],
+        "count": listing["count"],
+        "truncated": listing["count"] > limit,
+    }
+
+
+@router.get("/outputs", response_model=ThreadOutputFileListResponse)
+@require_permission("threads", "read", owner_check=True)
+async def list_thread_output_files(
+    thread_id: ThreadId,
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=200),
+) -> ThreadOutputFileListResponse:
+    """List generated files for this owned thread without exposing host paths."""
+    try:
+        result = await run_file_io(
+            _list_thread_output_files,
+            thread_id,
+            get_effective_user_id(),
+            limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid thread file location") from exc
+    return ThreadOutputFileListResponse(**result)
+
+
 @router.delete("/{filename}")
 @require_permission("threads", "delete", owner_check=True, require_existing=True)
 async def delete_uploaded_file(thread_id: ThreadId, filename: str, request: Request) -> dict:
     """Delete a file from a thread's uploads directory."""
     try:
-        return await run_file_io(_delete_uploaded_file_for_thread, thread_id, filename, get_effective_user_id())
+        result = await run_file_io(_delete_uploaded_file_for_thread, thread_id, filename, get_effective_user_id())
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     except PathTraversalError:
@@ -465,4 +547,12 @@ async def delete_uploaded_file(thread_id: ThreadId, filename: str, request: Requ
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete {filename}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=_UPLOAD_DELETE_INTERNAL_ERROR_DETAIL) from e
+    # 只记录线程级资源 ID，避免把用户自定义文件名写进管理员审计记录。
+    await notify_action_audit(
+        request,
+        action="upload.delete",
+        resource_type="thread_upload",
+        resource_id=str(thread_id),
+    )
+    return result

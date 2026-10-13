@@ -1,9 +1,9 @@
 "use client";
 
 import CodeMirror from "@uiw/react-codemirror";
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
+import { useTheme } from "@/components/theme-provider";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 

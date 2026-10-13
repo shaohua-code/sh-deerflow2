@@ -14,8 +14,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from app.gateway.authz import (
+    require_iam_data_scope_for_request,
+    require_permission,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assistants", tags=["assistants-compat"])
@@ -86,14 +91,21 @@ def _list_assistants() -> list[AssistantResponse]:
     return assistants
 
 
+async def _require_assistant_read_scope(request: Request) -> None:
+    """Enforce the same IAM read scope as the canonical custom Agent API."""
+    await require_iam_data_scope_for_request(request, None, target="agents:read")
+
+
 @router.post("/search", response_model=list[AssistantResponse])
-async def search_assistants(body: AssistantSearchRequest | None = None) -> list[AssistantResponse]:
+@require_permission("agents", "read")
+async def search_assistants(request: Request, body: AssistantSearchRequest | None = None) -> list[AssistantResponse]:
     """Search assistants.
 
     Returns all registered assistants (lead_agent + custom agents from config).
     """
     # _list_assistants reads custom agents through the sync agent store (file IO
     # or a DB round trip), so keep it off the event loop.
+    await _require_assistant_read_scope(request)
     assistants = await asyncio.to_thread(_list_assistants)
 
     if body and body.graph_id:
@@ -107,8 +119,10 @@ async def search_assistants(body: AssistantSearchRequest | None = None) -> list[
 
 
 @router.get("/{assistant_id}", response_model=AssistantResponse)
-async def get_assistant_compat(assistant_id: str) -> AssistantResponse:
+@require_permission("agents", "read")
+async def get_assistant_compat(assistant_id: str, request: Request) -> AssistantResponse:
     """Get an assistant by ID."""
+    await _require_assistant_read_scope(request)
     for a in await asyncio.to_thread(_list_assistants):
         if a.assistant_id == assistant_id:
             return a
@@ -116,12 +130,14 @@ async def get_assistant_compat(assistant_id: str) -> AssistantResponse:
 
 
 @router.get("/{assistant_id}/graph")
-async def get_assistant_graph(assistant_id: str) -> dict:
+@require_permission("agents", "read")
+async def get_assistant_graph(assistant_id: str, request: Request) -> dict:
     """Get the graph structure for an assistant.
 
     Returns a minimal graph description. Full graph introspection is
     not supported in the Gateway — this stub satisfies SDK validation.
     """
+    await _require_assistant_read_scope(request)
     found = any(a.assistant_id == assistant_id for a in await asyncio.to_thread(_list_assistants))
     if not found:
         raise HTTPException(status_code=404, detail=f"Assistant {assistant_id} not found")
@@ -134,11 +150,13 @@ async def get_assistant_graph(assistant_id: str) -> dict:
 
 
 @router.get("/{assistant_id}/schemas")
-async def get_assistant_schemas(assistant_id: str) -> dict:
+@require_permission("agents", "read")
+async def get_assistant_schemas(assistant_id: str, request: Request) -> dict:
     """Get JSON schemas for an assistant's input/output/state.
 
     Returns empty schemas — full introspection not supported in Gateway.
     """
+    await _require_assistant_read_scope(request)
     found = any(a.assistant_id == assistant_id for a in await asyncio.to_thread(_list_assistants))
     if not found:
         raise HTTPException(status_code=404, detail=f"Assistant {assistant_id} not found")

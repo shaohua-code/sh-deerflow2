@@ -5,9 +5,10 @@ create response and persisted only as a SHA-256 digest. Validation is a
 digest-indexed lookup plus a constant-time re-comparison, with a single
 generic failure surface so a 401 never reveals which check failed.
 
-v1 scopes are exactly the route-permission strings owned by
-``app.gateway.authz`` — a PAT can only narrow its owning user's
-permissions, never widen them.
+v1 scopes are a curated subset of the route-permission strings owned by
+`app.gateway.authz`. A new Gateway permission never becomes a PAT scope
+automatically; route/method admission, the owner's grant, and local owner
+checks all remain required.
 """
 
 from __future__ import annotations
@@ -36,6 +37,13 @@ PAT_ALLOWED_SCOPES: frozenset[str] = frozenset(
         "projects:read",
         "projects:write",
         "projects:delete",
+        "agents:read",
+        "agents:write",
+        "agents:delete",
+        "memory:read",
+        "memory:write",
+        "memory:delete",
+        "memory:admin",
     }
 )
 
@@ -44,11 +52,12 @@ PAT_MAX_NAME_LENGTH = 128
 # Default-deny route boundary for PAT callers (#5041 review P1-1): scope
 # intersection in AuthMiddleware only constrains routes that consult
 # ``request.state.auth.permissions`` (``@require_permission``). Authenticated
-# mutation routes without that decorator — memory deletion, agent creation,
+# mutation routes without that decorator — agent creation,
 # credential switching, channel configuration — would otherwise accept a
 # PAT holding a single read scope. A route is reachable by PAT only when it
-# is explicitly listed here, and only together with the thread/run lifecycle
-# the v1 scopes govern; everything else answers 403 regardless of scopes.
+# is explicitly listed here, and only together with the thread/run/project/
+# memory scopes the v1 policy governs; everything else answers 403 regardless
+# of scopes.
 _PAT_ROUTE_RULES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"POST"}), re.compile(r"^/api/threads$")),
     (frozenset({"POST"}), re.compile(r"^/api/threads/search$")),
@@ -89,6 +98,12 @@ _PAT_ROUTE_RULES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"GET"}), re.compile(r"^/api/trash/documents$")),
     (frozenset({"POST"}), re.compile(r"^/api/trash/documents/[^/]+/(restore|purge)$")),
     (frozenset({"POST"}), re.compile(r"^/api/trash/purge$")),
+    # Personal custom-Agent definitions are explicit PAT routes. The global
+    # /api/user-profile endpoint stays excluded because it mutates deployment
+    # state shared by all agents and requires agents:admin.
+    (frozenset({"GET", "POST"}), re.compile(r"^/api/agents$")),
+    (frozenset({"GET"}), re.compile(r"^/api/agents/check$")),
+    (frozenset({"GET", "PUT", "DELETE"}), re.compile(r"^/api/agents/[^/]+$")),
     # Runs subtree: enumerated per implemented subroute instead of a
     # ``runs(/.*)?`` wildcard, so a route added under /runs is default-denied
     # until explicitly listed — the same no-dead-methods precision the
@@ -114,6 +129,14 @@ _PAT_ROUTE_RULES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"GET", "POST"}), re.compile(r"^/api/threads/[^/]+/runs/[^/]+/stream$")),
     (frozenset({"POST"}), re.compile(r"^/api/runs/(stream|wait)$")),
     (frozenset({"GET"}), re.compile(r"^/api/runs/[^/]+/(messages|feedback)$")),
+    # Personal memory endpoints have their own route permissions. Keep each
+    # method explicit; configuration details require the administrative scope.
+    (frozenset({"GET"}), re.compile(r"^/api/memory(/export|/status)?$")),
+    (frozenset({"POST"}), re.compile(r"^/api/memory/reload$")),
+    (frozenset({"DELETE"}), re.compile(r"^/api/memory$")),
+    (frozenset({"POST"}), re.compile(r"^/api/memory/(facts|import)$")),
+    (frozenset({"PATCH", "DELETE"}), re.compile(r"^/api/memory/facts/[^/]+$")),
+    (frozenset({"GET"}), re.compile(r"^/api/memory/config$")),
 )
 
 _BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -213,7 +236,7 @@ async def authenticate_pat(app: Any, authorization: str | None) -> tuple[Any, fr
     from app.gateway.deps import get_local_provider
 
     user = await get_local_provider().get_user(str(record["user_id"]))
-    if user is None:
+    if user is None or not user.is_active:
         # The owning user was deleted or became unresolvable; the token is
         # dead even though its row survives (deleting a user revokes their
         # PATs, without needing a FK cascade).

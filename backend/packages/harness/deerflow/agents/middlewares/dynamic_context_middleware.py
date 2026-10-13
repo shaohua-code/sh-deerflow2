@@ -401,6 +401,7 @@ class DynamicContextMiddleware(AgentMiddleware):
                 self._agent_name,
                 app_config=self._app_config,
                 user_id=resolve_runtime_user_id(runtime),
+                runtime_context=getattr(runtime, "context", None),
             )
             if injection_enabled
             else ""

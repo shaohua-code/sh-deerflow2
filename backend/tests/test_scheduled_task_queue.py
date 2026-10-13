@@ -86,6 +86,59 @@ async def test_busy_reuse_thread_is_queued_then_launched_on_a_later_poll(tmp_pat
         await close_engine()
 
 
+async def test_account_deactivation_pauses_task_without_cancelling_active_run(tmp_path):
+    await init_engine_from_config(DatabaseConfig(backend="sqlite", sqlite_dir=str(tmp_path)))
+    try:
+        sf = get_session_factory()
+        assert sf is not None
+        task_repo = ScheduledTaskRepository(sf)
+        run_repo = ScheduledTaskRunRepository(sf)
+        now = datetime.now(UTC)
+        await _seed_reuse_task(task_repo, task_id="task-owner-disabled", now=now)
+        await run_repo.create(
+            run_record_id="task-run-owner-disabled",
+            task_id="task-owner-disabled",
+            thread_id="thread-1",
+            scheduled_for=now,
+            trigger="scheduled",
+            status="running",
+        )
+
+        result = await task_repo.pause_with_queue_cancellation(
+            "task-owner-disabled",
+            user_id="user-1",
+            error="owner disabled",
+            now=now,
+            allow_executing=True,
+        )
+
+        assert result == "paused"
+        assert (await task_repo.get("task-owner-disabled", user_id="user-1"))["status"] == "paused"
+        assert (await run_repo.list_by_task("task-owner-disabled"))[0]["status"] == "running"
+        # A stale launcher can finish bookkeeping after the administrator's
+        # pause transaction. Its lease release and status write must not resume
+        # the task for the disabled owner.
+        await task_repo.release_dispatch_lease(
+            "task-owner-disabled",
+            expected_lease_owner=None,
+            status="enabled",
+        )
+        await task_repo.update_after_launch(
+            "task-owner-disabled",
+            status="enabled",
+            next_run_at=now + timedelta(days=2),
+            last_run_at=now,
+            last_run_id=None,
+            last_thread_id="thread-1",
+            last_error=None,
+            increment_run_count=False,
+            task_run_id="task-run-owner-disabled",
+        )
+        assert (await task_repo.get("task-owner-disabled", user_id="user-1"))["status"] == "paused"
+    finally:
+        await close_engine()
+
+
 async def test_paused_task_manual_run_waits_for_busy_thread_and_stays_paused(tmp_path):
     await init_engine_from_config(DatabaseConfig(backend="sqlite", sqlite_dir=str(tmp_path)))
     try:
@@ -851,6 +904,63 @@ async def test_pause_or_delete_before_manual_admission_prevents_launch(tmp_path,
         else:
             assert result["outcome"] == "not_found"
             assert await task_repo.get(task["id"], user_id="user-1") is None
+    finally:
+        await close_engine()
+
+
+@pytest.mark.parametrize(
+    ("run_status", "expected_outcome"),
+    [("queued", "deleted"), ("launching", "executing"), ("running", "executing")],
+)
+async def test_delete_task_definition_is_owner_scoped_and_preserves_run_history(tmp_path, run_status, expected_outcome):
+    await init_engine_from_config(DatabaseConfig(backend="sqlite", sqlite_dir=str(tmp_path)))
+    try:
+        sf = get_session_factory()
+        assert sf is not None
+        task_repo = ScheduledTaskRepository(sf)
+        run_repo = ScheduledTaskRunRepository(sf)
+        now = datetime.now(UTC)
+        task = await _seed_reuse_task(
+            task_repo,
+            task_id=f"task-delete-{run_status}",
+            now=now,
+        )
+        await run_repo.create(
+            run_record_id=f"task-run-delete-{run_status}",
+            task_id=task["id"],
+            thread_id=task["thread_id"],
+            scheduled_for=now,
+            trigger="scheduled",
+            status=run_status,
+        )
+
+        # 浏览器或产品扩展不能借已知 ID 删除其他 owner 的定义。
+        assert (
+            await task_repo.delete_with_queue_cancellation(
+                task["id"],
+                user_id="user-2",
+                error="delete requested",
+                now=now,
+            )
+            == "not_found"
+        )
+        result = await task_repo.delete_with_queue_cancellation(
+            task["id"],
+            user_id="user-1",
+            error="delete requested",
+            now=now,
+        )
+
+        assert result == expected_outcome
+        remaining = await task_repo.get(task["id"], user_id="user-1")
+        runs = await run_repo.list_by_task(task["id"])
+        assert len(runs) == 1
+        if run_status == "queued":
+            assert remaining is None
+            assert runs[0]["status"] == "interrupted"
+        else:
+            assert remaining is not None
+            assert runs[0]["status"] == run_status
     finally:
         await close_engine()
 

@@ -10,7 +10,7 @@ Blockbuster gate raises ``BlockingError`` and these anchors fail.
 from __future__ import annotations
 
 import asyncio
-import os
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,10 +119,19 @@ async def test_lark_install_route_does_not_block_event_loop(tmp_path: Path, monk
 async def test_lark_auth_complete_route_does_not_block_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _reset_paths(tmp_path, monkeypatch)
     config = await _config(tmp_path)
-    cli_path = tmp_path / "bin" / "lark-cli"
-    await asyncio.to_thread(_write_stub_lark_cli, cli_path)
+    event_loop_thread = threading.get_ident()
+    cli_call_threads: list[int] = []
+    real_subprocess_run = lark_cli.subprocess.run
 
-    monkeypatch.setenv("PATH", f"{cli_path.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+    def _fake_lark_cli(args, **kwargs):
+        if args and args[0] == "test-lark-cli":
+            cli_call_threads.append(threading.get_ident())
+            stdout = "v1.0.65" if len(args) > 1 and args[1] == "--version" else "{}"
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        return real_subprocess_run(args, **kwargs)
+
+    monkeypatch.setattr(lark_cli, "_resolve_lark_cli_path", lambda: "test-lark-cli")
+    monkeypatch.setattr(lark_cli.subprocess, "run", _fake_lark_cli)
     monkeypatch.setattr(integrations, "get_effective_user_id", lambda: "loop-user")
     generation = await asyncio.to_thread(_advance_lark_flow, "loop-user")
 
@@ -134,3 +143,5 @@ async def test_lark_auth_complete_route_does_not_block_event_loop(tmp_path: Path
 
     assert response.status.cli.available is True
     assert response.status.cli.version == "v1.0.65"
+    assert cli_call_threads
+    assert all(thread_id != event_loop_thread for thread_id in cli_call_threads)

@@ -867,6 +867,9 @@ dev = [
     { name = "ruff" },
     { name = "textual" },
 ]
+extensions = [
+    { name = "flow-desk-product-extension" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -914,11 +917,11 @@ dev = [
     { name = "ruff", specifier = ">=0.14.11" },
     { name = "textual", specifier = ">=0.80" },
 ]
-extensions = []
+extensions = [{ name = "flow-desk-product-extension", directory = "extensions/sources/flow-desk-product-extension" }]
 
 [[package]]
 name = "deerflow-extension-api"
-version = "0.2.1"
+version = "0.2.18"
 source = { editable = "packages/extension-api" }
 
 [[package]]
@@ -1313,6 +1316,30 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
 ]
+
+[[package]]
+name = "flow-desk-product-extension"
+version = "0.1.0"
+source = { directory = "extensions/sources/flow-desk-product-extension" }
+dependencies = [
+    { name = "alembic" },
+    { name = "deerflow-extension-api" },
+    { name = "fastapi" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20,<1" },
+    { name = "alembic", specifier = ">=1.15,<2" },
+    { name = "deerflow-extension-api", specifier = ">=0.2.18,<0.3" },
+    { name = "fastapi", specifier = ">=0.115.0,<1" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9,<10" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14,<1" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "forbiddenfruit"
@@ -4564,8 +4591,8 @@ name = "standard-aifc"
 version = "3.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "audioop-lts" },
-    { name = "standard-chunk" },
+    { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
+    { name = "standard-chunk", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/53/6050dc3dde1671eb3db592c13b55a8005e5040131f7509cef0215212cb84/standard_aifc-3.13.0.tar.gz", hash = "sha256:64e249c7cb4b3daf2fdba4e95721f811bde8bdfc43ad9f936589b7bb2fae2e43", size = 15240, upload-time = "2024-10-30T16:01:31.772Z" }
 wheels = [

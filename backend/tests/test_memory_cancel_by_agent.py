@@ -94,6 +94,7 @@ def test_deermem_cancel_by_agent_forwards_scoped_queue_kwargs(tmp_path) -> None:
 
 def test_delete_agent_cancels_before_and_after_successful_delete(tmp_path) -> None:
     """Cancel must run before store.delete so a timer cannot resurrect mid-rmtree."""
+    from app.gateway import agent_deletion
     from app.gateway.routers import agents as agents_router
 
     orig = get_memory_config()
@@ -120,7 +121,7 @@ def test_delete_agent_cancels_before_and_after_successful_delete(tmp_path) -> No
             return "deleted"
 
         store.delete.side_effect = _delete
-        real_cancel = agents_router._cancel_pending_memory_for_agent
+        real_cancel = agent_deletion._cancel_pending_memory_for_agent
 
         def tracked_cancel(name, user_id):
             order.append("cancel")
@@ -132,7 +133,7 @@ def test_delete_agent_cancels_before_and_after_successful_delete(tmp_path) -> No
             patch.object(agents_router, "_normalize_agent_name", side_effect=lambda n: n.lower()),
             patch.object(agents_router, "get_effective_user_id", return_value="user-1"),
             patch.object(agents_router, "get_agent_store", return_value=store),
-            patch.object(agents_router, "_cancel_pending_memory_for_agent", side_effect=tracked_cancel),
+            patch.object(agent_deletion, "_cancel_pending_memory_for_agent", side_effect=tracked_cancel),
         ):
             asyncio.run(agents_router.delete_agent("Gone"))
 
@@ -186,11 +187,11 @@ def test_delete_agent_still_cancels_when_memory_disabled(tmp_path) -> None:
 
 def test_delete_agent_still_cancels_before_rejected_delete() -> None:
     """Pre-delete cancel is intentional even when delete later 404s."""
+    from app.gateway import agent_deletion
     from app.gateway.routers import agents as agents_router
 
     store = MagicMock()
     store.delete.return_value = "missing"
-    manager = MagicMock()
 
     with (
         patch.object(agents_router, "_require_agents_api_enabled"),
@@ -198,7 +199,7 @@ def test_delete_agent_still_cancels_before_rejected_delete() -> None:
         patch.object(agents_router, "_normalize_agent_name", side_effect=lambda n: n.lower()),
         patch.object(agents_router, "get_effective_user_id", return_value="user-1"),
         patch.object(agents_router, "get_agent_store", return_value=store),
-        patch.object(agents_router, "get_memory_manager", return_value=manager),
+        patch.object(agent_deletion, "_cancel_pending_memory_for_agent") as cancel,
     ):
         try:
             asyncio.run(agents_router.delete_agent("ghost"))
@@ -206,4 +207,4 @@ def test_delete_agent_still_cancels_before_rejected_delete() -> None:
         except HTTPException as exc:
             assert exc.status_code == 404
 
-    manager.cancel_by_agent.assert_called_once_with("ghost", user_id="user-1")
+    cancel.assert_called_once_with("ghost", "user-1")

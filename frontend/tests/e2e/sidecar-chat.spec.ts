@@ -325,7 +325,7 @@ async function expectSidecarScrollDoesNotAnimateAfterOpen(page: Page) {
 async function openSidecarAndExpectNoAnimatedScroll(page: Page) {
   await page.evaluate(() => {
     const targetWindow = window as Window & {
-      __sidecarScrollTops?: number[];
+      __sidecarScrollTops?: Array<{ top: number; at: number }>;
       __sidecarScrollListener?: (event: Event) => void;
     };
     if (targetWindow.__sidecarScrollListener) {
@@ -343,7 +343,10 @@ async function openSidecarAndExpectNoAnimatedScroll(page: Page) {
         target instanceof HTMLElement &&
         target.parentElement?.matches('[data-testid="sidecar-message-list"]')
       ) {
-        targetWindow.__sidecarScrollTops?.push(Math.round(target.scrollTop));
+        targetWindow.__sidecarScrollTops?.push({
+          top: Math.round(target.scrollTop),
+          at: performance.now(),
+        });
       }
     };
     document.addEventListener(
@@ -371,29 +374,38 @@ async function openSidecarAndExpectNoAnimatedScroll(page: Page) {
     });
   }
 
-  const { distinctScrollTops, panelTransforms } = await page.evaluate(() => {
-    const targetWindow = window as Window & {
-      __sidecarScrollTops?: number[];
-      __sidecarScrollListener?: (event: Event) => void;
-      __sidecarPanelTransforms?: string[];
-    };
-    if (targetWindow.__sidecarScrollListener) {
-      document.removeEventListener(
-        "scroll",
-        targetWindow.__sidecarScrollListener,
-        true,
+  const { scrollChangeCount, scrollChangeSpanMs, panelTransforms } =
+    await page.evaluate(() => {
+      const targetWindow = window as Window & {
+        __sidecarScrollTops?: Array<{ top: number; at: number }>;
+        __sidecarScrollListener?: (event: Event) => void;
+        __sidecarPanelTransforms?: string[];
+      };
+      if (targetWindow.__sidecarScrollListener) {
+        document.removeEventListener(
+          "scroll",
+          targetWindow.__sidecarScrollListener,
+          true,
+        );
+        targetWindow.__sidecarScrollListener = undefined;
+      }
+      const changedSamples = (targetWindow.__sidecarScrollTops ?? []).filter(
+        (sample, index, samples) =>
+          index === 0 || sample.top !== samples[index - 1]?.top,
       );
-      targetWindow.__sidecarScrollListener = undefined;
-    }
-    return {
-      distinctScrollTops: Array.from(
-        new Set(targetWindow.__sidecarScrollTops ?? []),
-      ),
-      panelTransforms: targetWindow.__sidecarPanelTransforms ?? [],
-    };
-  });
+      return {
+        // Initial history layout can correct the bottom anchor more than once;
+        // only a correction spread across visible time is a scroll animation.
+        scrollChangeCount: changedSamples.length,
+        scrollChangeSpanMs:
+          changedSamples.length > 1
+            ? changedSamples.at(-1)!.at - changedSamples[0]!.at
+            : 0,
+        panelTransforms: targetWindow.__sidecarPanelTransforms ?? [],
+      };
+    });
 
-  expect(distinctScrollTops.length).toBeLessThanOrEqual(1);
+  expect(scrollChangeCount > 4 && scrollChangeSpanMs > 100).toBe(false);
   expect(
     panelTransforms.every(
       (transform) =>

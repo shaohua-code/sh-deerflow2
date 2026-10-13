@@ -1624,6 +1624,85 @@ class TestFinalizeCacheIsolation:
         assert original_memory["facts"][0]["content"] == "original"
 
 
+@pytest.mark.parametrize("uses_change_set", [False, True])
+def test_finalize_update_does_not_persist_when_commit_authorization_denies(uses_change_set):
+    class _DenyWrite:
+        def __init__(self):
+            self.calls = []
+
+        def before_memory_write(self, **scope):
+            self.calls.append(scope)
+            return False
+
+    class _ChangeSetStorage(_MemoryStorage):
+        def __init__(self):
+            super().__init__()
+            self.apply_calls = 0
+
+        def apply_changes(self, _change_set, **_scope):
+            self.apply_calls += 1
+            return {"complete": True}
+
+    storage = _ChangeSetStorage() if uses_change_set else _MemoryStorage()
+    callback = _DenyWrite()
+    updater = _make_updater(storage=storage, callbacks=callback)
+
+    result = updater._finalize_update(
+        current_memory=_make_memory(),
+        response_content='{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}',
+        thread_id="thread-1",
+        agent_name="agent-1",
+        user_id="user-1",
+    )
+
+    assert result is False
+    assert callback.calls == [{"thread_id": "thread-1", "user_id": "user-1", "agent_name": "agent-1"}]
+    if uses_change_set:
+        assert storage.apply_calls == 0
+    else:
+        assert storage.save_calls == []
+
+
+def test_finalize_update_rechecks_authorization_after_revision_conflict():
+    class _ConflictOnceStorage(_MemoryStorage):
+        def __init__(self):
+            super().__init__()
+            self.apply_calls = 0
+
+        def apply_changes(self, _change_set, **_scope):
+            self.apply_calls += 1
+            if self.apply_calls == 1:
+                raise MemoryManifestRevisionConflict("simulated conflict")
+            return {"complete": True}
+
+        def reload(self, agent_name=None, *, user_id=None):
+            return _make_memory()
+
+    class _RevokeOnRetry:
+        def __init__(self):
+            self.calls = 0
+
+        def before_memory_write(self, **_scope):
+            self.calls += 1
+            return self.calls == 1
+
+    storage = _ConflictOnceStorage()
+    callback = _RevokeOnRetry()
+    updater = _make_updater(storage=storage, callbacks=callback)
+
+    result = updater._finalize_update(
+        current_memory=_make_memory(),
+        response_content='{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}',
+        thread_id="thread-1",
+        agent_name="agent-1",
+        user_id="user-1",
+    )
+
+    assert result is False
+    assert callback.calls == 2
+    assert storage.apply_calls == 1
+
+
 class TestUserIdForwarding:
     """Regression: user_id must flow through the entire sync update path.
 

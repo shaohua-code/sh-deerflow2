@@ -41,5 +41,10 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "generated"]
+  "exclude": [
+    "node_modules",
+    "generated",
+    ".next-codex-*",
+    ".next-flowdesk-ui-*"
+  ]
 }

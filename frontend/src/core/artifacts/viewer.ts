@@ -1,5 +1,7 @@
+import { DEFAULT_LOCALE } from "@/core/i18n/locale";
 import { resolveStaticDemoArtifact } from "@/core/threads/static-demo";
 import { checkCodeFile, getFileName } from "@/core/utils/files";
+import { getBrandName } from "@/product/brand";
 
 import { getTabularDelimiter } from "./preview";
 import { urlOfArtifact } from "./utils";
@@ -115,8 +117,12 @@ export function parseArtifactViewerQuery(
  * App Router owns the title element and re-applies the layout's metadata over
  * anything an effect writes.
  */
-export function artifactViewerTitle(filepath: string | undefined) {
-  return filepath ? `${getFileName(filepath)} - DeerFlow` : "DeerFlow";
+export function artifactViewerTitle(
+  filepath: string | undefined,
+  locale: string = DEFAULT_LOCALE,
+) {
+  const brandName = getBrandName(locale);
+  return filepath ? `${getFileName(filepath)} - ${brandName}` : brandName;
 }
 
 /**

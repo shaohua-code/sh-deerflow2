@@ -24,7 +24,8 @@ from langgraph.types import Overwrite
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 
-from app.gateway.authz import require_permission
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import get_auth_context, require_iam_data_scope_for_request, require_permission
 from app.gateway.checkpoint_lineage import (
     CheckpointLineageError,
     CheckpointParentMissingError,
@@ -712,14 +713,26 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
     (sqlite or memory).
     """
     run_manager = get_run_manager(request)
+    user_id = get_effective_user_id()
     try:
         async with goal_thread_lock(thread_id):
             async with run_manager.reserve_thread_operation(
                 thread_id,
                 kind=ThreadOperationKind.delete,
-                user_id=get_effective_user_id(),
+                user_id=user_id,
             ):
-                return await _delete_thread_data_with_reservation(thread_id, request)
+                response = await _delete_thread_data_with_reservation(
+                    thread_id,
+                    request,
+                    user_id=user_id,
+                )
+        await notify_action_audit(
+            request,
+            action="thread.delete",
+            resource_type="thread",
+            resource_id=thread_id,
+        )
+        return response
     except ConflictError:
         raise HTTPException(
             status_code=409,
@@ -727,7 +740,12 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
         ) from None
 
 
-async def _delete_thread_data_with_reservation(thread_id: str, request: Request) -> ThreadDeleteResponse:
+async def _delete_thread_data_with_reservation(
+    thread_id: str,
+    request: Request,
+    *,
+    user_id: str | None,
+) -> ThreadDeleteResponse:
     """Delete a thread while its durable exclusive reservation is held."""
     from app.gateway.deps import get_thread_store
 
@@ -742,24 +760,47 @@ async def _delete_thread_data_with_reservation(thread_id: str, request: Request)
             message="Skipped local data cleanup for legacy thread ID",
         )
     else:
-        response = _delete_thread_data(thread_id, user_id=get_effective_user_id())
+        response = _delete_thread_data(thread_id, user_id=user_id)
 
-    # Remove checkpoints (best-effort)
+    # Checkpoints hold the canonical conversation state. A failed purge must
+    # stop deletion before thread metadata is removed so the owner can retry.
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is not None:
         try:
-            if hasattr(checkpointer, "adelete_thread"):
-                await checkpointer.adelete_thread(thread_id)
-        except Exception:
-            logger.debug("Could not delete checkpoints for thread %s (not critical)", sanitize_log_param(thread_id))
+            delete_checkpoints = getattr(checkpointer, "adelete_thread", None)
+            if not callable(delete_checkpoints):
+                raise RuntimeError("Configured checkpointer does not support thread deletion")
+            await delete_checkpoints(thread_id)
+        except Exception as exc:
+            logger.exception("Failed to delete checkpoints for thread %s", sanitize_log_param(thread_id))
+            raise HTTPException(status_code=500, detail="Failed to delete thread history.") from exc
 
-    # Remove thread_meta row (best-effort) — required for sqlite backend
-    # so the deleted thread no longer appears in /threads/search.
+    # 消息与执行事件单独保存在 run_events；只删 checkpoint/工作区会让已删除会话的正文仍留在事件表。
+    event_store = getattr(request.app.state, "run_event_store", None)
+    if event_store is not None:
+        try:
+            await event_store.delete_by_thread(thread_id)
+        except Exception as exc:
+            logger.exception("Failed to delete run events for thread %s", sanitize_log_param(thread_id))
+            raise HTTPException(status_code=500, detail="Failed to delete thread history.") from exc
+
+    # Runs also contain durable token usage and request metadata; remove them
+    # under the delete reservation before dropping the discoverable thread row.
+    try:
+        await get_run_manager(request).delete_thread_runs(thread_id, user_id=user_id)
+    except ConflictError:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to delete run history for thread %s", sanitize_log_param(thread_id))
+        raise HTTPException(status_code=500, detail="Failed to delete thread history.") from exc
+
+    # Remove thread_meta only after all durable history stores have been purged.
     try:
         thread_store = get_thread_store(request)
-        await thread_store.delete(thread_id)
-    except Exception:
-        logger.debug("Could not delete thread_meta for %s (not critical)", sanitize_log_param(thread_id))
+        await thread_store.delete(thread_id, user_id=user_id)
+    except Exception as exc:
+        logger.exception("Failed to delete thread metadata for %s", sanitize_log_param(thread_id))
+        raise HTTPException(status_code=500, detail="Failed to delete thread history.") from exc
 
     # Tear down any live browser session (best-effort). Sessions are keyed only
     # by thread_id, so leaving one alive after the owner deletes the thread lets
@@ -886,6 +927,12 @@ async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadRe
         raise HTTPException(status_code=500, detail="Failed to create thread")
 
     logger.info("Thread created: %s", sanitize_log_param(thread_id))
+    await notify_action_audit(
+        request,
+        action="thread.create",
+        resource_type="thread",
+        resource_id=thread_id,
+    )
     # Respond from the persisted record — the store stamps
     # ``metadata.deerflow_project_id`` from the assigned project_id column, so
     # echoing ``body.metadata`` here would omit the membership the retry path
@@ -904,12 +951,19 @@ async def branch_thread(thread_id: ThreadId, body: ThreadBranchRequest, request:
                 kind=ThreadOperationKind.branch,
                 user_id=get_effective_user_id(),
             ):
-                return await _branch_thread_with_reservation(thread_id, body, request)
+                response = await _branch_thread_with_reservation(thread_id, body, request)
     except ConflictError:
         raise HTTPException(
             status_code=409,
             detail="Thread has work in flight. Branch it after the work finishes.",
         ) from None
+    await notify_action_audit(
+        request,
+        action="thread.branch",
+        resource_type="thread",
+        resource_id=response.thread_id,
+    )
+    return response
 
 
 async def _branch_thread_with_reservation(
@@ -1121,6 +1175,9 @@ async def search_threads(body: ThreadSearchRequest, request: Request) -> list[Th
     Delegates to the configured ThreadMetaStore implementation
     (SQL-backed for sqlite/postgres, Store-backed for memory mode).
     """
+    # 先验证 IAM 对会话集合的数据范围，再执行仍按本地用户 owner 过滤的仓储查询。
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="threads:read")
     from app.gateway.deps import get_thread_store
     from deerflow.persistence.thread_meta import InvalidMetadataFilterError
 
@@ -1180,6 +1237,13 @@ async def patch_thread(thread_id: ThreadId, body: ThreadPatchRequest, request: R
 
     # Re-read to get the merged metadata and the store's timestamp decision.
     record = await thread_store.get(thread_id) or record
+    if body.metadata:
+        await notify_action_audit(
+            request,
+            action="thread.update",
+            resource_type="thread",
+            resource_id=str(thread_id),
+        )
     return ThreadResponse(
         thread_id=thread_id,
         status=record.get("status", "idle"),
@@ -1207,6 +1271,12 @@ async def move_thread(thread_id: ThreadId, body: ThreadMoveRequest, request: Req
     if not moved:
         raise HTTPException(status_code=404, detail="Thread or project not found")
     record = await thread_store.get(thread_id)
+    await notify_action_audit(
+        request,
+        action="thread.move",
+        resource_type="thread",
+        resource_id=str(thread_id),
+    )
     return ThreadResponse(
         thread_id=thread_id,
         status=record.get("status", "idle"),

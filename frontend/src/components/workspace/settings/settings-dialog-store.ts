@@ -53,6 +53,11 @@ export function openSettingsDialog(section: SettingsSection) {
   setState({ open: true, section });
 }
 
+/** Restore the shared entry-point selection after a dirty page rejects navigation. */
+export function setSettingsDialogSection(section: SettingsSection) {
+  setState({ open: state.open, section });
+}
+
 export function setSettingsDialogOpen(open: boolean) {
   setState({ open, section: state.section });
 }

@@ -21,7 +21,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.gateway.authz import require_permission
+from app.gateway.authz import get_auth_context, require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_project_repo, get_thread_store
 from deerflow.config.paths import Paths, get_paths
 from deerflow.runtime.user_context import get_effective_user_id
@@ -120,6 +120,9 @@ async def list_project_thread_files(
     """
     if await get_project_repo(request).get(project_id) is None:
         raise _not_found()
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="threads:read")
     # One extra row decides whether another page exists; it is never rendered.
     rows = await get_thread_store(request).search(
         project_id=project_id,

@@ -21,10 +21,12 @@ from support.symlinks import symlink_or_skip
 from deerflow.extensions.cli import find_project_root
 from deerflow.extensions.loader import ExtensionSpec
 from deerflow.extensions.manager import (
+    _SNAPSHOT_IGNORES,
     ExtensionManager,
     _controlled_uv_environment,
     _detect_extra_flags,
     _retry_until_locked,
+    _validate_local_snapshot,
     _validate_locked_local_sources,
     _validate_remote_source,
 )
@@ -221,6 +223,25 @@ def test_install_local_directory_makes_it_deployable_and_enabled(tmp_path: Path)
     ]
 
     _assert_demo_entry_point_loads(root / "backend")
+
+
+def test_local_snapshot_ignores_generated_test_and_lint_caches(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_local_extension(source)
+    for cache_name in (".pytest_cache", ".ruff_cache"):
+        cache = source / cache_name
+        cache.mkdir()
+        # 缓存即使意外包含敏感后缀，也不能进入可信扩展的部署快照。
+        (cache / "temporary.key").write_text("generated cache", encoding="utf-8")
+
+    _validate_local_snapshot(source)
+    destination = tmp_path / "snapshot"
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*_SNAPSHOT_IGNORES))
+
+    assert (destination / "demo_extension" / "__init__.py").is_file()
+    assert not (destination / ".pytest_cache").exists()
+    assert not (destination / ".ruff_cache").exists()
 
 
 def test_install_rejects_an_already_snapshotted_local_directory(tmp_path: Path) -> None:

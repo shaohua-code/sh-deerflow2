@@ -30,6 +30,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/core/auth/AuthProvider";
+import {
+  getPermissionState,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   formatSkillSecurityFindings,
@@ -53,23 +58,57 @@ const SkillExportDialog = dynamic(() => import("./skill-export-dialog"), {
 
 export function SkillGallery({ query = "" }: { query?: string } = {}) {
   const { t } = useI18n();
-  const { skills, isLoading, error } = useSkills();
+  const { user } = useAuth();
+  const canReadSkills =
+    getPermissionState(user, PERMISSIONS.SKILLS_READ) !== "denied";
+  const { skills, hasData, isLoading, isFetching, error, refetch } =
+    useSkills(canReadSkills);
   const adminRequired =
     error instanceof SkillRequestError && error.isAdminRequired;
+
+  if (!canReadSkills) {
+    return (
+      <p role="status" className="text-muted-foreground text-sm">
+        {t.agents.permissionRequired(PERMISSIONS.SKILLS_READ)}
+      </p>
+    );
+  }
+
   return (
-    <div>
-      {isLoading ? (
+    <div className="space-y-4">
+      {isLoading && !hasData ? (
         <div className="text-muted-foreground text-sm">{t.common.loading}</div>
       ) : adminRequired ? (
         <div className="text-muted-foreground text-sm">
           {t.settings.skills.adminRequired}
         </div>
-      ) : error ? (
-        <div>
-          {t.common.error} {error.message}
-        </div>
       ) : (
-        <SkillList skills={skills} query={query} />
+        <>
+          {error && (
+            <div
+              role={hasData ? "status" : "alert"}
+              className="bg-destructive/5 border-destructive/20 flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <p className="text-sm">
+                {hasData
+                  ? t.settings.skills.refreshFailed
+                  : t.settings.skills.loadFailed}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isFetching}
+                onClick={() => void refetch()}
+              >
+                {isFetching && <LoaderIcon className="size-4 animate-spin" />}
+                {isFetching
+                  ? t.settings.skills.retrying
+                  : t.settings.skills.retry}
+              </Button>
+            </div>
+          )}
+          {(hasData || !error) && <SkillList skills={skills} query={query} />}
+        </>
       )}
     </div>
   );
@@ -88,15 +127,32 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
 
   const { user } = useAuth();
   const isAdmin = user?.system_role === "admin";
+  // 页面先隐藏明确无权的操作；Gateway 的 skills:admin / skills:write 守卫仍是最终授权。
+  const canCreateSkill = hasPermission(user, PERMISSIONS.RUNS_CREATE);
+  const canManageSkillState =
+    getPermissionState(user, PERMISSIONS.SKILLS_ADMIN) !== "denied";
+  const canWriteSkills =
+    getPermissionState(user, PERMISSIONS.SKILLS_WRITE) !== "denied";
+  const canReadSkills =
+    getPermissionState(user, PERMISSIONS.SKILLS_READ) !== "denied";
+  const showSkillPermissionHint =
+    !isAdmin || !canManageSkillState || !canWriteSkills;
   const [exportName, setExportName] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("public");
-  const { mutate: enableSkill, isPending: isEnabling } = useEnableSkill();
+  const {
+    mutate: enableSkill,
+    isPending: isEnabling,
+    variables: enablingSkill,
+  } = useEnableSkill();
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { mutateAsync: uploadSkillArchive, isPending: isUploading } =
     useUploadSkillArchive();
   const isArchiveUploadDisabled =
-    isUploading || !isAdmin || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true";
+    isUploading ||
+    !isAdmin ||
+    !canWriteSkills ||
+    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true";
   const filteredSkills = useMemo(
     () =>
       skills.filter((skill) => {
@@ -111,10 +167,11 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
     [skills, filter, query, locale],
   );
   const handleCreateSkill = () => {
+    if (!canCreateSkill) return;
     router.push("/workspace/chats/new?mode=skill");
   };
   const handleSkillArchive = async (event: ChangeEvent<HTMLInputElement>) => {
-    if (isUploading) {
+    if (isArchiveUploadDisabled) {
       event.target.value = "";
       return;
     }
@@ -136,7 +193,7 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
         toast.success(result.message);
         setFilter("custom");
       } else {
-        toast.error(result.message || t.settings.skills.installFailed);
+        toast.error(t.settings.skills.installFailed);
       }
     } catch (error) {
       if (error instanceof SkillRequestError && error.isAdminRequired) {
@@ -147,7 +204,7 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
         error instanceof SkillRequestError &&
         error.findings.length > 0
       ) {
-        toast.error(error.message, {
+        toast.error(t.settings.skills.installBlocked, {
           description: (
             <span className="whitespace-pre-line">
               {formatSkillSecurityFindings(error.findings)}
@@ -155,16 +212,22 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
           ),
         });
       } else {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t.settings.skills.installFailed,
-        );
+        toast.error(t.settings.skills.installFailed);
       }
     }
   };
   return (
     <div className="flex w-full flex-col gap-4">
+      {showSkillPermissionHint && (
+        <p role="status" className="text-muted-foreground text-sm">
+          {t.settings.skills.adminRequired}
+        </p>
+      )}
+      {!canCreateSkill && (
+        <p role="status" className="text-muted-foreground text-sm">
+          {t.agents.permissionRequired(PERMISSIONS.RUNS_CREATE)}
+        </p>
+      )}
       {exportName &&
         isAdmin &&
         env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" && (
@@ -225,7 +288,11 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
                 : t.settings.skills.installFromFile}
             </Button>
           )}
-          <Button size="sm" onClick={handleCreateSkill}>
+          <Button
+            size="sm"
+            disabled={!canCreateSkill}
+            onClick={handleCreateSkill}
+          >
             <SparklesIcon className="size-4" />
             {t.settings.skills.createSkill}
           </Button>
@@ -261,11 +328,17 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
           )}
         </Empty>
       ) : filteredSkills.length === 0 ? (
-        <EmptySkill onCreateSkill={handleCreateSkill} />
+        <EmptySkill
+          onCreateSkill={handleCreateSkill}
+          disabled={!canCreateSkill}
+        />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredSkills.map((skill) => {
             const presentation = presentSkill(skill, locale);
+            // 技能状态共用一份服务端配置；全局互斥写入，但只在当前目标卡片上显示进度。
+            const isCurrentSkillEnabling =
+              isEnabling && enablingSkill?.skillName === skill.name;
             return (
               <CapabilityCard
                 key={skill.name}
@@ -280,18 +353,25 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
                   />
                 }
                 status={
-                  <>
-                    <span
-                      className={
-                        skill.enabled
-                          ? "size-1.5 rounded-full bg-emerald-500"
-                          : "bg-muted-foreground/40 size-1.5 rounded-full"
-                      }
-                    />
-                    {skill.enabled
-                      ? t.capabilities.enabled
-                      : t.capabilities.disabled}
-                  </>
+                  isCurrentSkillEnabling ? (
+                    <span role="status" className="flex items-center gap-1.5">
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                      {t.common.loading}
+                    </span>
+                  ) : (
+                    <>
+                      <span
+                        className={
+                          skill.enabled
+                            ? "size-1.5 rounded-full bg-emerald-500"
+                            : "bg-muted-foreground/40 size-1.5 rounded-full"
+                        }
+                      />
+                      {skill.enabled
+                        ? t.capabilities.enabled
+                        : t.capabilities.disabled}
+                    </>
+                  )
                 }
                 onDetails={() => setSelectedSkill(skill)}
                 detailsLabel={`${t.capabilities.details} ${presentation.title}`}
@@ -305,19 +385,31 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
                   {t.capabilities.details}
                 </Button>
                 <Switch
-                  aria-label={`${t.capabilities.skillEnabled} ${skill.name}`}
+                  aria-label={presentation.title}
+                  aria-busy={isCurrentSkillEnabling}
                   checked={skill.enabled}
                   disabled={
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
                     !isAdmin ||
+                    !canManageSkillState ||
                     isEnabling
                   }
-                  onCheckedChange={(enabled) =>
+                  onCheckedChange={(enabled) => {
+                    if (!isAdmin || !canManageSkillState) return;
                     enableSkill(
                       { skillName: skill.name, enabled },
-                      { onError: (error) => toast.error(error.message) },
-                    )
-                  }
+                      {
+                        // 服务端异常只用于诊断；界面统一显示产品文案。
+                        onError: (error) =>
+                          toast.error(
+                            error instanceof SkillRequestError &&
+                              error.isAdminRequired
+                              ? t.settings.skills.adminRequired
+                              : t.settings.skills.enableFailed,
+                          ),
+                      },
+                    );
+                  }}
                 />
               </CapabilityCard>
             );
@@ -352,20 +444,24 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
                   {selectedSkill.license || sourceLabel(selectedSkill)}
                 </span>
                 <div className="flex gap-2">
-                  {isAdmin && selectedSkill.category === "custom" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
-                      onClick={() => {
-                        setExportName(selectedSkill.name);
-                        setSelectedSkill(null);
-                      }}
-                    >
-                      <DownloadIcon className="size-4" />
-                      {t.settings.skills.exportSkill}
-                    </Button>
-                  )}
+                  {isAdmin &&
+                    canReadSkills &&
+                    selectedSkill.category === "custom" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                        }
+                        onClick={() => {
+                          setExportName(selectedSkill.name);
+                          setSelectedSkill(null);
+                        }}
+                      >
+                        <DownloadIcon className="size-4" />
+                        {t.settings.skills.exportSkill}
+                      </Button>
+                    )}
                 </div>
               </div>
             </>
@@ -376,7 +472,13 @@ function SkillList({ skills, query }: { skills: Skill[]; query: string }) {
   );
 }
 
-function EmptySkill({ onCreateSkill }: { onCreateSkill: () => void }) {
+function EmptySkill({
+  onCreateSkill,
+  disabled,
+}: {
+  onCreateSkill: () => void;
+  disabled?: boolean;
+}) {
   const { t } = useI18n();
   return (
     <Empty>
@@ -390,7 +492,9 @@ function EmptySkill({ onCreateSkill }: { onCreateSkill: () => void }) {
         </EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button onClick={onCreateSkill}>{t.settings.skills.emptyButton}</Button>
+        <Button disabled={disabled} onClick={onCreateSkill}>
+          {t.settings.skills.emptyButton}
+        </Button>
       </EmptyContent>
     </Empty>
   );

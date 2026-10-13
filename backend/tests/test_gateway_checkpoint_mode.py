@@ -143,7 +143,7 @@ def test_context_usage_reads_materialized_messages_in_both_modes(
     for i in range(2):
         asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=f"question-{i}", id=f"h{i}")]}, config))
 
-    request = SimpleNamespace(app=app)
+    request = SimpleNamespace(app=app, state=SimpleNamespace())
     accessor, read_config = asyncio.run(gateway_services.build_thread_checkpoint_state_accessor(request, thread_id=_THREAD_ID))
     messages = asyncio.run(context_usage._load_checkpoint_messages(accessor, read_config))
 

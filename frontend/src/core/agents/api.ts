@@ -1,3 +1,4 @@
+import { createGatewayApiError } from "@/core/api/errors";
 import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 export { fetchAgentsApiEnabled } from "@/core/features/api";
@@ -36,16 +37,28 @@ function isAgentsApiDisabledDetail(detail: string | undefined): boolean {
   return typeof detail === "string" && detail.includes("agents_api.enabled");
 }
 
-export async function listAgents(): Promise<Agent[]> {
-  const res = await fetch(`${getBackendBaseURL()}/api/agents`);
+export async function listAgents(
+  options: { signal?: AbortSignal } = {},
+): Promise<Agent[]> {
+  const res = await fetch(`${getBackendBaseURL()}/api/agents`, {
+    signal: options.signal,
+  });
   if (!res.ok) throw new Error(`Failed to load agents: ${res.statusText}`);
   const data = (await res.json()) as { agents: Agent[] };
   return data.agents;
 }
 
-export async function getAgent(name: string): Promise<Agent> {
-  const res = await fetch(`${getBackendBaseURL()}/api/agents/${name}`);
-  if (!res.ok) throw new Error(`Agent '${name}' not found`);
+export async function getAgent(
+  name: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<Agent> {
+  const res = await fetch(`${getBackendBaseURL()}/api/agents/${name}`, {
+    signal: options.signal,
+  });
+  if (!res.ok) {
+    // 保留 HTTP 状态供页面区分 404 与暂时性故障；响应正文只用于诊断。
+    throw await createGatewayApiError(res, `Failed to load agent '${name}'`);
+  }
   return res.json() as Promise<Agent>;
 }
 
@@ -98,7 +111,7 @@ export async function checkAgentName(
     );
   } catch {
     throw new AgentNameCheckError(
-      "Could not reach the DeerFlow backend.",
+      "Could not reach the application server.",
       "backend_unreachable",
     );
   }
@@ -110,7 +123,7 @@ export async function checkAgentName(
     }
     if (BACKEND_UNAVAILABLE_STATUSES.has(res.status)) {
       throw new AgentNameCheckError(
-        "Could not reach the DeerFlow backend.",
+        "Could not reach the application server.",
         "backend_unreachable",
       );
     }

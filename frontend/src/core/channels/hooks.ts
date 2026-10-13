@@ -15,25 +15,37 @@ import type { ChannelProviderId, ChannelRuntimeConfigValues } from "./types";
 export const channelProviderQueryKey = ["channelProviders"] as const;
 export const channelConnectionsQueryKey = ["channelConnections"] as const;
 
-export function useChannelProviders() {
-  const { data, isLoading, error } = useQuery({
+export function useChannelProviders(queryEnabled = true) {
+  const query = useQuery({
     queryKey: channelProviderQueryKey,
     queryFn: () => listChannelProviders(),
+    enabled: queryEnabled,
   });
   return {
-    enabled: data?.enabled ?? false,
-    providers: data?.providers ?? [],
-    isLoading,
-    error,
+    enabled: query.data?.enabled ?? false,
+    providers: query.data?.providers ?? [],
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    hasData: query.data !== undefined,
+    error: query.error,
+    refetch: query.refetch,
   };
 }
 
-export function useChannelConnections() {
-  const { data, isLoading, error } = useQuery({
+export function useChannelConnections(queryEnabled = true) {
+  const query = useQuery({
     queryKey: channelConnectionsQueryKey,
     queryFn: () => listChannelConnections(),
+    enabled: queryEnabled,
   });
-  return { connections: data ?? [], isLoading, error };
+  return {
+    connections: query.data ?? [],
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    hasData: query.data !== undefined,
+    error: query.error,
+    refetch: query.refetch,
+  };
 }
 
 export function useConnectChannelProvider() {

@@ -387,7 +387,7 @@ def _validate_forward_schema(sync_conn: Any) -> None:
         missing.extend(f"{name}.{column_name}" for column_name in sorted(required_columns - columns))
     if missing:
         raise RuntimeError(
-            f"bootstrap: revision {_FORWARD_COMPATIBLE_REVISION!r} is missing required local schema: {', '.join(missing)}; refusing to start. See docs/database-forward-revision-recovery.md for the audited offline migration path."
+            f"bootstrap: revision {_FORWARD_COMPATIBLE_REVISION!r} is missing required local schema: {', '.join(missing)}; refusing to start. See docs/数据库版本恢复指南.md for the audited offline migration path."
         )
 
 

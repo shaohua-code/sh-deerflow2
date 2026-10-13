@@ -627,6 +627,9 @@ class RunContext:
     on_run_completed: Any | None = field(default=None)
     # The host binds this capability to one run's authenticated reader and references.
     conversation_reader: Any | None = field(default=None)
+    # Server-owned IAM credentials stay on this in-memory run envelope. They
+    # are never copied into RunnableConfig, graph context, or checkpoints.
+    authorization_credentials: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 def _install_runtime_context(config: dict, runtime_context: dict[str, Any]) -> None:
@@ -842,6 +845,12 @@ async def run_agent(
     )
 
     extensions = ctx.extensions if ctx.extensions is not None else get_loaded_extensions()
+    from deerflow.authz.principal import (
+        bind_run_authorization_credentials,
+        reset_run_authorization_credentials,
+    )
+
+    authorization_context_token = bind_run_authorization_credentials(ctx.authorization_credentials)
     task_store: ExtensionData | None = None
     task_info: TaskInfo | None = None
     deferred_finalization_interrupt: BaseException | None = None
@@ -864,6 +873,9 @@ async def run_agent(
     accessor: CheckpointStateAccessor | None = None
     rollback_point: RollbackPoint | None = None
     journal = None
+    model_usage_callback = None
+    model_usage_context_token = None
+    model_authorization_context_token = None
     runtime_ctx: dict[str, Any] | None = None
     runtime: Any | None = None
     agent: Any | None = None
@@ -979,6 +991,32 @@ async def run_agent(
                 )
             return
         started = True
+
+        # A queued Agent run can outlive the HTTP request that admitted it.
+        # Recheck the exact local OIDC vault row before model/tool assembly so
+        # logout or token rotation while waiting cannot leave a stale bearer in
+        # this run. The capability keeps all refresh details server-side.
+        refresh_run_credentials = getattr(ctx.authorization_credentials, "refresh_if_needed", None)
+        if callable(refresh_run_credentials):
+            try:
+                await refresh_run_credentials(force=True)
+            except Exception:
+                logger.warning("Run %s could not revalidate its IAM session before execution", run_id)
+                raise RuntimeError("The IAM session is no longer active for this run") from None
+
+        # Optional usage accounting is attached only for Central IAM and only
+        # when its server-side model_usage.enabled switch is explicitly true.
+        # It reserves synchronously in LangChain's callback executor before a
+        # Provider call, while the Gateway vault capability remains outside
+        # serializable graph state and checkpoints.
+        from deerflow.authz.iam_model_usage_callback import (
+            bind_run_iam_model_usage_callback,
+            build_iam_model_usage_callback,
+        )
+
+        model_usage_callback = build_iam_model_usage_callback(ctx.app_config, ctx.authorization_credentials)
+        if model_usage_callback is not None:
+            model_usage_context_token = bind_run_iam_model_usage_callback(model_usage_callback)
 
         task_id = lead_task_id(run_id)
         if extensions.needs_task_store:
@@ -1105,6 +1143,12 @@ async def run_agent(
         if journal is not None:
             runtime_ctx["__run_journal"] = journal
         _install_runtime_context(config, runtime_ctx)
+        from deerflow.authz.model_authorization_callback import bind_run_model_authorization_context
+
+        model_authorization_context_token = bind_run_model_authorization_context(
+            runtime_ctx,
+            ctx.authorization_credentials,
+        )
         runtime = Runtime(context=cast(Any, runtime_ctx), store=store)
         config.setdefault("configurable", {})["__pregel_runtime"] = runtime
 
@@ -1112,6 +1156,9 @@ async def run_agent(
         # on_llm_end captures token usage; on_chain_start/end captures lifecycle.
         if journal is not None:
             config.setdefault("callbacks", []).append(journal)
+        # IAM accounting handlers are bound to each model profile by
+        # create_chat_model(). This preserves the trusted DeerFlow model name
+        # even when the Provider's deployment/model parameter uses an alias.
 
         # Inject Langfuse trace-attribute metadata so the langchain CallbackHandler
         # can lift session_id / user_id / trace_name / tags onto the root trace.
@@ -1460,6 +1507,24 @@ async def run_agent(
             )
 
     finally:
+        if model_usage_context_token is not None:
+            from deerflow.authz.iam_model_usage_callback import reset_run_iam_model_usage_callback
+
+            reset_run_iam_model_usage_callback(model_usage_context_token)
+        if model_usage_callback is not None:
+            try:
+                await asyncio.to_thread(model_usage_callback.close)
+            except Exception:
+                # The callback logs only a safe exception class; never emit
+                # the Provider error, prompt, token, or vault capability here.
+                logger.warning("Run %s could not flush pending IAM model usage", run_id)
+        if model_authorization_context_token is not None:
+            from deerflow.authz.model_authorization_callback import reset_run_model_authorization_context
+
+            reset_run_model_authorization_context(model_authorization_context_token)
+        # The capability belongs to this run only. Reset as soon as execution
+        # ends, before finalization performs any more asynchronous work.
+        reset_run_authorization_credentials(authorization_context_token)
         try:
             if record.ownership_lost:
                 logger.warning(

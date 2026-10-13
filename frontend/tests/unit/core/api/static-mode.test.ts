@@ -21,6 +21,7 @@ import { listSubagents } from "@/core/subagents/api";
 import { loadSuggestionsConfig } from "@/core/suggestions/api";
 import { fetchSubtaskSteps } from "@/core/tasks/api";
 import { fetchThreadTokenUsage } from "@/core/threads/api";
+import { listThreadOutputFiles, listUploadedFiles } from "@/core/uploads/api";
 
 const { env } = rs.hoisted(() => ({
   env: {
@@ -76,13 +77,22 @@ describe("static website API requests", () => {
       [],
     );
     await expect(fetchThreadTokenUsage("demo")).resolves.toBeNull();
+    await expect(listUploadedFiles("demo")).resolves.toEqual({
+      files: [],
+      count: 0,
+    });
+    await expect(listThreadOutputFiles("demo")).resolves.toEqual({
+      files: [],
+      count: 0,
+      truncated: false,
+    });
     const history = await apiFetch("/api/threads/demo/messages/page?limit=50");
     expect(await history.json()).toEqual({
       data: [],
       has_more: false,
       next_before_seq: null,
     });
-    await expect(loadMemory()).resolves.toMatchObject({
+    await expect(loadMemory("static-demo")).resolves.toMatchObject({
       facts: [],
       user: {},
       history: {},

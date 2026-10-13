@@ -2,9 +2,15 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
-from deerflow_extension_api import EXTENSION_PRINCIPAL_RESOLVER_KEY, ExtensionPrincipal
-from fastapi import FastAPI, Request, Response
+from deerflow_extension_api import (
+    EXTENSION_DATA_SCOPE_CHECKER_KEY,
+    EXTENSION_PRINCIPAL_RESOLVER_KEY,
+    ExtensionDataScopeError,
+    ExtensionPrincipal,
+)
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.auth_disabled import AUTH_SOURCE_INTERNAL, AUTH_SOURCE_PAT, warn_if_auth_disabled_enabled
@@ -303,6 +309,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")
 
+    # Keep the portable Harness independent from app.* while giving
+    # Gateway-owned memory calls the same live IAM checks as HTTP requests.
+    # Register before memory manager construction/warm-up so the callbacks are
+    # available whenever DeerMem performs a model call or background commit.
+    from app.gateway.memory_authorization import (
+        authorize_memory_model_use,
+        authorize_memory_write,
+        create_memory_model_usage_callback,
+    )
+    from deerflow.agents.memory.manager import set_gateway_memory_authorizers
+
+    set_gateway_memory_authorizers(
+        model_authorizer=authorize_memory_model_use,
+        write_authorizer=authorize_memory_write,
+        usage_callback_factory=create_memory_model_usage_callback,
+    )
+
     from deerflow.skills.projection import ensure_public_skill_projection
 
     public_projection_ready = await asyncio.to_thread(ensure_public_skill_projection, app_config=startup_config)
@@ -393,14 +416,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.startup_trash_sweep_task = asyncio.create_task(_run_startup_trash_sweep(app, startup_config))
 
         try:
+            from app.gateway.authz import resolve_scheduled_task_authorization
             from app.gateway.services import launch_scheduled_thread_run
             from app.scheduler import ScheduledTaskService
 
             if getattr(app.state, "scheduled_task_repo", None) is not None and getattr(app.state, "scheduled_task_run_repo", None) is not None:
+
+                async def authorize_scheduled_dispatch(task: dict[str, Any]):
+                    return await resolve_scheduled_task_authorization(
+                        str(task.get("user_id") or ""),
+                        context_mode=str(task.get("context_mode") or "fresh_thread_per_run"),
+                        thread_id=task.get("thread_id"),
+                        thread_store=app.state.thread_store,
+                    )
+
                 scheduled_task_service = ScheduledTaskService(
                     task_repo=app.state.scheduled_task_repo,
                     task_run_repo=app.state.scheduled_task_run_repo,
                     launch_run=lambda **kwargs: launch_scheduled_thread_run(app=app, **kwargs),
+                    authorize_dispatch=authorize_scheduled_dispatch,
                     poll_interval_seconds=startup_config.scheduler.poll_interval_seconds,
                     lease_seconds=startup_config.scheduler.lease_seconds,
                     max_concurrent_runs=startup_config.scheduler.max_concurrent_runs,
@@ -780,12 +814,11 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # synchronous keeps resolve_principal/require_admin usable from both sync
     # and async route handlers.
     def _resolve_extension_principal(request):
-        """Project the host's auth context into the neutral extension shape.
+        """Project the host's identity and effective scopes into the extension shape.
 
-        Deliberately a projection, not a handle: an extension gets the
-        questions it may ask (who, is that an admin, and what role they
-        hold), not the host's AuthContext, which would pin every extension to
-        its internals.
+        Deliberately a projection, not a handle: extensions can ask who the
+        caller is, whether they are an administrator, their role, and which
+        route permissions the Gateway granted, without receiving AuthContext.
         """
         user = getattr(request.state, "user", None)
         if user is None:
@@ -799,18 +832,51 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         is_pat = auth_source == AUTH_SOURCE_PAT
         is_admin = system_role == "admin" and not is_pat
         roles = () if is_pat and system_role == "admin" else (system_role,) if isinstance(system_role, str) and system_role else ()
+        auth_context = getattr(request.state, "auth", None)
+        raw_permissions = getattr(auth_context, "permissions", ())
+        permissions = tuple(permission for permission in raw_permissions if isinstance(permission, str) and permission) if isinstance(raw_permissions, (list, tuple, set, frozenset)) else ()
         return ExtensionPrincipal(
             user_id=str(user.id),
             is_admin=is_admin,
             is_internal=auth_source == AUTH_SOURCE_INTERNAL,
-            # The host's only role concept is the single system_role column
-            # (e.g. "admin", "user") — there is no multi-role system to
-            # project, so a set role becomes the one-element tuple rather
-            # than reading a "roles" attribute the user model never had.
+            # The host's only role concept is the single system_role column;
+            # effective permissions come from AuthMiddleware after policy checks.
             roles=roles,
+            permissions=permissions,
         )
 
     setattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY, _resolve_extension_principal)
+
+    async def _check_extension_data_scope(
+        request: Request,
+        *,
+        target: str,
+        action: str,
+        resource_id: str | None,
+    ) -> None:
+        """Expose the host IAM scope gate without leaking private Gateway APIs.
+
+        The public extension contract accepts route vocabulary and delegates
+        the identity/provider decision back to the Gateway for every request.
+        """
+        from app.gateway.authz import require_iam_data_scope_for_request
+
+        try:
+            await require_iam_data_scope_for_request(
+                request,
+                getattr(request.state, "user", None),
+                target=target,
+                action=action,
+                resource_id=resource_id,
+            )
+        except HTTPException as exc:
+            # Keep the extension contract framework-independent and preserve
+            # only the two expected authorization outcomes.
+            status_code = exc.status_code if exc.status_code in {403, 503} else 503
+            detail = exc.detail if isinstance(exc.detail, str) else "IAM data-scope authorization is unavailable"
+            raise ExtensionDataScopeError(status_code, detail) from None
+
+    setattr(app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY, _check_extension_data_scope)
 
     # CSRF: Double Submit Cookie pattern for state-changing requests
     app.add_middleware(CSRFMiddleware)
@@ -1011,7 +1077,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # attributed diagnostic while unrelated extension routers still mount.
     from deerflow.extensions.gateway import include_contributed_routers
 
-    record_runtime_diagnostics(include_contributed_routers(app, loaded_extensions))
+    # 必需产品扩展若路由挂载失败，必须阻止 Gateway 宣称启动成功；可选扩展仍记录诊断并继续。
+    required_extension_sources = frozenset(spec.use for spec in configured_plugins if spec.enabled and spec.required)
+    app.state.required_extension_sources = required_extension_sources
+    record_runtime_diagnostics(include_contributed_routers(app, loaded_extensions, required_sources=required_extension_sources))
 
     return app
 

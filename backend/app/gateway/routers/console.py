@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app.gateway.authz import require_permission
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_current_user
 from deerflow.config import get_app_config
 from deerflow.config.agents_config import list_custom_agents
@@ -36,6 +36,20 @@ _FAILED_STATUSES = ("error", "timeout")
 
 # Cap the error excerpt in list responses; the full text stays on the run row.
 _ERROR_EXCERPT_CHARS = 300
+
+
+async def _require_console_read_scopes(request: Request, *targets: str) -> None:
+    """Check every Central IAM scope represented by a console response.
+
+    Console reports combine data from several resources, so a successful
+    ``runs:read`` check alone is not enough for thread titles/counts or the
+    current user's custom-agent count. The query still applies DeerFlow's
+    local owner filters after these policy checks.
+    """
+    auth = getattr(request.state, "auth", None)
+    user = getattr(auth, "user", None)
+    for target in targets:
+        await require_iam_data_scope_for_request(request, user, target=target)
 
 
 # ---------------------------------------------------------------------------
@@ -281,9 +295,12 @@ def _run_cost(
     summary="Console Stats",
     description="Headline counters (runs, threads, agents, tokens) scoped to the current user.",
 )
+@require_permission("agents", "read")
+@require_permission("threads", "read")
 @require_permission("runs", "read")
 async def console_stats(request: Request) -> ConsoleStatsResponse:
     """Return the dashboard's headline counters."""
+    await _require_console_read_scopes(request, "runs:read", "threads:read", "agents:read")
     sf = _session_factory_or_503()
     user_id = await get_current_user(request)
     run_where = (RunRow.operation_kind == "run",)
@@ -352,6 +369,7 @@ async def console_stats(request: Request) -> ConsoleStatsResponse:
     summary="List Runs Across Threads",
     description="Cross-thread run history for the current user, newest first, joined with thread titles.",
 )
+@require_permission("threads", "read")
 @require_permission("runs", "read")
 async def console_runs(
     request: Request,
@@ -360,6 +378,7 @@ async def console_runs(
     status: str | None = Query(default=None, description="Filter by run status (e.g. running, success, error)"),
 ) -> ConsoleRunsResponse:
     """Return a page of the user's runs across all threads."""
+    await _require_console_read_scopes(request, "runs:read", "threads:read")
     sf = _session_factory_or_503()
     user_id = await get_current_user(request)
 
@@ -430,6 +449,7 @@ async def console_usage(
     tz_offset_minutes: int = Query(default=0, ge=-840, le=840, description="Local-time offset from UTC for day bucketing"),
 ) -> ConsoleUsageResponse:
     """Aggregate token usage by local day and by model."""
+    await _require_console_read_scopes(request, "runs:read")
     sf = _session_factory_or_503()
     user_id = await get_current_user(request)
 

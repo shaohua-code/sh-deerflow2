@@ -270,6 +270,17 @@ DeerFlow 支持四类彼此独立的 HTTP 身份来源。它们共享同一套 *
 | **IM Channel 绑定** | Settings 里 Connect + 平台侧 `/connect <code>` | 绑定到**已注册** DeerFlow 用户 | `channel_connections` / `channel_conversations` | `owner_user_id` → `users.id` |
 | **Internal Auth（直接 HTTP）** | `X-DeerFlow-Internal-Token` + `X-DeerFlow-Owner-User-Id` | **否**（合成 internal 用户） | 平台在 header 中自声明 owner 字符串 | `threads_meta.user_id = owner`（经 `make_safe_user_id` 规范化） |
 
+IAM OIDC token vault 是 Provider 级 opt-in：开启后需要 `offline_access` 和
+Gateway 环境变量 `DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY`。令牌密文按本地 JWT
+`sid` 对应的登录会话隔离；本地 logout 删除该会话行，但当前不会调用 IAM
+revocation endpoint。配置声明 `requires_iam_identity`（兼容 `central-iam` 名称）
+的 AuthorizationProvider 后，请求授权入口会校验签名 `sid`、本地活跃身份及
+vault 行，再按需调用 OIDC refresh grant 并原子轮换密文。access token 只在当前
+请求中通过 repr 脱敏 Mapping 交给 Provider；模型目录与沙箱同步授权复用这一请求态，
+不得把 token 放入 RunnableConfig、checkpoint 或 Agent context。Gateway route、
+model catalog 与 sandbox-sync 请求因此可执行在线 IAM 判权；Agent 后台运行中的
+model/tool 授权尚未取得这个凭证能力，数据范围、远程 revoke、真实 IAM 联调也未完成。
+
 ```mermaid
 graph TB
   classDef browser fill:#C9D7D2,stroke:#5D706A,color:#21302C
@@ -443,6 +454,24 @@ PYTHONPATH=. python scripts/migrate_user_isolation.py --user-id <target-user-id>
 | IM 用户隔离 | `channel_connections` 绑定到 `users.id`；未绑定消息在 `require_bound_identity: true` 时被拒绝 | 更多渠道与审计能力 |
 | Internal Auth 终端直持 token | 平台可把共享密钥下发给终端，导致 `Owner-User-Id` 可伪造 | 仅平台后端持 token；终端走平台自己的认证 |
 | 绝对 memory path | 显式共享 memory | UI / docs 明确提示 opt-out 风险 |
+
+## 中央 IAM 与 Agent run 授权
+
+所有带 `owner_check=True` 的 `threads:read` / `runs:read` 只读路由，在本地 thread owner 检查通过后、执行 handler 前再调用 `require_iam_data_scope_for_request`。因此已知 thread ID 的详情、运行、消息和事件端点不能绕过集合列表的 IAM data_scope；IAM deny 或 scope 缺失时返回拒绝/不可用，不会读取仓储。全局 `/api/threads/search` 仍单独校验 `threads:read`；项目与项目会话读取校验 `projects:read`。
+
+个人 UI 偏好 API 也纳入 Central IAM：GET 要求 `preferences:read` 与已验证 OIDC 主体的本人 owner/self data_scope；PATCH 要求 `preferences:write` 与对应写范围。检查在访问 `user_preferences` 仓储之前完成，同时仍限定浏览器 session 并用本地用户 ID 作为存储键。IAM migration `0030_deerflow_preference_permissions` 只登记读写目录权限，不自动给角色授权。
+
+实时浏览器 WebSocket (`/api/threads/{thread_id}/browser/stream`) 绕过 HTTP `AuthMiddleware`，因此在握手路径中独立解析本地 session，并将签名 JWT 的随机 `sid` 放在仅限本次连接的 request state 中。打开流前必须通过 `threads:read` 和 `threads:write` 路由权限，以及同一 thread ID 的读取和写入 owner/self data_scope；线程仍须由本地 repository 精确归属当前 `user_id`，Origin 与 browser-tools 开关也继续校验。权限拒绝在获取 browser session 前关闭为 4403，未认证为 4401，中央授权服务不可用时关闭为 1011。OIDC vault access/refresh token 不进入浏览器消息；登出继续只清理本地 vault session。
+
+GitHub webhook 的 `DEER_FLOW_ALLOW_UNVERIFIED_GITHUB_WEBHOOKS` 仅用于显式非生产的本地开发或 loopback 测试；当 `DEER_FLOW_ENV` 或 `ENVIRONMENT` 明确指定 production 时，该开关始终失效。没有 `GITHUB_WEBHOOK_SECRET` 时生产不会挂载 webhook 路由，运行时 defense-in-depth 也拒绝未签名 delivery；生产 webhook 必须验证 HMAC-SHA256。
+
+项目文档列表/内容、项目会话文件聚合、回收站列表也在仓储/文件扫描前校验 IAM scope。Gateway 个人记忆 REST 路由要求 `memory:read`、`memory:write`、`memory:delete` 或 `memory:admin`；当前记忆写接口的响应包含整份文档，因此写/删动作也必须先具有 `memory:read` 数据范围，并在访问 MemoryManager 前检查。`/api/memory/config` 返回后端配置，只允许 `memory:admin`。PAT memory methods 在 path/method allowlist 中逐条登记，不能靠 scope 自动开放新路由。
+
+当 OIDC Provider 显式启用 `iam_token_vault_enabled`，并由中央 AuthorizationProvider 声明 `requires_iam_identity` 时，Gateway 从经过签名校验的本地 session `sid` 查询 AES-256-GCM vault。HTTP route、model catalog、sandbox-sync 检查会在线调用 IAM；请求级 resolver 在 access token 临近过期时持有 vault 行锁执行 refresh rotation。
+
+创建 Agent run 时，Gateway 只把 repr 脱敏的 credential Mapping 放入 `RunContext.authorization_credentials`。`run_agent` 将 capability 绑定到当前任务的 ContextVar；`build_principal_from_context` 仅在 Principal 的 OIDC `oauth_id` 与 capability 的 `iam_subject` 完全一致时附加它。运行身份不进入 LangGraph `config`、通用 `context`、checkpoint 或浏览器响应，run 结束立即清理 ContextVar。这样模型选择、工具过滤和每次工具执行都可以向 IAM 发起在线检查。没有用户绑定会话的 scheduler/programmatic run 在中央 Provider 下失败关闭。
+
+Agent run 在模型/工具组装前强制复核 vault session；运行期间会话最多每 2 秒复核一次，access token 临期时通过 vault 行锁执行 refresh rotation。登出删除 session 行后会清空 capability 并失败关闭。Token 过期、撤销或 vault 无法读取时 IAM 检查拒绝。项目、线程/运行、项目文档/文件、回收站和个人记忆读取已请求对应 data_scope，并继续按本地 owner 求交；目前只支持验证主体对应的本人范围。记忆 REST 回归 118/118 通过；文档/回收站在 Windows 短路径下 72 通过、2 跳过，255-byte 文件名压力用例仍受 Windows `WinError 3` 阻塞。没有真实 IAM/浏览器验收。Agent 后台记忆写入、tenant/organization 映射、上游 revoke、adapter 部署和产品库迁移仍未完成。
 
 ## 相关文件
 

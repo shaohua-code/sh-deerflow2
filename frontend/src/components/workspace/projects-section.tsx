@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useCreateProject, useProjects, type Project } from "@/core/projects";
 import { useLocalSettings } from "@/core/settings";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
@@ -151,12 +153,17 @@ function ArchivedProjectsGroup({
  * pages), plus a collapsed "Archived" section at the bottom.
  */
 function GroupedProjectList() {
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const { data: activeProjects } = useProjects("active");
   const { data: archivedProjects } = useProjects("archived");
-  const { data: infiniteThreads } = useInfiniteThreads({
-    archived:
-      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
-  });
+  const { data: infiniteThreads } = useInfiniteThreads(
+    {
+      archived:
+        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
+    },
+    { enabled: access.canReadThreads },
+  );
   const { thread_id: threadIdFromPath } = useParams<{
     thread_id: string;
     agent_name?: string;
@@ -232,6 +239,8 @@ function GroupedProjectList() {
 
 export function ProjectsSection() {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const [settings, setSettings] = useLocalSettings();
   const groupByProject = settings.projectsDisplayMode === "grouped";
   const { mutate: createProject, isPending: isCreating } = useCreateProject();
@@ -239,9 +248,16 @@ export function ProjectsSection() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createName, setCreateName] = useState("");
 
+  useEffect(() => {
+    if (!access.canCreateProject) {
+      setCreateDialogOpen(false);
+      setCreateName("");
+    }
+  }, [access.canCreateProject]);
+
   const handleCreateSubmit = useCallback(() => {
     const name = createName.trim();
-    if (!name || isCreating) {
+    if (!name || isCreating || !access.canCreateProject) {
       return;
     }
     createProject(
@@ -251,20 +267,23 @@ export function ProjectsSection() {
           setCreateDialogOpen(false);
           setCreateName("");
         },
-        onError: (error) => {
-          toast.error(
-            error instanceof Error && error.message
-              ? error.message
-              : t.projects.createFailed,
-          );
+        onError: () => {
+          // 创建失败可能包含 Gateway 的内部 detail，只向用户显示双语产品提示。
+          toast.error(t.projects.createFailed);
         },
       },
     );
-  }, [createProject, createName, isCreating, t.projects.createFailed]);
+  }, [
+    access.canCreateProject,
+    createProject,
+    createName,
+    isCreating,
+    t.projects.createFailed,
+  ]);
 
   // Static-demo mode has no Gateway and no projects: hide the whole section
   // (New project button, grouped toggle, and groups are all dead actions).
-  if (isStaticWebsiteOnly()) {
+  if (isStaticWebsiteOnly() || !access.canReadProjects) {
     return null;
   }
 
@@ -297,17 +316,19 @@ export function ProjectsSection() {
           >
             {groupByProject ? <FolderTree /> : <List />}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-5 [&>svg]:size-3.5"
-            title={t.projects.newProject}
-            aria-label={t.projects.newProject}
-            onClick={() => setCreateDialogOpen(true)}
-            data-testid="projects-new-project-button"
-          >
-            <Plus />
-          </Button>
+          {access.canCreateProject ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-5 [&>svg]:size-3.5"
+              title={t.projects.newProject}
+              aria-label={t.projects.newProject}
+              onClick={() => setCreateDialogOpen(true)}
+              data-testid="projects-new-project-button"
+            >
+              <Plus />
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"
@@ -330,13 +351,17 @@ export function ProjectsSection() {
       )}
 
       {/* New project dialog */}
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+      <Dialog
+        open={access.canCreateProject && createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+      >
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>{t.projects.newProject}</DialogTitle>
           </DialogHeader>
           <div className="py-4">
             <Input
+              aria-label={t.projects.namePlaceholder}
               value={createName}
               onChange={(e) => setCreateName(e.target.value)}
               placeholder={t.projects.namePlaceholder}

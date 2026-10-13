@@ -6,6 +6,8 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { useI18n } from "@/core/i18n/hooks";
+
 import {
   controlSubagentBatch,
   fetchSubagentBatchItems,
@@ -67,6 +69,7 @@ export function useSubagentBatchItems(
 
 export function useControlSubagentBatch(threadId: string) {
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   return useMutation({
     mutationFn: ({
       batchId,
@@ -77,12 +80,16 @@ export function useControlSubagentBatch(threadId: string) {
     }) => controlSubagentBatch(threadId, batchId, action),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: subagentBatchesKey(threadId) }),
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      console.error("Failed to update subagent batch:", error);
+      toast.error(t.subagentBatches.controlFailed);
+    },
   });
 }
 
 export function useRetrySubagentBatchItem(threadId: string, batchId: string) {
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   return useMutation({
     mutationFn: (itemId: string) =>
       retrySubagentBatchItem(threadId, batchId, itemId),
@@ -94,6 +101,9 @@ export function useRetrySubagentBatchItem(threadId: string, batchId: string) {
         queryKey: subagentBatchItemsKey(threadId, batchId),
       });
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      console.error("Failed to retry subagent batch item:", error);
+      toast.error(t.subagentBatches.retryFailed);
+    },
   });
 }

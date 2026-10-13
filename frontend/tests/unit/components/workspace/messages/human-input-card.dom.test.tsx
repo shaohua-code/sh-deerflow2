@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import { HumanInputCard } from "@/components/workspace/messages/human-input-card";
 import { I18nContext } from "@/core/i18n/context";
@@ -35,6 +41,36 @@ afterEach(() => {
 });
 
 describe("HumanInputCard form validation (DOM)", () => {
+  it("keeps a free-text response available when submission is rejected", async () => {
+    const onSubmit = rs.fn().mockResolvedValue(false);
+    render(
+      <I18nContext.Provider
+        value={{ locale: "en-US", setLocale: () => undefined, t: enUS }}
+      >
+        <HumanInputCard
+          request={{
+            version: 1,
+            kind: "human_input_request",
+            source: "ask_clarification",
+            request_id: "clarification:free-text",
+            question: "What should I know?",
+            input_mode: "free_text",
+          }}
+          onSubmit={onSubmit}
+        />
+      </I18nContext.Provider>,
+    );
+
+    const answer = screen.getByRole("textbox");
+    fireEvent.change(answer, { target: { value: "Keep this answer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(
+      answer.getAttribute("value") ?? (answer as HTMLTextAreaElement).value,
+    ).toBe("Keep this answer");
+  });
+
   it("keeps the error node mounted while another field is still invalid", () => {
     renderCard();
 

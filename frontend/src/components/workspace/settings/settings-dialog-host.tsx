@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 
 import {
+  setSettingsDialogSection,
   setSettingsDialogOpen,
   useSettingsDialog,
 } from "./settings-dialog-store";
@@ -36,6 +37,7 @@ export function SettingsDialogHost() {
       open={open}
       onOpenChange={setSettingsDialogOpen}
       defaultSection={section}
+      onSectionRequestRejected={setSettingsDialogSection}
     />
   );
 }

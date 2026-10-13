@@ -33,7 +33,9 @@ test.describe("Agent chat", () => {
       await route.fulfill({ json: { ...MOCK_AGENTS[0], ...request } });
     });
     await page.goto("/workspace/agents");
-    await page.getByTitle("Agent settings", { exact: true }).click();
+    await page
+      .getByTitle("Agent settings for test-agent", { exact: true })
+      .click();
     const input = page.getByLabel("Display name", { exact: true });
     await input.fill("🦌".repeat(101));
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -71,7 +73,9 @@ test.describe("Agent chat", () => {
       await route.fulfill({ json: agent });
     });
     await page.goto("/workspace/agents");
-    await page.getByTitle("Agent settings", { exact: true }).click();
+    await page
+      .getByTitle("Agent settings for test-agent", { exact: true })
+      .click();
     await page.getByLabel("Display name", { exact: true }).fill("代码审查助手");
     await page.screenshot({
       path: testInfo.outputPath("display-name-settings.png"),
@@ -79,7 +83,9 @@ test.describe("Agent chat", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeHidden();
     await expect(page.getByText("代码审查助手", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Chat with 代码审查助手", exact: true })
+      .click();
     await page.waitForURL("**/workspace/agents/test-agent/chats/**");
     await expect(
       page.getByText("代码审查助手", { exact: true }).first(),
@@ -161,8 +167,23 @@ test.describe("Agent chat", () => {
     const textarea = page.getByPlaceholder(/how can i assist you/i);
     await expect(textarea).toBeVisible({ timeout: 15_000 });
     await expect(
-      page.getByText("DeerFlow is AI and can make mistakes", { exact: true }),
+      page.getByText("AI can make mistakes", { exact: true }),
     ).toBeVisible();
+  });
+
+  test("missing agent blocks chat and offers recovery", async ({ page }) => {
+    mockLangGraphAPI(page, { agents: MOCK_AGENTS });
+
+    await page.goto("/workspace/agents/missing-agent/chats/new");
+
+    await expect(
+      page.getByRole("heading", { name: "Agent not found" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByPlaceholder(/how can i assist you/i)).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Back to Gallery" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
   test("continues an IM-selected thread with the same agent from the sidebar", async ({

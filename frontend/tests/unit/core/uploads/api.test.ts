@@ -9,7 +9,12 @@ rs.mock("@/core/config", () => ({
 }));
 
 import { fetch as fetcher } from "@/core/api/fetcher";
-import { deleteUploadedFile, uploadFiles } from "@/core/uploads/api";
+import {
+  deleteUploadedFile,
+  listThreadOutputFiles,
+  UploadRequestError,
+  uploadFiles,
+} from "@/core/uploads/api";
 
 const mockedFetch = rs.mocked(fetcher);
 
@@ -46,6 +51,18 @@ describe("uploads api", () => {
     );
 
     expect(error.message).toBe("File exceeds the upload limit");
+  });
+
+  test("hides internal server details from failed uploads", async () => {
+    const privateDetail = "database password at /srv/private/uploads.db";
+    const error = await uploadError(
+      jsonResponse(500, { detail: privateDetail }),
+    );
+
+    expect(error).toBeInstanceOf(UploadRequestError);
+    expect(error.message).toBe("Upload failed");
+    expect((error as UploadRequestError).status).toBe(500);
+    expect(error.message).not.toContain(privateDetail);
   });
 
   test("formats FastAPI validation error details", async () => {
@@ -150,6 +167,50 @@ describe("uploads api", () => {
     expect(mockedFetch).toHaveBeenCalledWith(
       "/backend/api/threads/thread-1/uploads/report%231%3F.txt",
       { method: "DELETE" },
+    );
+  });
+
+  test("hides internal server details from failed file deletions", async () => {
+    const privateDetail = "unlink failed at /srv/private/report.pdf";
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(500, { detail: privateDetail }),
+    );
+
+    let thrown: unknown;
+    try {
+      await deleteUploadedFile("thread-1", "report.pdf");
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UploadRequestError);
+    expect(thrown).toMatchObject({
+      message: "Failed to delete file",
+      status: 500,
+    });
+    expect((thrown as Error).message).not.toContain(privateDetail);
+  });
+
+  test("lists generated outputs through the owner-checked Gateway route", async () => {
+    const response = {
+      files: [
+        {
+          filename: "answer.md",
+          size: 8,
+          modified: 1_790_000_000,
+          artifact_url:
+            "/api/threads/thread-1/artifacts/mnt/user-data/outputs/answer.md",
+        },
+      ],
+      count: 1,
+      truncated: false,
+    };
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, response));
+
+    await expect(listThreadOutputFiles("thread #1")).resolves.toEqual(response);
+
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/backend/api/threads/thread%20%231/uploads/outputs?limit=200",
     );
   });
 });

@@ -19,6 +19,9 @@ const withNextra = nextra({});
 
 /** @type {import("next").NextConfig} */
 const config = {
+  // 测试或并行 checkout 可把 Next 生成物写到仓库内的独立目录；正常运行仍使用 `.next`。
+  // E2E 临时设置 DEER_FLOW_NEXT_DIST_DIR，避免覆盖当前开发或生产构建产物。
+  distDir: process.env.DEER_FLOW_NEXT_DIST_DIR?.trim() || ".next",
   output:
     process.env.NEXT_CONFIG_BUILD_OUTPUT === "standalone"
       ? "standalone"

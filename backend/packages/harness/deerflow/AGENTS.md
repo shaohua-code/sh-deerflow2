@@ -82,6 +82,8 @@ drift.
 
 **Gateway differences**: Upload takes local `Path`, not `UploadFile`, rejects directories before copying, and reuses one conversion worker inside an active event loop. Artifacts return `(bytes, mime_type)`, not HTTP Response. Gateway alone deletes `.deer-flow/threads/{thread_id}` after LangGraph thread deletion; the client has no equivalent. `update_mcp_config()` and `update_skill()` invalidate the cached agent.
 
+Shared upload naming is owned by `deerflow.uploads.manager.claim_unique_filename()`. Its optional `max_bytes` argument defaults to the existing 255-byte component limit; a Gateway caller may pass a smaller budget when the platform limits the full path. Keep UTF-8 truncation, extension preservation where it fits, and unique collision suffixes aligned with that caller budget. Client and IM callers keep the default unless they calculate their own path constraint.
+
 **Tests**: `tests/test_client.py` is offline, including `TestGatewayConformance`.
 `tests/test_client_live.py` requires root `config.yaml`, valid API credentials,
 and opt-in via `make test-live` or `DEER_FLOW_RUN_LIVE_TESTS=1`. It calls real

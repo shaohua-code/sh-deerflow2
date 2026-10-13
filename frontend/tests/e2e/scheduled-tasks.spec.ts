@@ -81,6 +81,21 @@ test("user can create a scheduled task from the page", async ({ page }) => {
 
   await page.goto("/workspace/scheduled-tasks");
   const createForm = page.getByTestId("scheduled-task-create-form");
+  await expect(
+    createForm.getByRole("textbox", { name: "Task title" }),
+  ).toBeVisible();
+  await expect(
+    createForm.getByRole("textbox", { name: "Prompt" }),
+  ).toBeVisible();
+  await expect(
+    createForm.getByRole("combobox", { name: "Agent" }),
+  ).toBeVisible();
+  await expect(
+    createForm.getByRole("combobox", { name: "Repeat" }),
+  ).toBeVisible();
+  await expect(
+    createForm.getByRole("combobox", { name: "Timezone" }),
+  ).toBeVisible();
   await createForm.getByRole("button", { name: "One-time" }).click();
   await createForm.getByLabel("Run at").fill("2026-07-02T09:00");
   await createForm.getByPlaceholder("Task title").fill("Created from UI");

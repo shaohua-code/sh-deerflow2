@@ -27,44 +27,65 @@ afterEach(() => {
 });
 
 test("staged attachments append to the thread's pending list and never consume on read", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
-  stageProjectAttachment("thread-1", OTHER);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", OTHER);
 
   // A different thread sees nothing.
-  expect(readProjectAttachments("thread-2")).toEqual([]);
+  expect(readProjectAttachments("user-1", "thread-2")).toEqual([]);
 
   // Read-only: repeated reads keep returning the pending entries — nothing
   // is consumed until submission or explicit removal.
-  expect(readProjectAttachments("thread-1")).toEqual([ATTACHMENT, OTHER]);
-  expect(readProjectAttachments("thread-1")).toEqual([ATTACHMENT, OTHER]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([
+    ATTACHMENT,
+    OTHER,
+  ]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([
+    ATTACHMENT,
+    OTHER,
+  ]);
 });
 
 test("re-staging the same document refreshes its entry instead of duplicating it", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
-  stageProjectAttachment("thread-1", OTHER);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", OTHER);
   const refreshed = { ...ATTACHMENT, size_bytes: 4096 };
-  stageProjectAttachment("thread-1", refreshed);
+  stageProjectAttachment("user-1", "thread-1", refreshed);
 
-  expect(readProjectAttachments("thread-1")).toEqual([OTHER, refreshed]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([
+    OTHER,
+    refreshed,
+  ]);
 });
 
 test("a corrupt staged payload is dropped, not thrown", () => {
   window.sessionStorage.setItem(
-    "deerflow.project-attachment.thread-1",
+    "deerflow.project-attachment.v2.user-1.thread-1",
     "{not json",
   );
-  expect(readProjectAttachments("thread-1")).toEqual([]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([]);
   // The corrupt entry was cleared along the way.
   expect(
-    window.sessionStorage.getItem("deerflow.project-attachment.thread-1"),
+    window.sessionStorage.getItem(
+      "deerflow.project-attachment.v2.user-1.thread-1",
+    ),
   ).toBeNull();
 });
 
-test("the pre-list single-object payload shape reads as a one-element list", () => {
+test("a v2 single-object payload reads as a one-element list", () => {
   window.sessionStorage.setItem(
-    "deerflow.project-attachment.thread-1",
+    "deerflow.project-attachment.v2.user-1.thread-1",
     JSON.stringify(ATTACHMENT),
   );
 
-  expect(readProjectAttachments("thread-1")).toEqual([ATTACHMENT]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([ATTACHMENT]);
+});
+
+test("staged documents stay with their owner and ownerless legacy entries are ignored", () => {
+  const legacyKey = "deerflow.project-attachment.thread-1";
+  window.sessionStorage.setItem(legacyKey, JSON.stringify(OTHER));
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+
+  expect(readProjectAttachments("user-2", "thread-1")).toEqual([]);
+  expect(readProjectAttachments("user-1", "thread-1")).toEqual([ATTACHMENT]);
+  expect(window.sessionStorage.getItem(legacyKey)).toBe(JSON.stringify(OTHER));
 });

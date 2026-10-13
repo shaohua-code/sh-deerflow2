@@ -11,7 +11,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -357,6 +357,39 @@ class RunRepository(RunStore):
                 return
             await session.delete(row)
             await session.commit()
+
+    async def delete_by_thread(
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None | _AutoSentinel = AUTO,
+    ) -> int:
+        """Atomically purge a thread's run rows without releasing its reservation."""
+        resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.delete_by_thread")
+        async with self._sf() as session:
+            if resolved_user_id is not None:
+                owners_result = await session.execute(
+                    select(RunRow.user_id)
+                    .where(
+                        RunRow.thread_id == thread_id,
+                        RunRow.operation_kind == "run",
+                        RunRow.user_id.is_not(None),
+                    )
+                    .distinct()
+                )
+                other_owners = {owner for owner in owners_result.scalars() if owner != resolved_user_id}
+                if other_owners:
+                    raise RuntimeError("Cannot delete thread run history with a conflicting owner")
+
+            statement = delete(RunRow).where(
+                RunRow.thread_id == thread_id,
+                RunRow.operation_kind == "run",
+            )
+            if resolved_user_id is not None:
+                statement = statement.where(or_(RunRow.user_id == resolved_user_id, RunRow.user_id.is_(None)))
+            result = await session.execute(statement)
+            await session.commit()
+            return int(result.rowcount or 0)
 
     async def delete_thread_operation(self, run_id: str, *, user_id: str | None) -> None:
         """Release a reservation using its captured owner, not request context."""

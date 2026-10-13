@@ -152,6 +152,25 @@ def test_polish_input_returns_503_on_model_error(monkeypatch):
     assert exc_info.value.status_code == 503
 
 
+def test_polish_input_preserves_model_authorization_denial(monkeypatch):
+    monkeypatch.setattr(
+        input_polish,
+        "run_authorized_one_shot_model",
+        AsyncMock(side_effect=HTTPException(status_code=403, detail="model denied")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            input_polish.polish_input.__wrapped__(
+                input_polish.InputPolishRequest(text="hello"),
+                request=object(),
+                config=_config(),
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
 def test_polish_input_rejects_whitespace_only_draft(monkeypatch):
     # A padded draft that is empty after normalization is rejected as empty,
     # matching the normalized view used for the model input.

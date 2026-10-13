@@ -121,8 +121,10 @@ async function readErrorDetail(response: Response): Promise<SkillErrorDetail> {
   };
 }
 
-export async function loadSkills() {
-  const skills = await fetch(`${getBackendBaseURL()}/api/skills`);
+export async function loadSkills(options: { signal?: AbortSignal } = {}) {
+  const skills = await fetch(`${getBackendBaseURL()}/api/skills`, {
+    signal: options.signal,
+  });
   if (!skills.ok) {
     const detail = await readErrorDetail(skills);
     throw new SkillRequestError(skills.status, detail.message, detail);

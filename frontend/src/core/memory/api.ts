@@ -7,6 +7,10 @@ import type {
   UserMemory,
 } from "./types";
 
+function ownerHeaders(expectedUserId: string): Record<string, string> {
+  return { "X-Expected-User-Id": expectedUserId };
+}
+
 async function readMemoryResponse(
   response: Response,
   fallbackMessage: string,
@@ -80,38 +84,59 @@ async function readMemoryResponse(
   return response.json() as Promise<UserMemory>;
 }
 
-export async function loadMemory(): Promise<UserMemory> {
-  const response = await fetch(`${getBackendBaseURL()}/api/memory`);
+export async function loadMemory(
+  expectedUserId: string,
+  signal?: AbortSignal,
+): Promise<UserMemory> {
+  const response = await fetch(`${getBackendBaseURL()}/api/memory`, {
+    headers: ownerHeaders(expectedUserId),
+    signal,
+  });
   return readMemoryResponse(response, "Failed to fetch memory");
 }
 
-export async function clearMemory(): Promise<UserMemory> {
+export async function clearMemory(expectedUserId: string): Promise<UserMemory> {
   const response = await fetch(`${getBackendBaseURL()}/api/memory`, {
     method: "DELETE",
+    headers: ownerHeaders(expectedUserId),
   });
   return readMemoryResponse(response, "Failed to clear memory");
 }
 
-export async function deleteMemoryFact(factId: string): Promise<UserMemory> {
+export async function deleteMemoryFact(
+  factId: string,
+  expectedUserId: string,
+): Promise<UserMemory> {
   const response = await fetch(
     `${getBackendBaseURL()}/api/memory/facts/${encodeURIComponent(factId)}`,
     {
       method: "DELETE",
+      headers: ownerHeaders(expectedUserId),
     },
   );
   return readMemoryResponse(response, "Failed to delete memory fact");
 }
 
-export async function exportMemory(): Promise<UserMemory> {
-  const response = await fetch(`${getBackendBaseURL()}/api/memory/export`);
+export async function exportMemory(
+  expectedUserId: string,
+  signal?: AbortSignal,
+): Promise<UserMemory> {
+  const response = await fetch(`${getBackendBaseURL()}/api/memory/export`, {
+    headers: ownerHeaders(expectedUserId),
+    signal,
+  });
   return readMemoryResponse(response, "Failed to export memory");
 }
 
-export async function importMemory(memory: UserMemory): Promise<UserMemory> {
+export async function importMemory(
+  memory: UserMemory,
+  expectedUserId: string,
+): Promise<UserMemory> {
   const response = await fetch(`${getBackendBaseURL()}/api/memory/import`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...ownerHeaders(expectedUserId),
     },
     body: JSON.stringify(memory),
   });
@@ -120,11 +145,13 @@ export async function importMemory(memory: UserMemory): Promise<UserMemory> {
 
 export async function createMemoryFact(
   input: MemoryFactInput,
+  expectedUserId: string,
 ): Promise<UserMemory> {
   const response = await fetch(`${getBackendBaseURL()}/api/memory/facts`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...ownerHeaders(expectedUserId),
     },
     body: JSON.stringify(input),
   });
@@ -134,6 +161,7 @@ export async function createMemoryFact(
 export async function updateMemoryFact(
   factId: string,
   input: MemoryFactPatchInput,
+  expectedUserId: string,
 ): Promise<UserMemory> {
   const response = await fetch(
     `${getBackendBaseURL()}/api/memory/facts/${encodeURIComponent(factId)}`,
@@ -141,6 +169,7 @@ export async function updateMemoryFact(
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
+        ...ownerHeaders(expectedUserId),
       },
       body: JSON.stringify(input),
     },

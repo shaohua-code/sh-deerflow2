@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -39,6 +40,48 @@ class _Service:
 
 
 @pytest.mark.asyncio
+async def test_admin_action_observers_run_in_order_and_fail_open(caplog):
+    from datetime import UTC, datetime
+
+    from deerflow_extension_api import AdminActionEvent
+
+    from deerflow.extensions.notify import notify_admin_action
+
+    events: list[str] = []
+
+    class _Observer:
+        def __init__(self, name: str, *, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+
+        async def on_admin_action(self, event) -> None:
+            events.append(f"{self.name}:{event.action}")
+            if self.fail:
+                raise RuntimeError(f"{self.name} failed")
+
+    first = _Observer("first", fail=True)
+    second = _Observer("second")
+    registry = ExtensionRegistry()
+    with registry.attributed_to("first:install"):
+        registry.admin_action_observer(first)
+    with registry.attributed_to("second:install"):
+        registry.admin_action_observer(second)
+
+    event = AdminActionEvent(
+        actor_user_id="admin-1",
+        action="account.status.disable",
+        resource_type="account",
+        resource_id="user-2",
+        outcome="success",
+        occurred_at=datetime.now(UTC),
+    )
+    await notify_admin_action(registry.build(), event)
+
+    assert events == ["first:account.status.disable", "second:account.status.disable"]
+    assert "Extension first:install: on_admin_action failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_services_start_in_order_with_narrow_deps_and_fail_open():
     from deerflow.extensions.gateway import start_services
 
@@ -58,11 +101,17 @@ async def test_services_start_in_order_with_narrow_deps_and_fail_open():
     )
 
     run_evidence_reader = object()
+    owner_data_reader = object()
+    owner_data_deleter = object()
+    product_data_directory = Path("/tmp/flowdesk-data-jobs")
     diagnostics = await start_services(
         extensions,
         config,
         session_factory,
         run_evidence_reader=run_evidence_reader,
+        owner_data_reader=owner_data_reader,
+        owner_data_deleter=owner_data_deleter,
+        product_data_directory=product_data_directory,
     )
 
     assert events == ["start:first", "start:second"]
@@ -70,10 +119,63 @@ async def test_services_start_in_order_with_narrow_deps_and_fail_open():
     assert second.deps.app_store is extensions.app_store
     assert second.deps.session_factory is session_factory
     assert second.deps.run_evidence_reader is run_evidence_reader
+    assert second.deps.owner_data_reader is owner_data_reader
+    assert second.deps.owner_data_deleter is owner_data_deleter
+    assert second.deps.product_data_directory == product_data_directory
     assert second.deps.policy.token_budget_enabled is False
     assert second.deps.policy.max_total_tokens is None
     assert second.deps.policy.max_subagents_per_run == 4
     assert [(diagnostic.source, diagnostic.level) for diagnostic in diagnostics] == [("first:install", "error")]
+
+
+@pytest.mark.asyncio
+async def test_required_service_start_failure_aborts_before_later_services():
+    from deerflow.extensions.gateway import start_services
+    from deerflow.extensions.loader import ExtensionLoadError
+
+    events: list[str] = []
+    registry = ExtensionRegistry()
+    with registry.attributed_to("required:install"):
+        registry.service(_Service("required", events, fail_start=True))
+    with registry.attributed_to("later:install"):
+        registry.service(_Service("later", events))
+
+    with pytest.raises(ExtensionLoadError, match="required:install"):
+        await start_services(
+            registry.build(),
+            SimpleNamespace(),
+            None,
+            required_sources=frozenset({"required:install"}),
+        )
+
+    assert events == ["start:required"]
+
+
+@pytest.mark.asyncio
+async def test_required_service_originated_cancellation_aborts_startup():
+    from deerflow.extensions.gateway import start_services
+    from deerflow.extensions.loader import ExtensionLoadError
+
+    events: list[str] = []
+
+    class _CancelsItself(_Service):
+        async def start(self, deps) -> None:
+            self.events.append(f"start:{self.name}")
+            raise asyncio.CancelledError()
+
+    registry = ExtensionRegistry()
+    with registry.attributed_to("required:install"):
+        registry.service(_CancelsItself("required", events))
+
+    with pytest.raises(ExtensionLoadError, match="required:install"):
+        await start_services(
+            registry.build(),
+            SimpleNamespace(),
+            None,
+            required_sources=frozenset({"required:install"}),
+        )
+
+    assert events == ["start:required"]
 
 
 @pytest.mark.asyncio
@@ -737,6 +839,55 @@ def test_extension_routes_cannot_claim_reserved_exact_paths_with_a_disjoint_meth
     assert not any(getattr(route, "path", None) == candidate_path and getattr(route, "methods", set()) == {candidate_method} for route in app.routes)
 
 
+def test_flow_desk_can_mount_only_its_exact_read_only_public_brand_route():
+    from fastapi import APIRouter, FastAPI
+
+    from deerflow.extensions.gateway import include_contributed_routers
+
+    router = APIRouter()
+    router.add_api_route("/api/product/v1/public-brand", lambda: {"name": "Flow Desk"}, methods=["GET"])
+    router.add_api_route("/api/product/v1/settings", lambda: {"settings": []}, methods=["GET"])
+    registry = ExtensionRegistry()
+    with registry.attributed_to("flow_desk_product_extension:install"):
+        registry.routers((router,))
+
+    app = FastAPI()
+    diagnostics = include_contributed_routers(app, registry.build())
+
+    assert diagnostics == []
+    assert {route.path for route in app.routes} >= {
+        "/api/product/v1/public-brand",
+        "/api/product/v1/settings",
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "path", "method"),
+    [
+        ("other_extension:install", "/api/product/v1/public-brand", "GET"),
+        ("flow_desk_product_extension:install", "/api/product/v1/public-brand", "POST"),
+        ("flow_desk_product_extension:install", "/api/product/v1/{path}", "GET"),
+    ],
+)
+def test_product_public_brand_exception_cannot_expose_other_extension_routes(source, path, method):
+    from fastapi import APIRouter, FastAPI
+
+    from deerflow.extensions.gateway import include_contributed_routers
+
+    router = APIRouter()
+    router.add_api_route(path, lambda: {"ok": True}, methods=[method])
+    registry = ExtensionRegistry()
+    with registry.attributed_to(source):
+        registry.routers((router,))
+
+    app = FastAPI()
+    diagnostics = include_contributed_routers(app, registry.build())
+
+    assert len(diagnostics) == 1
+    assert "host-reserved exact path" in diagnostics[0].message
+    assert not any(route.path == path for route in app.routes)
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -829,6 +980,52 @@ def test_router_with_one_conflict_is_rejected_atomically_and_names_first_owner()
     assert len(diagnostics) == 1
     assert diagnostics[0].source == "second:install"
     assert "first:install" in diagnostics[0].message
+
+
+@pytest.mark.parametrize("blocked_path", ["/api/v1/auth/login/local", "/api/product/v1/public-brand"])
+def test_required_extension_router_rejected_by_security_preflight_aborts_startup(blocked_path):
+    from fastapi import APIRouter, FastAPI
+
+    from deerflow.extensions.gateway import include_contributed_routers
+    from deerflow.extensions.loader import ExtensionLoadError
+
+    router = APIRouter()
+    router.add_api_route(blocked_path, lambda: {"ok": True}, methods=["GET"])
+    registry = ExtensionRegistry()
+    with registry.attributed_to("required-example:install"):
+        registry.routers((router,))
+
+    app = FastAPI()
+    with pytest.raises(ExtensionLoadError, match="required-example:install"):
+        include_contributed_routers(
+            app,
+            registry.build(),
+            required_sources=frozenset({"required-example:install"}),
+        )
+    assert not any(route.path == blocked_path for route in app.routes)
+
+
+def test_required_extension_router_shadow_aborts_startup():
+    from fastapi import APIRouter, FastAPI
+
+    from deerflow.extensions.gateway import include_contributed_routers
+    from deerflow.extensions.loader import ExtensionLoadError
+
+    app = FastAPI()
+    app.add_api_route("/occupied", lambda: {"host": True}, methods=["GET"])
+    router = APIRouter()
+    router.add_api_route("/occupied", lambda: {"extension": True}, methods=["GET"])
+    registry = ExtensionRegistry()
+    with registry.attributed_to("required-example:install"):
+        registry.routers((router,))
+
+    with pytest.raises(ExtensionLoadError, match="required-example:install"):
+        include_contributed_routers(
+            app,
+            registry.build(),
+            required_sources=frozenset({"required-example:install"}),
+        )
+    assert sum(route.path == "/occupied" for route in app.routes) == 1
 
 
 def test_router_is_rejected_when_its_own_earlier_route_shadows_a_later_one():

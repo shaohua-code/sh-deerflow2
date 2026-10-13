@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from app.gateway.routers import suggestions
 from deerflow.trace_context import request_trace_context
@@ -241,6 +242,27 @@ def test_generate_suggestions_returns_empty_on_model_error(monkeypatch):
     result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
 
     assert result.suggestions == []
+
+
+def test_generate_suggestions_propagates_model_authorization_denial(monkeypatch):
+    req = suggestions.SuggestionsRequest(messages=[suggestions.SuggestionMessage(role="user", content="Hi")])
+    monkeypatch.setattr(
+        suggestions,
+        "run_authorized_one_shot_model",
+        AsyncMock(side_effect=HTTPException(status_code=403, detail="model denied")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            suggestions.generate_suggestions.__wrapped__(
+                "t1",
+                req,
+                request=object(),
+                config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True)),
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 def test_generate_suggestions_returns_empty_when_disabled(monkeypatch):

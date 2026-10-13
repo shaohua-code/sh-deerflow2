@@ -1,14 +1,15 @@
 import { GitHubLogoIcon } from "@radix-ui/react-icons";
 import Link from "next/link";
 
+import { LocaleSwitcher } from "@/components/locale-switcher";
 import { Button } from "@/components/ui/button";
 import { DEFAULT_LOCALE, type Locale } from "@/core/i18n/locale";
 import { getI18n } from "@/core/i18n/server";
-import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { getBrandName, productBrand } from "@/product/brand";
+import { getProductCopy } from "@/product/copy";
 
 import { MobileNav } from "./mobile-nav";
-import { StarCounter } from "./star-counter";
 
 export type HeaderProps = {
   className?: string;
@@ -17,9 +18,11 @@ export type HeaderProps = {
 };
 
 export async function Header({ className, homeURL, locale }: HeaderProps) {
-  const isExternalHome = !homeURL;
   const { locale: resolvedLocale, t } = await getI18n(locale ?? DEFAULT_LOCALE);
   const lang = resolvedLocale.substring(0, 2);
+  const homeHref = homeURL ?? "/";
+  const isExternalHome = /^https?:\/\//.test(homeHref);
+  const productCopy = getProductCopy(resolvedLocale);
   return (
     <header
       className={cn(
@@ -28,14 +31,23 @@ export async function Header({ className, homeURL, locale }: HeaderProps) {
       )}
     >
       <div className="flex min-w-0 items-center gap-6">
-        <a
-          href={homeURL ?? "https://github.com/bytedance/deer-flow"}
-          target={isExternalHome ? "_blank" : "_self"}
-          rel={isExternalHome ? "noopener noreferrer" : undefined}
-          className="font-serif text-xl whitespace-nowrap"
-        >
-          DeerFlow
-        </a>
+        {isExternalHome ? (
+          <a
+            href={homeHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-serif text-xl whitespace-nowrap"
+          >
+            {getBrandName(resolvedLocale)}
+          </a>
+        ) : (
+          <Link
+            href={homeHref}
+            className="font-serif text-xl whitespace-nowrap"
+          >
+            {getBrandName(resolvedLocale)}
+          </Link>
+        )}
       </div>
       <nav className="ml-auto hidden items-center gap-5 text-sm font-medium sm:flex md:mr-8 md:gap-8">
         <Link
@@ -51,6 +63,9 @@ export async function Header({ className, homeURL, locale }: HeaderProps) {
           {t.home.blog}
         </Link>
       </nav>
+      <div className="hidden sm:block">
+        <LocaleSwitcher locale={resolvedLocale} />
+      </div>
       <div className="relative">
         <div
           className="pointer-events-none absolute inset-0 z-0 h-full w-full rounded-full opacity-30 blur-2xl"
@@ -65,18 +80,22 @@ export async function Header({ className, homeURL, locale }: HeaderProps) {
           asChild
           className="group relative z-10"
         >
+          {/* 明确标注为上游引擎来源，避免访客把官方仓库误认为 Flow Desk 自己的仓库。 */}
           <a
-            href="https://github.com/bytedance/deer-flow"
+            href={productBrand.sourceUrl}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label={productCopy.upstreamSource}
           >
             <GitHubLogoIcon className="size-4" />
-            <span className="hidden sm:inline">Star on GitHub</span>
-            {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && <StarCounter />}
+            <span className="hidden sm:inline">
+              {productCopy.upstreamSource}
+            </span>
           </a>
         </Button>
       </div>
       <MobileNav
+        locale={resolvedLocale}
         links={[
           { href: `/${lang}/docs`, label: t.home.docs },
           { href: "/blog/posts", label: t.home.blog },

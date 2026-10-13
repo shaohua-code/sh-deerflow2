@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 from abc import abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar, Literal
@@ -43,10 +44,30 @@ _memory_manager: MemoryManager | None = None
 _backends_cache: dict[str, type[MemoryManager]] | None = None
 _manager_lock = threading.Lock()
 
+# Host-owned authorization callbacks are injected by the Gateway at startup.
+# The portable Harness package must not import ``app.*``; standalone runs keep
+# the historical local behavior when no host has registered a policy.
+_gateway_memory_model_authorizer: Callable[..., bool] | None = None
+_gateway_memory_write_authorizer: Callable[..., bool] | None = None
+_gateway_memory_usage_callback_factory: Callable[..., Any | None] | None = None
+
+
+def set_gateway_memory_authorizers(
+    *,
+    model_authorizer: Callable[..., bool] | None,
+    write_authorizer: Callable[..., bool] | None,
+    usage_callback_factory: Callable[..., Any | None] | None = None,
+) -> None:
+    """Inject Gateway policy checks without coupling Harness to the app layer."""
+    global _gateway_memory_model_authorizer, _gateway_memory_write_authorizer, _gateway_memory_usage_callback_factory
+    _gateway_memory_model_authorizer = model_authorizer
+    _gateway_memory_write_authorizer = write_authorizer
+    _gateway_memory_usage_callback_factory = usage_callback_factory
+
 
 class MemoryCallbacks:
-    """Observability hooks for memory backends. Default implementations are
-    no-ops; override the ones you need. The pre-LLM-call hook
+    """Host hooks for memory backends. Default implementations are
+    no-ops/permissive; override the ones you need. The pre-LLM-call hook
     ``on_memory_llm_call`` mutates ``invoke_config`` before the LLM call so a
     tracer (e.g. langfuse) emits a span at the LLM boundary. (More hooks --
     post-extract / search / inject / error -- can be added when callers need
@@ -81,6 +102,22 @@ class MemoryCallbacks:
         failure, and backend callers isolate exceptions raised by an
         implementation.
         """
+
+    def before_memory_write(
+        self,
+        *,
+        thread_id: str | None,
+        user_id: str | None,
+        agent_name: str | None,
+    ) -> bool:
+        """Authorize one background memory commit; standalone default allows it.
+
+        Gateway's host callback rechecks current Central IAM grants here. The
+        DeerMem backend calls this synchronously immediately before storage,
+        including on each optimistic-concurrency retry. This hook receives only
+        opaque local identifiers; credentials never enter the update queue.
+        """
+        return True
 
 
 class MemoryManagerError(RuntimeError):
@@ -715,6 +752,8 @@ class LangfuseMemoryCallbacks(MemoryCallbacks):
 
             extensions = get_loaded_extensions()
         self._extensions = extensions
+        self._usage_callbacks: dict[int, Any] = {}
+        self._usage_callbacks_lock = threading.RLock()
 
     def on_memory_llm_call(
         self,
@@ -725,6 +764,16 @@ class LangfuseMemoryCallbacks(MemoryCallbacks):
         trace_id: str | None,
         model_name: str | None,
     ) -> None:
+        model_authorizer = _gateway_memory_model_authorizer
+        if model_authorizer is not None:
+            try:
+                authorized = model_authorizer(user_id=user_id, model_name=model_name)
+            except Exception:
+                logger.warning("Memory model authorization failed")
+                raise PermissionError("Memory model authorization is unavailable") from None
+            if authorized is not True:
+                raise PermissionError("The current user is not authorized to use the memory model")
+
         from deerflow.tracing import inject_langfuse_metadata
 
         inject_langfuse_metadata(
@@ -737,6 +786,59 @@ class LangfuseMemoryCallbacks(MemoryCallbacks):
             deerflow_trace_id=trace_id,
         )
 
+        usage_callback_factory = _gateway_memory_usage_callback_factory
+        if usage_callback_factory is None:
+            return
+        usage_callback = None
+        try:
+            usage_callback = usage_callback_factory(user_id=user_id, model_name=model_name)
+            if usage_callback is None:
+                return
+            configured_callbacks = invoke_config.get("callbacks")
+            if configured_callbacks is None:
+                callbacks = []
+            elif isinstance(configured_callbacks, (list, tuple)):
+                callbacks = list(configured_callbacks)
+            else:
+                callbacks = [configured_callbacks]
+            callbacks.append(usage_callback)
+            invoke_config["callbacks"] = callbacks
+            with self._usage_callbacks_lock:
+                self._usage_callbacks[id(invoke_config)] = usage_callback
+        except Exception:
+            if usage_callback is not None:
+                close = getattr(usage_callback, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            logger.warning("Memory model usage admission failed")
+            raise RuntimeError("Central IAM model usage admission is unavailable") from None
+
+    def before_memory_write(
+        self,
+        *,
+        thread_id: str | None,
+        user_id: str | None,
+        agent_name: str | None,
+    ) -> bool:
+        """Recheck live IAM data scopes on the Gateway loop before persist."""
+        write_authorizer = _gateway_memory_write_authorizer
+        if write_authorizer is None:
+            return True
+        try:
+            return write_authorizer(
+                user_id=user_id,
+                thread_id=thread_id,
+                agent_name=agent_name,
+            )
+        except Exception:
+            # Authorization failures must never be converted to a successful
+            # write. Avoid exposing provider or credential details in logs.
+            logger.warning("Memory write authorization failed; skipping persistence")
+            return False
+
     def on_memory_llm_result(
         self,
         invoke_config: dict[str, Any],
@@ -748,6 +850,26 @@ class LangfuseMemoryCallbacks(MemoryCallbacks):
         model_name: str | None,
     ) -> None:
         """Forward a DeerMem provider result using the captured snapshot."""
+        with self._usage_callbacks_lock:
+            usage_callback = self._usage_callbacks.pop(id(invoke_config), None)
+        if usage_callback is not None:
+            # Callback objects contain a short-lived vault capability. Remove
+            # them before config reaches any extension observer, then drop the
+            # capability after LangChain's terminal callback has been handled.
+            configured_callbacks = invoke_config.get("callbacks")
+            if isinstance(configured_callbacks, list):
+                remaining_callbacks = [item for item in configured_callbacks if item is not usage_callback]
+                if remaining_callbacks:
+                    invoke_config["callbacks"] = remaining_callbacks
+                else:
+                    invoke_config.pop("callbacks", None)
+            close = getattr(usage_callback, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.warning("Memory model usage callback cleanup failed")
+
         extensions = self._extensions
         if not extensions.has_system_model_observers:
             return

@@ -1912,7 +1912,7 @@ title:
 # Automatically summarize conversation history when token limits are approached
 # This helps maintain context in long conversations without exceeding model limits
 
-# Optional task notes and keyword recall of compacted messages. See docs/task-continuity.md.
+# Optional task notes and keyword recall of compacted messages. See docs/任务接续.md.
 task_continuity:
   enabled: false
   max_batches: 32
@@ -2822,6 +2822,75 @@ run_ownership:
 #           sandbox: {allow: false}  # deny sandbox execution
 authorization:
   enabled: false
+  # Central IAM pilot (keep disabled until the IAM application and permissions
+  # have been provisioned; grants must be assigned explicitly in IAM):
+  # enabled: true
+  # fail_closed: true
+  # default_role: user
+  # provider:
+  #   use: deerflow.authz.iam_deerflow:DeerFlowIamAuthorizationProvider
+  #   config:
+  #     api_base_url: https://iam.example.com
+  #     application_id: REPLACE_WITH_DEERFLOW_IAM_APPLICATION_UUID
+  #     oidc_provider: central-iam
+  #     timeout_seconds: 3
+  #     # Model-list visibility is independent of model invocation rights.
+  #     filter_actions: {model: list}
+  #     # Keys match config.models[].name; values are model UUIDs from this
+  #     # tenant's IAM catalog. Unmapped models fail closed before provider use.
+  #     model_resource_ids:
+  #       gpt-4o: REPLACE_WITH_IAM_MODEL_UUID
+  #     # Optional model-usage integration. Keep disabled until IAM's
+  #     # server-to-server key and quota policy have been provisioned.
+  #     # When enabled, set IAM_MODEL_USAGE_API_KEY in the API environment and
+  #     # configure one explicit output reservation cap for every mapped model.
+  #     model_usage:
+  #       enabled: false
+  #       # Successfully delivered outbox copies are purged after this many days.
+  #       outbox_retention_days: 30
+  #       reserved_output_tokens:
+  #         gpt-4o: 2048
+  #     permission_map:
+  #       "route:read:preferences:read": deerflow.preference.read
+  #       "route:write:preferences:write": deerflow.preference.write
+  #       "route:read:projects:read": deerflow.project.read
+  #       "route:write:projects:write": deerflow.project.write
+  #       "route:delete:projects:delete": deerflow.project.delete
+  #       "route:read:threads:read": deerflow.thread.read
+  #       "route:write:threads:write": deerflow.thread.write
+  #       "route:delete:threads:delete": deerflow.thread.delete
+  #       "route:create:runs:create": deerflow.run.create
+  #       "route:read:runs:read": deerflow.run.read
+  #       "route:cancel:runs:cancel": deerflow.run.cancel
+  #       "route:read:agents:read": deerflow.agent.read
+  #       "route:write:agents:write": deerflow.agent.write
+  #       "route:delete:agents:delete": deerflow.agent.delete
+  #       "route:admin:agents:admin": deerflow.agent.admin  # deployment-wide USER.md only
+  #       "route:read:memory:read": deerflow.memory.read
+  #       "route:write:memory:write": deerflow.memory.write
+  #       "route:delete:memory:delete": deerflow.memory.delete
+  #       "route:admin:memory:admin": deerflow.memory.admin
+  #       "route:read:channels:read": deerflow.channel.read
+  #       "route:write:channels:write": deerflow.channel.write
+  #       "route:admin:channels:admin": deerflow.channel.admin
+  #       "route:read:integrations:read": deerflow.integration.read
+  #       "route:write:integrations:write": deerflow.integration.write
+  #       "route:admin:integrations:admin": deerflow.integration.admin
+  #       "route:read:skills:read": deerflow.skill.read
+  #       "route:write:skills:write": deerflow.skill.write
+  #       "route:delete:skills:delete": deerflow.skill.delete
+  #       "route:admin:skills:admin": deerflow.skill.admin
+  #       "route:read:subagents:read": deerflow.subagent.read
+  #       "route:admin:subagents:admin": deerflow.subagent.admin
+  #       "route:admin:mcp:admin": deerflow.mcp.admin
+  #       "model:list": deerflow.model.list
+  #       "model:use": model.invoke
+  #       "tool:use": deerflow.tool.use
+  #       "sandbox:execute": deerflow.sandbox.execute
+  #
+  # The matching auth.oidc.providers[central-iam] entry must request
+  # offline_access and set iam_token_vault_enabled: true. Inject
+  # DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY through the API environment, never here.
 
 # ============================================================================
 # Circuit Breaker Configuration
@@ -2950,14 +3019,22 @@ authorization:
 #           - openid
 #           - email
 #           - profile
+#           # For an IAM integration that must authorize after login, also request
+#           # offline_access and explicitly enable token vaulting below.
+#           # - offline_access
 #         token_endpoint_auth_method: client_secret_post
+#         # Keep false for ordinary social OIDC providers. For IAM only, set true
+#         # and inject DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY into the Gateway API
+#         # environment (Base64 of a random 32-byte key; never put it in this file).
+#         # iam_token_vault_enabled: true
 #
 #         # User provisioning settings (safe defaults shown below):
 #         auto_create_users: true          # Auto-create DeerFlow account on first SSO login
 #         require_verified_email: true     # Reject SSO logins without verified email
 #         # allowed_email_domains:          # Restrict to specific email domains
 #         #   - example.com
-#         admin_emails: []                 # Auto-grant admin role to these emails
+#         # admin_emails is accepted for backward compatibility but ignored.
+#         # Email-based OIDC admin grants are disabled; assign access explicitly via IAM.
 #
 #         # Security features (enabled by default):
 #         pkce_enabled: true               # PKCE (S256) for authorization code flow

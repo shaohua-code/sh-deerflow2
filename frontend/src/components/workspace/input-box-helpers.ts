@@ -1,3 +1,4 @@
+import { createGatewayApiError, GatewayApiError } from "@/core/api/errors";
 import { RESERVED_SLASH_SKILL_NAMES, type Skill } from "@/core/skills";
 export {
   SUGGESTION_TEMPLATE_PLACEHOLDER_PATTERN,
@@ -291,14 +292,25 @@ export function getInputSubmitAction({
 
 export async function readGoalResponseError(
   response: Response,
-): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") {
-      return body.detail;
-    }
-  } catch {
-    // Fall through to generic message.
+): Promise<GatewayApiError> {
+  return createGatewayApiError(response, `HTTP ${response.status}`);
+}
+
+/**
+ * 组合框只把稳定状态映射成产品文案；Gateway detail 与网络异常正文保留在
+ * Error 对象中供诊断使用，不直接显示给用户。
+ */
+export function getComposerOperationErrorMessage(
+  error: unknown,
+  fallback: string,
+  conflictCopy?: string,
+): string {
+  if (
+    conflictCopy &&
+    error instanceof GatewayApiError &&
+    error.status === 409
+  ) {
+    return conflictCopy;
   }
-  return `HTTP ${response.status}`;
+  return fallback;
 }

@@ -342,6 +342,26 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
 
     model_instance = model_class(**kwargs, **model_settings_from_config)
 
+    # Bind the exact configured profile at the last shared model-construction
+    # boundary. The Gateway run context is memory-only; this callback asks IAM
+    # for model:use before dispatch, including title/summary/goal/subagent calls.
+    from deerflow.authz.model_authorization_callback import build_run_model_authorization_callback
+
+    model_authorization_callback = build_run_model_authorization_callback(config, name)
+    if model_authorization_callback is not None:
+        callbacks = model_instance.callbacks or []
+        model_instance.callbacks = [*callbacks, model_authorization_callback]
+
+    # The Gateway binds this callback only for an opted-in Central IAM Agent
+    # run. Attach a model-name-bound handler here so a provider deployment alias
+    # cannot change the IAM model UUID used for usage accounting.
+    from deerflow.authz.iam_model_usage_callback import get_run_iam_model_usage_callback
+
+    run_usage_callback = get_run_iam_model_usage_callback()
+    if run_usage_callback is not None:
+        callbacks = model_instance.callbacks or []
+        model_instance.callbacks = [*callbacks, run_usage_callback.for_model(name)]
+
     if translate_context_window:
         # Applied *after* construction and merged into the provider's inferred
         # profile: passing ``profile`` to the constructor would REPLACE the whole

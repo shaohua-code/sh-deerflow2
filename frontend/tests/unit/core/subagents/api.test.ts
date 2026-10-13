@@ -24,6 +24,17 @@ beforeEach(() => {
 });
 
 describe("managed subagent API", () => {
+  test("forwards the catalog query abort signal to fetch", async () => {
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, { subagents: [] }));
+    const controller = new AbortController();
+
+    await listSubagents({ signal: controller.signal });
+
+    expect(mockedFetch).toHaveBeenCalledWith("/api/subagents", {
+      signal: controller.signal,
+    });
+  });
+
   test("lists the mixed-source catalog", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(200, {

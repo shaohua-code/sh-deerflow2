@@ -11,7 +11,7 @@ import {
   MessageCircleQuestionIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,8 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import {
   isActiveBackgroundTask,
   type BackgroundTask,
@@ -39,16 +41,37 @@ import { cn } from "@/lib/utils";
 
 export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
   const { t } = useI18n();
+  const { user } = useAuth();
   const { enabled: mcpTasksEnabled } = useMcpTasksEnabled();
+  const canReadTasks = hasPermission(user, PERMISSIONS.THREADS_READ);
+  const canCancelTasks = hasPermission(user, PERMISSIONS.THREADS_WRITE);
+  const cacheScope = user?.id;
+  const tasksEnabled = mcpTasksEnabled && canReadTasks;
   const tasksQuery = useBackgroundTasks(threadId, {
-    enabled: mcpTasksEnabled,
+    enabled: tasksEnabled,
+    cacheScope,
   });
-  const cancelTask = useCancelBackgroundTask(threadId);
+  const cancelTask = useCancelBackgroundTask(threadId, {
+    enabled: tasksEnabled && canCancelTasks,
+  });
+  const handleCancelTask = useCallback(
+    (taskId: string) => {
+      // Recheck the current render's grants at the mutation boundary.
+      if (!tasksEnabled || !canCancelTasks) return;
+      cancelTask.mutate({
+        taskId,
+        threadId,
+        cacheScope,
+        enabled: tasksEnabled && canCancelTasks,
+      });
+    },
+    [cacheScope, cancelTask, canCancelTasks, tasksEnabled, threadId],
+  );
   const tasks = tasksQuery.data ?? [];
   const activeTasks = tasks.filter(isActiveBackgroundTask);
   const recentTasks = tasks.filter((task) => !isActiveBackgroundTask(task));
 
-  if (!mcpTasksEnabled) {
+  if (!tasksEnabled) {
     return null;
   }
 
@@ -95,9 +118,6 @@ export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
               <p className="text-destructive font-medium">
                 {t.backgroundTasks.loadFailed}
               </p>
-              <p className="text-muted-foreground mt-1 text-xs">
-                {tasksQuery.error.message}
-              </p>
               <Button
                 type="button"
                 size="sm"
@@ -126,7 +146,8 @@ export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
                   cancellingTaskId={
                     cancelTask.isPending ? cancelTask.variables : undefined
                   }
-                  onCancel={(taskId) => cancelTask.mutate(taskId)}
+                  onCancel={canCancelTasks ? handleCancelTask : undefined}
+                  cacheScope={cacheScope}
                 />
               )}
               {recentTasks.length > 0 && (
@@ -134,6 +155,7 @@ export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
                   threadId={threadId}
                   title={t.backgroundTasks.recent}
                   tasks={recentTasks}
+                  cacheScope={cacheScope}
                 />
               )}
             </div>
@@ -150,12 +172,14 @@ function TaskSection({
   tasks,
   cancellingTaskId,
   onCancel,
+  cacheScope,
 }: {
   threadId: string;
   title: string;
   tasks: BackgroundTask[];
   cancellingTaskId?: string;
   onCancel?: (taskId: string) => void;
+  cacheScope?: string;
 }) {
   return (
     <section>
@@ -167,6 +191,7 @@ function TaskSection({
           <BackgroundTaskCard
             key={task.task_id}
             threadId={threadId}
+            cacheScope={cacheScope}
             task={task}
             isCancelling={cancellingTaskId === task.task_id}
             onCancel={onCancel}
@@ -179,11 +204,13 @@ function TaskSection({
 
 function BackgroundTaskCard({
   threadId,
+  cacheScope,
   task,
   isCancelling,
   onCancel,
 }: {
   threadId: string;
+  cacheScope?: string;
   task: BackgroundTask;
   isCancelling: boolean;
   onCancel?: (taskId: string) => void;
@@ -192,6 +219,7 @@ function BackgroundTaskCard({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsQuery = useBackgroundTask(threadId, task.task_id, {
     enabled: detailsOpen,
+    cacheScope,
   });
   const active = isActiveBackgroundTask(task);
   const cancelling = active && (task.cancel_requested || isCancelling);
@@ -321,9 +349,6 @@ function BackgroundTaskDetails({
     return (
       <div className="border-destructive/30 mt-3 border-t pt-3 text-xs">
         <p className="text-destructive">{t.backgroundTasks.detailsFailed}</p>
-        <p className="text-muted-foreground mt-1 break-words">
-          {error.message}
-        </p>
         <Button
           type="button"
           size="sm"

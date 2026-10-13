@@ -382,14 +382,24 @@ test.describe("Thread message ordering", () => {
 
     const textarea = page.getByPlaceholder(/how can i assist you/i);
     await textarea.fill("final-turn question");
+    // A completed stream can briefly render its answer before the canonical
+    // run-event page refetch finishes. Wait for that persisted row so the
+    // ordering assertion checks settled history instead of a transient frame.
+    const canonicalAnswerPage = page.waitForResponse(async (response) => {
+      if (
+        response.request().method() !== "GET" ||
+        !response.url().includes("/messages/page")
+      ) {
+        return false;
+      }
+      const body = (await response.json()) as {
+        data?: Array<{ content?: { id?: string } }>;
+      };
+      return body.data?.some((row) => row.content?.id === "a-turn-32") ?? false;
+    });
     await textarea.press("Enter");
 
-    // The streamed answer lands below the submitted question. Note: the
-    // count-based optimistic clearing does not fire when compaction shrinks
-    // the SDK human count below its pre-submit value (a known limitation
-    // tracked with the turn-ownership work), so a trailing optimistic twin
-    // can remain; the ordering contract asserted here is about the canonical
-    // server copy.
+    await canonicalAnswerPage;
     await expect(page.getByText("final-turn answer")).toBeVisible({
       timeout: 15_000,
     });

@@ -231,7 +231,6 @@ test.describe("Integrations settings", () => {
         }),
       });
     });
-
     await page.goto("/workspace/capabilities?tab=plugins&plugin=lark");
     const dialog = page.getByRole("dialog", { name: "Plugin settings" });
     await expect(dialog).toBeVisible();
@@ -362,6 +361,15 @@ test.describe("Integrations settings", () => {
         }),
       });
     });
+    // The shared mock auto-confirms Lark auth by default. Keep this flow
+    // pending so the test can observe the newly opened authorization URL.
+    await page.route("**/api/integrations/lark/auth/complete", (route) =>
+      route.fulfill({
+        status: 504,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Authorization still pending." }),
+      }),
+    );
 
     await page.goto("/workspace/capabilities?tab=plugins&plugin=lark");
 

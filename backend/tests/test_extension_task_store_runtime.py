@@ -85,7 +85,8 @@ def test_gateway_run_context_captures_the_app_extension_snapshot(monkeypatch):
                 checkpoint_channel_mode="full",
                 checkpoint_snapshot_frequency=None,
             )
-        )
+        ),
+        state=SimpleNamespace(),
     )
     monkeypatch.setattr(deps, "get_checkpointer", lambda request: None)
     monkeypatch.setattr(deps, "get_store", lambda request: None)

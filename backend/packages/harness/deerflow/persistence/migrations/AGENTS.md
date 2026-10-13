@@ -1,3 +1,5 @@
+**IAM model usage outbox (2026-10-11):** fd_0028_iam_model_usage_outbox adds the durable callback settlement table after fd_0027_repair_run_change_seq. It stores usage facts and IAM identifiers only, never provider credentials or prompt/response bodies; the runtime retry worker uses leases and idempotent request IDs. The focused migration chain was verified on isolated SQLite; do not infer that any target database has been migrated.
+
 ### Schema Migrations (`packages/harness/deerflow/persistence/migrations/`)
 
 DeerFlow's application tables (`runs`, `threads_meta`, `feedback`, `users`, `run_events`, plus the four `channel_*` tables) are owned by alembic via a **hybrid bootstrap** strategy. LangGraph's checkpointer tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) live in the same database but are owned by LangGraph and excluded from alembic's view via `migrations/_env_filters.py::include_object`.
@@ -24,10 +26,27 @@ The empty-DB path keeps using `create_all` because `Base.metadata` is the only a
 `0020_threads_meta_project_id` → `0021_batch_acceptance` →
 `0019_thread_incarnations` → `0022_scheduled_occurrence_seq` →
 `0023_run_change_seq` → `0023_user_preferences` →
-`0024_project_documents` (current head). The preference
+`0024_project_documents` → `0025_user_active` →
+`0026_iam_oidc_token_vault` → `fd_0027_repair_run_change_seq` → fd_0028_iam_model_usage_outbox (current head).
+The `fd_`-prefixed repair revision carries the idempotent schema
+repair from upstream v2.1.0's `0025_repair_run_change_seq` after the current
+Flow Desk head, because the numeric `0025` revision ID is already deployed
+as `0025_user_active`. Never rename or replace the existing revisions to
+import the upstream file: databases stamped at the existing IDs must remain
+upgradable. The repair restores `runs.change_seq`, `run_change_clock`, and
+their indexes when a database's Alembic stamp says the earlier migration ran
+but its schema is incomplete. Its downgrade is intentionally a no-op because
+the schema belongs to ancestor `0023_run_change_seq`.
+
+The preference
 revision adds a separate owner/key table with a cascading users foreign key and
 does not alter users; the project-documents revision adds a new owner-scoped
-shelf table, so the bootstrap forward-compat floor is unchanged.
+shelf table, `0025` adds a default-enabled account flag, and `0026` adds only
+encrypted per-session IAM token storage, so the bootstrap forward-compat floor
+is unchanged. Regression tests simulate a database stamped at
+`0024_project_documents` with the run-change schema absent, then verify that
+upgrade through `fd_0027_repair_run_change_seq` preserves existing runs and
+restores changed-run reads and updates.
 The incarnation revision deliberately retains the exact id audited by the
 rollback-floor binary; Alembic orders revisions by `down_revision`, not by the
 numeric prefix.
@@ -73,7 +92,7 @@ migration tree owns neither post-`0020` revision. A current binary owns both,
 so migration failures remain fatal.
 
 For an existing database with the original 0018-plus-incarnation shape, use the
-[audited offline recovery procedure](../../../../../../docs/database-forward-revision-recovery.md).
+[audited offline recovery procedure](../../../../../../docs/数据库版本恢复指南.md).
 Bootstrap never re-stamps an unknown revision automatically. After stopping all
 writers, backing up, and verifying the exact additive schema, the operator may
 purge-stamp the known 0018 parent and apply the Projects, acceptance, and
@@ -161,6 +180,10 @@ on installs that never enabled it. The convention is:
 - `migrations/versions/0022_scheduled_occurrence_seq.py` — adds the per-task `last_occurrence_seq` high-water mark, nullable occurrence `occurrence_seq` and `launch_accounted`, and a unique `(task_id, occurrence_seq)` index. New occurrences allocate their sequence under the existing parent lock; launch accounting is recorded atomically with the count so an older recovered occurrence cannot be counted twice. Legacy child columns remain NULL without guessed ordering or accounting backfill. All three fields are internal and omitted from repository responses. Both once-task recovery paths lock the parent, defer while any occurrence row is active (sequenced or not), and otherwise project only from the highest sequence (`can_project`), the same rule as the launch, completion, and queue-failure writes. Chains after `0019_thread_incarnations`.
 - `migrations/versions/0023_run_change_seq.py` — adds `runs.change_seq`, its global singleton allocation clock, and owner-aware cursor indexes. Legacy rows remain at zero and page by run id; lifecycle, cancellation, and model-name mutations allocate monotonically increasing positions in their own transaction. Atomic replacement uses one position for every affected row. Progress snapshots and lease heartbeats do not advance the clock. `0023_user_preferences` follows this revision. Its migration test verifies membership in the single-head chain and the expected predecessor rather than pinning the latest head, so later migrations can extend the chain.
 - `migrations/versions/0024_project_documents.py` — creates the `project_documents` shelf table (id/project_id/user_id/name/stored_relpath/sha256/size_bytes, nullable promotion provenance and trash fields, timestamps) with indexes on project_id, user_id, sha256 and trashed_at; no DB-level foreign key on project_id by design (project delete trashes the shelf inside its own transaction). New table, so the bootstrap forward-compat floor is unchanged; chains after `0023_user_preferences` (renumbered from 0023 after the rebase)
+- `migrations/versions/0025_user_active.py` — adds `users.is_active` with a true server default so existing accounts remain enabled; chains after `0024_project_documents`
+- `migrations/versions/0026_iam_oidc_token_vault.py` — creates `iam_oidc_token_vault` with composite `(user_id, session_id)` primary key, cascading user FK, encrypted access/refresh envelopes, trusted issuer/subject/tenant metadata and expiry timestamps; no token backfill, chains after `0025_user_active`. The per-session primary key is required so separate browser/device refresh-token families cannot overwrite one another.
 - `persistence/bootstrap.py` — `bootstrap_schema(engine, backend=...)`, the three-branch provisioning decision, locked revision validation, and the narrow 0019 forward-compatibility exception
 - `extensions/loader.py::load_extensions` — registers each spec's `table_prefix` with `register_extension_table_prefix()`
 - Tests: `tests/test_persistence_bootstrap.py` (branches), `tests/test_persistence_bootstrap_concurrency.py` (concurrency), `tests/test_persistence_bootstrap_regression.py` (issue #3682), `tests/test_persistence_migrations_env.py` (filter, including extension-owned tables), `tests/test_extension_loader.py::TestTablePrefixRegistration` (spec-to-filter wiring), `tests/blocking_io/test_persistence_bootstrap.py` (asyncio.to_thread anchor), `tests/test_migration_0004_run_ownership_dedupe.py` + `tests/test_migration_0007_scheduled_run_active_dedupe.py` (dedupe-before-unique-index pre-steps)
+
+Legacy-schema test fixtures must create only the tables named by `_BASELINE_TABLE_NAMES`; unrestricted `Base.metadata.create_all()` also creates post-baseline tables from current ORM metadata and makes their owning migrations collide. Keep unrestricted `create_all()` only in tests for the empty-database branch/current schema.

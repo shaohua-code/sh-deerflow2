@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -29,6 +29,7 @@ from langgraph.types import Checkpointer
 
 from deerflow.community.browser_automation.session import browser_multi_worker_error
 from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.config.runtime_paths import runtime_home
 from deerflow.persistence.feedback import FeedbackRepository
 from deerflow.runtime import ORPHAN_RECOVERY_STOP_REASON, STARTUP_ORPHAN_RECOVERY_ERROR, RunContext, RunManager, StreamBridge
 from deerflow.runtime.events.store.base import RunEventStore
@@ -406,6 +407,23 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
     _validate_agent_storage(startup_config)
 
     async with AsyncExitStack() as stack:
+        # Memory writes are committed by a synchronous timer worker. Bind its
+        # narrow authorization bridge to this serving loop so the worker can
+        # reload the active local account/vault session without capturing the
+        # request's short-lived IAM capability in its queue context.
+        try:
+            from app.gateway.memory_authorization import (
+                reset_memory_authorization_loop,
+                set_memory_authorization_loop,
+            )
+
+            authorization_loop = asyncio.get_running_loop()
+            set_memory_authorization_loop(authorization_loop)
+        except Exception:
+            logger.exception("Failed to register the memory authorization loop")
+        else:
+            stack.callback(reset_memory_authorization_loop, authorization_loop)
+
         # Lifecycle and system-model hooks can originate on isolated subagent
         # loops. Bind them to the Gateway's serving loop before any runtime
         # dependency starts, then reset the binding last through the exit
@@ -496,36 +514,6 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
             user_id=None,
         )
 
-        # Services are app-scoped. Capture this app's immutable extension set
-        # once and close over the same object for teardown; the process-wide
-        # singleton may be replaced by another app/test before shutdown.
-        from deerflow.extensions import EMPTY_EXTENSIONS, record_runtime_diagnostics
-        from deerflow.extensions.gateway import start_services, stop_services
-
-        extensions = getattr(app.state, "extensions", EMPTY_EXTENSIONS)
-        attempted_services: list[tuple[str, Any]] = []
-
-        async def stop_extension_services() -> None:
-            record_runtime_diagnostics(
-                await stop_services(
-                    extensions,
-                    service_entries=attempted_services,
-                )
-            )
-
-        # Register cleanup before starting: start() can partially acquire
-        # resources and then fail or be cancelled.
-        stack.push_async_callback(stop_extension_services)
-        record_runtime_diagnostics(
-            await start_services(
-                extensions,
-                config,
-                sf,
-                run_evidence_reader=app.state.run_evidence_reader,
-                attempted_services=attempted_services,
-            )
-        )
-
         from deerflow.persistence.thread_meta import make_thread_store
 
         app.state.thread_store = make_thread_store(sf, app.state.store)
@@ -612,31 +600,105 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
         # Start the lease heartbeat if enabled (multi-worker deployments).
         await app.state.run_manager.start_heartbeat()
 
+        # 扩展后台服务可能在启动后立即领取任务，因此等 owner-scoped stores 和
+        # RunManager 全部就绪后才启动，避免数据导出任务在 Gateway 冷启动窗口读空。
+        from app.gateway.owner_data_deleter import GatewayOwnerDataDeleter
+        from app.gateway.owner_data_reader import GatewayOwnerDataReader
+        from deerflow.persistence.agents import get_agent_store
+
+        app.state.owner_data_reader = GatewayOwnerDataReader(
+            app.state.thread_store,
+            app.state.run_event_store,
+            app.state.run_manager,
+            # 产品扩展读取运行摘要时仍使用同一个 Gateway owner-aware store。
+            run_store=app.state.run_store,
+            project_repository=getattr(app.state, "project_repo", None),
+            project_document_repository=getattr(app.state, "project_document_repo", None),
+            scheduled_task_repository=getattr(app.state, "scheduled_task_repo", None),
+            agent_store=get_agent_store(),
+        )
+        app.state.owner_data_deleter = GatewayOwnerDataDeleter(
+            scheduled_task_repository=getattr(app.state, "scheduled_task_repo", None),
+            agent_store=get_agent_store(),
+            project_document_repository=getattr(app.state, "project_document_repo", None),
+            app=app,
+        )
+        from app.gateway.owner_data_authorizer import GatewayOwnerDataAuthorizer
+
+        app.state.owner_data_authorizer = GatewayOwnerDataAuthorizer()
+
+        # Services are app-scoped. Capture this app's immutable extension set
+        # once and close over the same object for teardown; the process-wide
+        # singleton may be replaced by another app/test before shutdown.
+        from deerflow.extensions import EMPTY_EXTENSIONS, record_runtime_diagnostics
+        from deerflow.extensions.gateway import start_services, stop_services
+
+        extensions = getattr(app.state, "extensions", EMPTY_EXTENSIONS)
+        attempted_services: list[tuple[str, Any]] = []
+
+        async def stop_extension_services() -> None:
+            record_runtime_diagnostics(
+                await stop_services(
+                    extensions,
+                    service_entries=attempted_services,
+                )
+            )
+
+        # Register cleanup before starting: start() can partially acquire
+        # resources and then fail or be cancelled. Since the database/checkpointer
+        # cleanups were registered earlier, this service stops while they remain open.
+        stack.push_async_callback(stop_extension_services)
+        record_runtime_diagnostics(
+            await start_services(
+                extensions,
+                config,
+                sf,
+                run_evidence_reader=app.state.run_evidence_reader,
+                owner_data_reader=app.state.owner_data_reader,
+                owner_data_deleter=app.state.owner_data_deleter,
+                owner_data_authorizer=app.state.owner_data_authorizer,
+                # 产品导出包与 DeerFlow 用户文件分开放在持久化 home 下；
+                # 扩展只能把临时制品写入这个 Gateway 显式授予的目录。
+                product_data_directory=runtime_home() / "flow-desk" / "data-jobs",
+                attempted_services=attempted_services,
+                # 与构建时同一份运维配置绑定，必需扩展的存储服务启动失败不能继续宣称就绪。
+                required_sources=getattr(app.state, "required_extension_sources", frozenset()),
+            )
+        )
+
+        from deerflow.persistence.iam_model_usage_outbox import build_iam_model_usage_outbox_service
+
+        model_usage_outbox_service = build_iam_model_usage_outbox_service(config)
+        if model_usage_outbox_service is not None:
+            await model_usage_outbox_service.start()
+
         try:
             yield
         finally:
-            # Drain in-flight run tasks BEFORE the AsyncExitStack tears down the
-            # checkpointer (and its connection pool). A run still mid-graph would
-            # otherwise leak into asyncio.run() shutdown, where langgraph's
-            # _checkpointer_put_after_previous aput races the closed pool and
-            # raises PoolClosed (issue #3373).
-            run_manager = getattr(app.state, "run_manager", None)
-            if run_manager is not None:
-                shutdown_deadline = asyncio.get_running_loop().time() + _RUN_DRAIN_TIMEOUT_SECONDS
-                try:
-                    await _drain_inflight_runs(run_manager)
-                finally:
-                    await _flush_recovered_stream_cleanups(
-                        app.state.stream_bridge,
-                        recovered_stream_cleanup_tasks,
-                        timeout=min(
-                            1.0,
-                            max(
-                                0.0,
-                                shutdown_deadline - asyncio.get_running_loop().time(),
+            try:
+                # Drain in-flight runs before stopping the outbox or tearing down
+                # the checkpointer. A terminal model event produced during run
+                # shutdown must still be accepted and retried durably.
+                run_manager = getattr(app.state, "run_manager", None)
+                if run_manager is not None:
+                    shutdown_deadline = asyncio.get_running_loop().time() + _RUN_DRAIN_TIMEOUT_SECONDS
+                    try:
+                        await _drain_inflight_runs(run_manager)
+                    finally:
+                        await _flush_recovered_stream_cleanups(
+                            app.state.stream_bridge,
+                            recovered_stream_cleanup_tasks,
+                            timeout=min(
+                                1.0,
+                                max(
+                                    0.0,
+                                    shutdown_deadline - asyncio.get_running_loop().time(),
+                                ),
                             ),
-                        ),
-                    )
+                        )
+            finally:
+                if model_usage_outbox_service is not None:
+                    await model_usage_outbox_service.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +801,12 @@ def get_run_context(request: Request) -> RunContext:
     captured in :func:`langgraph_runtime` so callers never see a store bound
     to one backend paired with a config pointing at another.
     """
+    # The authorization capability is resolved from the signed local session
+    # by Gateway auth middleware. Keep only that opaque Mapping on RunContext;
+    # never add it to the serializable LangGraph config/context.
+    request_authz_attributes = getattr(request.state, "iam_authz_attributes", None)
+    authorization_credentials = request_authz_attributes.get("iam_credentials") if isinstance(request_authz_attributes, Mapping) else None
+
     return RunContext(
         checkpointer=get_checkpointer(request),
         store=get_store(request),
@@ -751,6 +819,7 @@ def get_run_context(request: Request) -> RunContext:
         app_config=get_config(),
         extensions=getattr(request.app.state, "extensions", None),
         on_run_completed=getattr(request.app.state, "scheduled_task_service", None).handle_run_completion if getattr(request.app.state, "scheduled_task_service", None) is not None else None,
+        authorization_credentials=authorization_credentials,
     )
 
 
@@ -834,7 +903,7 @@ async def get_current_user_from_request(request: Request):
 
     provider = get_local_provider()
     user = await provider.get_user(payload.sub)
-    if user is None:
+    if user is None or not user.is_active:
         raise HTTPException(
             status_code=401,
             detail=AuthErrorResponse(code=AuthErrorCode.USER_NOT_FOUND, message="User not found").model_dump(),
@@ -846,6 +915,12 @@ async def get_current_user_from_request(request: Request):
             status_code=401,
             detail=AuthErrorResponse(code=AuthErrorCode.TOKEN_INVALID, message="Token revoked (password changed)").model_dump(),
         )
+
+    # ``sid`` is a local, signed lookup key for the encrypted IAM token vault.
+    # Keep it on this request only; never copy OIDC credentials into the local
+    # JWT, cookies, or LangGraph configuration.
+    if payload.sid and payload.sub == str(user.id):
+        request.state.iam_session_id = payload.sid
 
     return user
 

@@ -34,7 +34,13 @@ def main() -> int:
         return 1
 
     try:
-        copy_if_missing(project_root / "config.example.yaml", project_root / "config.yaml")
+        copy_if_missing(
+            project_root / "config.example.yaml", project_root / "config.yaml"
+        )
+        copy_if_missing(
+            project_root / "extensions_config.example.json",
+            project_root / "extensions_config.json",
+        )
         copy_if_missing(project_root / ".env.example", project_root / ".env")
         copy_if_missing(
             project_root / "frontend" / ".env.example",

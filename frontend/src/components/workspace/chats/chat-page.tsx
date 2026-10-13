@@ -8,7 +8,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
@@ -37,7 +36,11 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
 import { useAuth } from "@/core/auth/AuthProvider";
-import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  getChatSubmissionBlock,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { useBrowserControlEnabled } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -67,6 +70,7 @@ import {
 import { projectIdOfThread, textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
 import { ChatBox } from "./chat-box";
 import { useSpecificChatMode } from "./use-chat-mode";
@@ -89,6 +93,14 @@ export default function ChatPage() {
   // materialized the URL is replaced with the thread route and the param is
   // gone. Invalid ids are dropped by backend admission.
   const projectParam = isNewThread ? searchParams.get("project") : null;
+  // 带项目的新会话会先写入 threads 元数据，再发起 runs；其他会话只需 runs:create。
+  const submissionBlock = getChatSubmissionBlock(user, {
+    requiresThreadWrite: Boolean(projectParam),
+  });
+  const canSubmit = submissionBlock === null;
+  const canBranch = hasPermission(user, PERMISSIONS.THREADS_WRITE);
+  // 文本运行允许 `runs:create`，附件上传另由 Gateway 的 `threads:write` 保护。
+  const canUploadFiles = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   // `isNewThread` tracks whether the backend has the thread yet — gates the
   // SDK's history fetch (see issue #2746).  `isWelcomeMode` is the visual
   // welcome layout (centered input, hero, quick actions); we flip it to false
@@ -248,6 +260,7 @@ export default function ChatPage() {
 
   const handleSubmit = useCallback(
     async (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
+      if (!canSubmit) return;
       const submissionEpoch = submissionEpochRef.current;
       await ensureProjectThread();
       // Conversation switched (or the page unmounted) while the project
@@ -263,10 +276,11 @@ export default function ChatPage() {
       }
       void sendPromise;
     },
-    [sendMessage, threadId, ensureProjectThread],
+    [canSubmit, sendMessage, threadId, ensureProjectThread],
   );
   const handleSubmitHumanInput = useCallback(
     async (request: HumanInputRequest, response: HumanInputResponse) => {
+      if (!canSubmit) return false;
       let sent = false;
       await sendMessage(
         threadId,
@@ -287,24 +301,29 @@ export default function ChatPage() {
       );
       return sent;
     },
-    [sendMessage, threadId],
+    [canSubmit, sendMessage, threadId],
   );
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
   const handleRegenerate = useCallback(
-    (messageId: string, supersededMessageIds: string[]) =>
-      regenerateMessage(threadId, messageId, supersededMessageIds),
-    [regenerateMessage, threadId],
+    (messageId: string, supersededMessageIds: string[]) => {
+      if (!canSubmit) return;
+      return regenerateMessage(threadId, messageId, supersededMessageIds);
+    },
+    [canSubmit, regenerateMessage, threadId],
   );
   const handleEditAndRegenerate = useCallback(
-    (messageId: string, replacementText: string) =>
-      editAndRegenerateMessage(threadId, messageId, replacementText),
-    [editAndRegenerateMessage, threadId],
+    (messageId: string, replacementText: string) => {
+      if (!canSubmit) return;
+      return editAndRegenerateMessage(threadId, messageId, replacementText);
+    },
+    [canSubmit, editAndRegenerateMessage, threadId],
   );
   const handleBranchTurn = useCallback(
     async (messageId: string, messageIds: string[]) => {
       if (
+        !canBranch ||
         isNewThread ||
         isMock ||
         env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
@@ -321,12 +340,11 @@ export default function ChatPage() {
         toast.success(t.conversation.branchCreated);
         router.push(`/workspace/chats/${response.thread_id}`);
       } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t.conversation.branchFailed,
-        );
+        console.error("Failed to branch conversation:", error);
+        toast.error(t.conversation.branchFailed);
       }
     },
-    [branchThread, isMock, isNewThread, router, t, threadId],
+    [branchThread, canBranch, isMock, isNewThread, router, t, threadId],
   );
 
   const tokenUsageInlineMode = tokenUsageEnabled
@@ -372,7 +390,7 @@ export default function ChatPage() {
                   : "bg-background/80 z-30 shadow-xs backdrop-blur",
               )}
             >
-              {!isMock && <SidebarTrigger className="md:hidden" />}
+              {!isMock && <WorkspaceSidebarTrigger className="md:hidden" />}
               <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
                 <ThreadTitle
                   threadId={threadId}
@@ -444,6 +462,7 @@ export default function ChatPage() {
                   isHistoryLoading={isHistoryLoading}
                   tokenUsageInlineMode={tokenUsageInlineMode}
                   canRegenerate={
+                    canSubmit &&
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
@@ -452,6 +471,7 @@ export default function ChatPage() {
                   }
                   onRegenerateMessage={handleRegenerate}
                   canEdit={
+                    canSubmit &&
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
@@ -463,11 +483,14 @@ export default function ChatPage() {
                   }
                   onEditAndRegenerateMessage={handleEditAndRegenerate}
                   onSubmitHumanInput={
-                    isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                    !canSubmit ||
+                    isMock ||
+                    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
                       ? undefined
                       : handleSubmitHumanInput
                   }
                   canBranch={
+                    canBranch &&
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
@@ -518,6 +541,24 @@ export default function ChatPage() {
                       </div>
                     </div>
                   )}
+                  {submissionBlock && (
+                    <p
+                      className="text-muted-foreground px-3 pb-2 text-center text-xs"
+                      role="status"
+                    >
+                      {submissionBlock === "thread"
+                        ? t.inputBox.threadPermissionRequired
+                        : t.inputBox.runPermissionRequired}
+                    </p>
+                  )}
+                  {!canUploadFiles && (
+                    <p
+                      className="text-muted-foreground px-3 pb-2 text-center text-xs"
+                      role="status"
+                    >
+                      {t.inputBox.uploadPermissionRequired}
+                    </p>
+                  )}
                   {mountedRef.current ? (
                     <InputBox
                       className={cn(
@@ -556,6 +597,8 @@ export default function ChatPage() {
                       onPrepareThread={ensureProjectThread}
                       onSubmit={handleSubmit}
                       onStop={handleStop}
+                      canUploadFiles={canUploadFiles}
+                      canSubmit={canSubmit}
                       canStopStreaming={canStopStreaming}
                     />
                   ) : (

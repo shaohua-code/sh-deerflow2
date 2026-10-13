@@ -95,7 +95,7 @@ export default function ChatsPage() {
           onValueChange={setView}
           className="flex size-full flex-col"
         >
-          <header className="mx-auto flex w-full max-w-(--container-width-md) shrink-0 flex-col gap-3 pt-8">
+          <header className="mx-auto flex w-full max-w-(--container-width-md) shrink-0 flex-col gap-3 px-4 pt-6 sm:px-6 sm:pt-8 md:px-0">
             {!staticWebsite && (
               <TabsList aria-label={t.pages.chats}>
                 <TabsTrigger value="active">{t.chats.activeChats}</TabsTrigger>
@@ -106,7 +106,8 @@ export default function ChatsPage() {
             )}
             <Input
               type="search"
-              className="h-12 w-full max-w-(--container-width-md) text-xl"
+              aria-label={t.chats.searchChats}
+              className="h-12 w-full max-w-(--container-width-md) text-base sm:text-lg"
               placeholder={t.chats.searchChats}
               autoFocus
               value={search}
@@ -116,7 +117,7 @@ export default function ChatsPage() {
           <TabsContent value={view} className="min-h-0 flex-1">
             <main className="h-full">
               <ScrollArea className="size-full py-4">
-                <div className="mx-auto flex size-full max-w-(--container-width-md) flex-col">
+                <div className="mx-auto flex size-full max-w-(--container-width-md) flex-col px-4 sm:px-6 md:px-0">
                   {isError && (
                     <div role="alert" className="p-4 text-center">
                       <p>{t.chats.loadChatsFailed}</p>

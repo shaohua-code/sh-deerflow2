@@ -37,8 +37,17 @@ const observed: {
   },
 };
 
-function ComposerProbe({ threadId }: { threadId: string }) {
-  const [attachments, setAttachments] = useStagedProjectAttachments(threadId);
+function ComposerProbe({
+  threadId,
+  userId = "user-1",
+}: {
+  threadId: string;
+  userId?: string;
+}) {
+  const [attachments, setAttachments] = useStagedProjectAttachments(
+    userId,
+    threadId,
+  );
   observed.current = attachments;
   observed.set = setAttachments;
   return null;
@@ -57,7 +66,7 @@ afterEach(() => {
 // pending list is loaded without any consume step, so the replay re-applies
 // the same state instead of resetting it.
 test("a Strict-Mode effect replay keeps the pending attachment", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
 
   render(
     <StrictMode>
@@ -69,7 +78,7 @@ test("a Strict-Mode effect replay keeps the pending attachment", () => {
 });
 
 test("a remount (navigation or reload) re-reads every pending attachment", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
 
   const first = render(
     <StrictMode>
@@ -81,7 +90,7 @@ test("a remount (navigation or reload) re-reads every pending attachment", () =>
   // Navigating away unmounts the composer; staging a second document from
   // the project page appends to the same pending list.
   first.unmount();
-  stageProjectAttachment("thread-1", OTHER);
+  stageProjectAttachment("user-1", "thread-1", OTHER);
 
   render(
     <StrictMode>
@@ -92,7 +101,7 @@ test("a remount (navigation or reload) re-reads every pending attachment", () =>
 });
 
 test("switching threads shows that thread's own pending list", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
 
   const { rerender } = render(
     <StrictMode>
@@ -110,7 +119,7 @@ test("switching threads shows that thread's own pending list", () => {
   expect(observed.current).toEqual([]);
 
   // A pending entry for the new thread is picked up on the switch.
-  stageProjectAttachment("thread-3", OTHER);
+  stageProjectAttachment("user-1", "thread-3", OTHER);
   rerender(
     <StrictMode>
       <ComposerProbe threadId="thread-3" />
@@ -120,8 +129,8 @@ test("switching threads shows that thread's own pending list", () => {
 });
 
 test("removing one chip persists the remaining pending attachments", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
-  stageProjectAttachment("thread-1", OTHER);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", OTHER);
 
   const { unmount } = render(
     <StrictMode>
@@ -132,7 +141,9 @@ test("removing one chip persists the remaining pending attachments", () => {
   unmount();
 
   expect(
-    window.sessionStorage.getItem("deerflow.project-attachment.thread-1"),
+    window.sessionStorage.getItem(
+      "deerflow.project-attachment.v2.user-1.thread-1",
+    ),
   ).toBe(JSON.stringify([ATTACHMENT]));
 
   render(
@@ -144,7 +155,7 @@ test("removing one chip persists the remaining pending attachments", () => {
 });
 
 test("clearing after a successful send drops the pending list for good", () => {
-  stageProjectAttachment("thread-1", ATTACHMENT);
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
 
   const { unmount } = render(
     <StrictMode>
@@ -155,7 +166,9 @@ test("clearing after a successful send drops the pending list for good", () => {
   unmount();
 
   expect(
-    window.sessionStorage.getItem("deerflow.project-attachment.thread-1"),
+    window.sessionStorage.getItem(
+      "deerflow.project-attachment.v2.user-1.thread-1",
+    ),
   ).toBeNull();
 
   render(
@@ -164,4 +177,30 @@ test("clearing after a successful send drops the pending list for good", () => {
     </StrictMode>,
   );
   expect(observed.current).toEqual([]);
+});
+
+test("switching accounts on the same thread never displays or writes the previous owner's chips", () => {
+  stageProjectAttachment("user-1", "thread-1", ATTACHMENT);
+  const { rerender } = render(
+    <ComposerProbe threadId="thread-1" userId="user-1" />,
+  );
+  expect(observed.current).toEqual([ATTACHMENT]);
+
+  rerender(<ComposerProbe threadId="thread-1" userId="user-2" />);
+  expect(observed.current).toEqual([]);
+  observed.set([OTHER]);
+
+  expect(
+    window.sessionStorage.getItem(
+      "deerflow.project-attachment.v2.user-1.thread-1",
+    ),
+  ).toBe(JSON.stringify([ATTACHMENT]));
+  expect(
+    window.sessionStorage.getItem(
+      "deerflow.project-attachment.v2.user-2.thread-1",
+    ),
+  ).toBe(JSON.stringify([OTHER]));
+
+  rerender(<ComposerProbe threadId="thread-1" userId="user-1" />);
+  expect(observed.current).toEqual([ATTACHMENT]);
 });

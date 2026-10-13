@@ -5,18 +5,28 @@ enter host-reserved or auth-exempt prefixes), but "logged in" and "admin" are
 different questions and an extension must be able to ask the second one.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from deerflow_extension_api import (
+    EXTENSION_DATA_SCOPE_CHECKER_KEY,
     EXTENSION_PRINCIPAL_RESOLVER_KEY,
+    ExtensionDataScopeError,
     ExtensionPrincipal,
     require_admin,
+    require_data_scope,
+    require_permission,
     resolve_principal,
 )
 
 ADMIN = ExtensionPrincipal(user_id="u1", is_admin=True, is_internal=False)
-PLAIN = ExtensionPrincipal(user_id="u2", is_admin=False, is_internal=False)
+PLAIN = ExtensionPrincipal(
+    user_id="u2",
+    is_admin=False,
+    is_internal=False,
+    permissions=("threads:read",),
+)
 
 
 def _request(principal):
@@ -58,6 +68,71 @@ def test_require_admin_fails_closed_with_no_resolver():
         require_admin(request)
 
 
+def test_require_permission_accepts_a_granted_route_scope():
+    assert require_permission(_request(PLAIN), "threads:read") == PLAIN
+
+
+def test_require_permission_rejects_missing_or_unavailable_scopes():
+    with pytest.raises(PermissionError):
+        require_permission(_request(PLAIN), "projects:read")
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(PermissionError):
+        require_permission(request, "threads:read")
+
+
+def test_require_data_scope_delegates_only_the_scope_request_to_the_host():
+    calls = []
+
+    async def check_scope(request, **kwargs):
+        calls.append((request, kwargs))
+
+    request = _request(PLAIN)
+    setattr(request.app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY, check_scope)
+
+    asyncio.run(
+        require_data_scope(
+            request,
+            target="projects:delete",
+            action="delete",
+            resource_id="project-1",
+        )
+    )
+
+    assert calls == [
+        (
+            request,
+            {
+                "target": "projects:delete",
+                "action": "delete",
+                "resource_id": "project-1",
+            },
+        )
+    ]
+
+
+def test_require_data_scope_fails_closed_when_host_capability_is_missing_or_denies():
+    request = _request(PLAIN)
+    with pytest.raises(ExtensionDataScopeError) as unavailable:
+        asyncio.run(require_data_scope(request, target="threads:read"))
+    assert unavailable.value.status_code == 503
+
+    async def deny_scope(_request, **_kwargs):
+        raise ExtensionDataScopeError(403, "Permission denied by Central IAM data scope")
+
+    setattr(request.app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY, deny_scope)
+    with pytest.raises(ExtensionDataScopeError) as denied:
+        asyncio.run(require_data_scope(request, target="threads:read"))
+    assert denied.value.status_code == 403
+
+    # A synchronous host callback cannot accidentally turn a missing await
+    # into an implicit allow.
+    setattr(request.app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY, lambda *_args, **_kwargs: None)
+    with pytest.raises(ExtensionDataScopeError) as invalid:
+        asyncio.run(require_data_scope(request, target="threads:read"))
+    assert invalid.value.status_code == 503
+
+
 @pytest.fixture
 def _stub_app_config(monkeypatch):
     """Keep ``create_app()`` independent of a real ``config.yaml``.
@@ -87,6 +162,27 @@ def test_host_installs_a_resolver_on_app_state(_stub_app_config):
 
     app = create_app()
     assert callable(getattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY, None))
+    assert callable(getattr(app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY, None))
+
+
+def test_host_scope_checker_preserves_central_iam_denial(_stub_app_config, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.gateway.app import create_app
+
+    async def deny_scope(_request, _user, **_kwargs):
+        raise HTTPException(status_code=403, detail="Permission denied by Central IAM data scope")
+
+    monkeypatch.setattr("app.gateway.authz.require_iam_data_scope_for_request", deny_scope)
+    app = create_app()
+    checker = getattr(app.state, EXTENSION_DATA_SCOPE_CHECKER_KEY)
+    request = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id="u1")))
+
+    with pytest.raises(ExtensionDataScopeError) as denied:
+        asyncio.run(checker(request, target="threads:read", action="read", resource_id="t1"))
+
+    assert denied.value.status_code == 403
+    assert str(denied.value) == "Permission denied by Central IAM data scope"
 
 
 def test_the_installed_resolver_projects_system_role_into_roles(_stub_app_config):
@@ -99,8 +195,9 @@ def test_the_installed_resolver_projects_system_role_into_roles(_stub_app_config
     app = create_app()
     resolver = getattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY)
 
-    admin_request = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id="u1", system_role="admin"), auth_source=None))
+    admin_request = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id="u1", system_role="admin"), auth_source=None, auth=SimpleNamespace(permissions=["threads:read"])))
     assert resolver(admin_request).roles == ("admin",)
+    assert resolver(admin_request).permissions == ("threads:read",)
 
     plain_request = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id="u2", system_role="user"), auth_source=None))
     assert resolver(plain_request).roles == ("user",)

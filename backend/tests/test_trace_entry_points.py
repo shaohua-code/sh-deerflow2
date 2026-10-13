@@ -246,6 +246,12 @@ def launcher_traces(monkeypatch):
         return SimpleNamespace(run_id="run-1", thread_id=thread_id)
 
     monkeypatch.setattr("app.gateway.services.start_run", fake_start_run)
+
+    class ActiveLocalProvider:
+        async def get_user(self, user_id):
+            return SimpleNamespace(id=user_id, is_active=True)
+
+    monkeypatch.setattr("app.gateway.services.get_local_provider", ActiveLocalProvider)
     return seen
 
 

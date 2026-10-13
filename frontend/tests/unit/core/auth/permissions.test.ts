@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@rstest/core";
 
-import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  getChatSubmissionBlock,
+  getMissingPermissions,
+  getPermissionState,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { userSchema } from "@/core/auth/types";
 
 describe("hasPermission", () => {
@@ -40,6 +46,112 @@ describe("hasPermission", () => {
   it("treats a not-yet-loaded user as permissive", () => {
     expect(hasPermission(null, PERMISSIONS.THREADS_DELETE)).toBe(true);
     expect(hasPermission(undefined, PERMISSIONS.THREADS_DELETE)).toBe(true);
+  });
+});
+
+describe("getPermissionState", () => {
+  it("distinguishes a granted permission from an explicit deny", () => {
+    expect(
+      getPermissionState(
+        { permissions: ["threads:read", "threads:delete"] },
+        PERMISSIONS.THREADS_DELETE,
+      ),
+    ).toBe("granted");
+    expect(
+      getPermissionState(
+        { permissions: ["threads:read"] },
+        PERMISSIONS.THREADS_DELETE,
+      ),
+    ).toBe("denied");
+  });
+
+  it("keeps absent, unresolved, or not-yet-loaded permissions distinct", () => {
+    expect(getPermissionState({}, PERMISSIONS.RUNS_CANCEL)).toBe("unresolved");
+    expect(
+      getPermissionState({ permissions: null }, PERMISSIONS.RUNS_CANCEL),
+    ).toBe("unresolved");
+    expect(getPermissionState(null, PERMISSIONS.RUNS_CANCEL)).toBe(
+      "unresolved",
+    );
+  });
+});
+
+describe("getMissingPermissions", () => {
+  it("lists only explicitly denied permissions", () => {
+    expect(
+      getMissingPermissions({ permissions: ["agents:read", "runs:create"] }, [
+        PERMISSIONS.AGENTS_READ,
+        PERMISSIONS.AGENTS_WRITE,
+        PERMISSIONS.RUNS_CREATE,
+      ]),
+    ).toEqual([PERMISSIONS.AGENTS_WRITE]);
+  });
+
+  it("keeps unresolved permissions compatible with an older Gateway", () => {
+    expect(getMissingPermissions({}, [PERMISSIONS.AGENTS_WRITE])).toEqual([]);
+  });
+});
+
+describe("getChatSubmissionBlock", () => {
+  it("blocks sends when runs:create is explicitly denied", () => {
+    expect(getChatSubmissionBlock({ permissions: ["threads:read"] })).toBe(
+      "run",
+    );
+  });
+
+  it("requires threads:write only before a project-scoped first send", () => {
+    const user = { permissions: ["runs:create", "threads:read"] };
+
+    expect(getChatSubmissionBlock(user)).toBeNull();
+    expect(getChatSubmissionBlock(user, { requiresThreadWrite: true })).toBe(
+      "thread",
+    );
+  });
+
+  it("keeps unresolved permissions compatible with older Gateway responses", () => {
+    expect(getChatSubmissionBlock({})).toBeNull();
+    expect(getChatSubmissionBlock(null, { requiresThreadWrite: true })).toBe(
+      null,
+    );
+  });
+});
+
+describe("frontend permission catalog", () => {
+  it("tracks the Gateway route-permission vocabulary", () => {
+    expect(Object.values(PERMISSIONS)).toEqual([
+      "threads:read",
+      "threads:write",
+      "threads:delete",
+      "runs:create",
+      "runs:read",
+      "runs:cancel",
+      "projects:read",
+      "projects:write",
+      "projects:delete",
+      "memory:read",
+      "memory:write",
+      "memory:delete",
+      "memory:admin",
+      "preferences:read",
+      "preferences:write",
+      "agents:read",
+      "agents:write",
+      "agents:delete",
+      "agents:admin",
+      "channels:read",
+      "channels:write",
+      "channels:admin",
+      "integrations:read",
+      "integrations:write",
+      "integrations:admin",
+      "skills:read",
+      "skills:write",
+      "skills:delete",
+      "skills:admin",
+      "subagents:read",
+      "subagents:admin",
+      "mcp:admin",
+    ]);
   });
 });
 

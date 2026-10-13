@@ -41,6 +41,8 @@ import {
   resolveArtifactOpenURL,
   resolveStoredArtifactLanguage,
 } from "@/core/artifacts/viewer";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getMissingPermissions, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   fetchProjectDocumentPreview,
@@ -49,8 +51,8 @@ import {
   useAttachProjectDocument,
   useDeleteProjectDocument,
   useInfiniteProjectDocuments,
-  useProjectsConfig,
   useInfiniteProjectThreadFiles,
+  useProjectsConfig,
   usePromoteThreadFile,
   useUploadProjectDocument,
   type Project,
@@ -60,6 +62,7 @@ import {
   type ProjectThreadFile,
   type ProjectThreadFileGroup,
 } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { stageProjectAttachment } from "@/core/projects/composer-attach";
 import { useInfiniteThreads } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
@@ -72,10 +75,6 @@ import { formatTimeAgo } from "@/core/utils/datetime";
 import { getFileIcon } from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
-
-function errorToastMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
 
 /**
  * Documents tab (spec §9): the curated shelf (upload + drag-drop, rows with
@@ -119,10 +118,16 @@ function ProjectDocumentShelf({
   threads: ProjectThread[];
 }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const router = useRouter();
   const isArchived = project.status === "archived";
-  const documentsQuery = useInfiniteProjectDocuments(project.id);
-  const projectsConfigQuery = useProjectsConfig();
+  const documentsQuery = useInfiniteProjectDocuments(project.id, {
+    enabled: access.canReadProjects,
+  });
+  const projectsConfigQuery = useProjectsConfig({
+    enabled: access.canReadProjects,
+  });
   const trashRetentionDays =
     projectsConfigQuery.data?.trash_retention_days ??
     PROJECTS_CONFIG_DEFAULT.trash_retention_days;
@@ -137,9 +142,32 @@ function ProjectDocumentShelf({
   const [attachDoc, setAttachDoc] = useState<ProjectDocument | null>(null);
   const [trashDoc, setTrashDoc] = useState<ProjectDocument | null>(null);
 
+  useEffect(() => {
+    // 权限撤销后关闭尚未提交的本地操作意图；已经发出的 Gateway 请求仍由服务端复核。
+    if (!access.canReadProjects) setPreviewDoc(null);
+    if (!access.canAttachProjectDocument && !attachDocument.isPending) {
+      setAttachDoc(null);
+    }
+    if (!access.canDeleteProjectDocument && !deleteDocument.isPending) {
+      setTrashDoc(null);
+    }
+  }, [
+    access.canAttachProjectDocument,
+    access.canDeleteProjectDocument,
+    access.canReadProjects,
+    attachDocument.isPending,
+    deleteDocument.isPending,
+  ]);
+
   const documents =
     documentsQuery.data?.pages.flatMap((page) => page.documents) ?? [];
   const documentsTotal = documentsQuery.data?.pages.at(-1)?.total ?? 0;
+  const missingDocumentPermissions = getMissingPermissions(user, [
+    PERMISSIONS.PROJECTS_WRITE,
+    PERMISSIONS.PROJECTS_DELETE,
+    PERMISSIONS.THREADS_READ,
+    PERMISSIONS.THREADS_WRITE,
+  ]);
   const threadNameById = new Map(
     threads.map((thread) => [
       thread.thread_id,
@@ -149,7 +177,7 @@ function ProjectDocumentShelf({
 
   // One file per request (§17.2); the loop serializes multi-file drops.
   const uploadFiles = async (files: File[]) => {
-    if (files.length === 0 || isArchived) {
+    if (files.length === 0 || isArchived || !access.canUploadProjectDocument) {
       return;
     }
     setIsUploading(true);
@@ -157,10 +185,8 @@ function ProjectDocumentShelf({
       for (const file of files) {
         try {
           await uploadDocument.mutateAsync({ file });
-        } catch (error) {
-          toast.error(
-            errorToastMessage(error, t.projects.uploadDocumentFailed),
-          );
+        } catch {
+          toast.error(t.projects.uploadDocumentFailed);
         }
       }
     } finally {
@@ -169,13 +195,13 @@ function ProjectDocumentShelf({
   };
 
   const handleConfirmTrash = () => {
-    if (!trashDoc) {
+    if (!trashDoc || !access.canDeleteProjectDocument) {
       return;
     }
     deleteDocument.mutate(trashDoc.id, {
       onSuccess: () => setTrashDoc(null),
-      onError: (error) => {
-        toast.error(errorToastMessage(error, t.projects.deleteDocumentFailed));
+      onError: () => {
+        toast.error(t.projects.deleteDocumentFailed);
       },
     });
   };
@@ -187,16 +213,20 @@ function ProjectDocumentShelf({
         isDragging && "outline-primary outline-2 outline-dashed",
       )}
       onDragOver={
-        isArchived
+        isArchived || !access.canUploadProjectDocument
           ? undefined
           : (event) => {
               event.preventDefault();
               setIsDragging(true);
             }
       }
-      onDragLeave={isArchived ? undefined : () => setIsDragging(false)}
+      onDragLeave={
+        isArchived || !access.canUploadProjectDocument
+          ? undefined
+          : () => setIsDragging(false)
+      }
       onDrop={
-        isArchived
+        isArchived || !access.canUploadProjectDocument
           ? undefined
           : (event) => {
               event.preventDefault();
@@ -211,7 +241,7 @@ function ProjectDocumentShelf({
           <h2 className="text-muted-foreground text-sm font-medium">
             {t.projects.documentsShelf}
           </h2>
-          {!isArchived && (
+          {!isArchived && access.canUploadProjectDocument && (
             <p className="text-muted-foreground text-xs">
               {t.projects.documentsShelfHint}
             </p>
@@ -224,7 +254,7 @@ function ProjectDocumentShelf({
               {t.projects.viewTrash}
             </Link>
           </Button>
-          {!isArchived && (
+          {!isArchived && access.canUploadProjectDocument && (
             <>
               <input
                 ref={fileInputRef}
@@ -257,6 +287,13 @@ function ProjectDocumentShelf({
           )}
         </div>
       </div>
+      {missingDocumentPermissions.length > 0 ? (
+        <p role="status" className="text-muted-foreground text-xs">
+          {t.agents.permissionActionsLimited(
+            missingDocumentPermissions.join(", "),
+          )}
+        </p>
+      ) : null}
 
       {documentsQuery.isError ? (
         <div role="alert" className="p-4 text-center text-sm">
@@ -290,6 +327,8 @@ function ProjectDocumentShelf({
               project={project}
               document={document}
               isArchived={isArchived}
+              canDelete={access.canDeleteProjectDocument}
+              canAttach={access.canAttachProjectDocument}
               provenance={
                 document.source_thread_id
                   ? t.projects.documentFromThread(
@@ -337,25 +376,27 @@ function ProjectDocumentShelf({
       />
       <AttachToThreadDialog
         document={attachDoc}
+        enabled={access.canAttachProjectDocument}
         isPending={attachDocument.isPending}
         onClose={() => setAttachDoc(null)}
         onAttach={(thread) => {
-          if (!attachDoc) {
+          if (!attachDoc || !user || !access.canAttachProjectDocument) {
             return;
           }
+          const ownerId = user.id;
           attachDocument.mutate(
             { documentId: attachDoc.id, threadId: thread.thread_id },
             {
               onSuccess: (result) => {
                 // The server-side ingestion completed, so the composer of
                 // the target thread receives a *completed* attachment (§9).
-                stageProjectAttachment(thread.thread_id, result);
+                stageProjectAttachment(ownerId, thread.thread_id, result);
                 toast.success(t.projects.attachedToThread(result.filename));
                 setAttachDoc(null);
                 router.push(pathOfThread(thread));
               },
-              onError: (error) => {
-                toast.error(errorToastMessage(error, t.projects.attachFailed));
+              onError: () => {
+                toast.error(t.projects.attachFailed);
               },
             },
           );
@@ -363,9 +404,22 @@ function ProjectDocumentShelf({
       />
       <Dialog
         open={trashDoc !== null}
-        onOpenChange={(open) => !open && setTrashDoc(null)}
+        onOpenChange={(open) => {
+          if (!open && deleteDocument.isPending) return;
+          if (!open) setTrashDoc(null);
+        }}
       >
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent
+          className="sm:max-w-[425px]"
+          showCloseButton={!deleteDocument.isPending}
+          aria-busy={deleteDocument.isPending}
+          onEscapeKeyDown={(event) => {
+            if (deleteDocument.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (deleteDocument.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{t.projects.moveDocumentToTrashTitle}</DialogTitle>
             <DialogDescription>
@@ -377,7 +431,11 @@ function ProjectDocumentShelf({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTrashDoc(null)}>
+            <Button
+              variant="outline"
+              disabled={deleteDocument.isPending}
+              onClick={() => setTrashDoc(null)}
+            >
               {t.common.cancel}
             </Button>
             <Button
@@ -385,7 +443,9 @@ function ProjectDocumentShelf({
               disabled={deleteDocument.isPending}
               onClick={handleConfirmTrash}
             >
-              {t.projects.moveDocumentToTrash}
+              {deleteDocument.isPending
+                ? t.common.loading
+                : t.projects.moveDocumentToTrash}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -398,6 +458,8 @@ function ProjectDocumentRow({
   project,
   document,
   isArchived,
+  canDelete,
+  canAttach,
   provenance,
   onPreview,
   onAttach,
@@ -406,6 +468,8 @@ function ProjectDocumentRow({
   project: Project;
   document: ProjectDocument;
   isArchived: boolean;
+  canDelete: boolean;
+  canAttach: boolean;
   provenance: string | null;
   onPreview: () => void;
   onAttach: () => void;
@@ -425,7 +489,7 @@ function ProjectDocumentRow({
             {t.projects.contentMissing}
           </Badge>
         </div>
-        {!isArchived && (
+        {!isArchived && canDelete && (
           <Button variant="ghost" size="sm" onClick={onTrash}>
             <Trash2 className="size-4" />
             {t.projects.moveDocumentToTrash}
@@ -467,11 +531,13 @@ function ProjectDocumentRow({
             {t.common.download}
           </a>
         </Button>
-        <Button variant="ghost" size="sm" onClick={onAttach}>
-          <Paperclip className="size-4" />
-          {t.projects.attachToThread}
-        </Button>
-        {!isArchived && (
+        {canAttach ? (
+          <Button variant="ghost" size="sm" onClick={onAttach}>
+            <Paperclip className="size-4" />
+            {t.projects.attachToThread}
+          </Button>
+        ) : null}
+        {!isArchived && canDelete && (
           <Button variant="ghost" size="sm" onClick={onTrash}>
             <Trash2 className="size-4" />
             {t.projects.moveDocumentToTrash}
@@ -661,11 +727,13 @@ function DocumentPreviewDialog({
 
 function AttachToThreadDialog({
   document,
+  enabled,
   isPending,
   onClose,
   onAttach,
 }: {
   document: ProjectDocument | null;
+  enabled: boolean;
   isPending: boolean;
   onClose: () => void;
   onAttach: (thread: AgentThread) => void;
@@ -675,19 +743,36 @@ function AttachToThreadDialog({
   // honors ``archived`` and ``limit``/``offset``): archived chats never
   // occupy a slot, and each page keeps loading raw rows until it fills or
   // the backend is exhausted.
-  const threadsQuery = useInfiniteThreads({
-    archived:
-      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
-  });
+  const threadsQuery = useInfiniteThreads(
+    {
+      archived:
+        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
+    },
+    { enabled },
+  );
   const writableThreads = (threadsQuery.data?.pages ?? [])
     .flatMap((page) => page)
     .filter((thread) => !isThreadArchived(thread));
   return (
     <Dialog
       open={document !== null}
-      onOpenChange={(open) => !open && onClose()}
+      onOpenChange={(open) => {
+        // 附加请求成功后会跳转目标会话；提交期间关闭弹窗并不会取消请求。
+        if (!open && isPending) return;
+        if (!open) onClose();
+      }}
     >
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent
+        className="sm:max-w-[425px]"
+        showCloseButton={!isPending}
+        aria-busy={isPending}
+        onEscapeKeyDown={(event) => {
+          if (isPending) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (isPending) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{t.projects.attachDialogTitle}</DialogTitle>
           <DialogDescription>{t.projects.attachDialogHint}</DialogDescription>
@@ -720,7 +805,7 @@ function AttachToThreadDialog({
               variant="ghost"
               size="sm"
               className="self-center text-xs"
-              disabled={threadsQuery.isFetchingNextPage}
+              disabled={isPending || threadsQuery.isFetchingNextPage}
               onClick={() => void threadsQuery.fetchNextPage()}
               data-testid="attach-thread-load-more"
             >
@@ -731,7 +816,7 @@ function AttachToThreadDialog({
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={isPending} onClick={onClose}>
             {t.common.cancel}
           </Button>
         </DialogFooter>
@@ -742,6 +827,8 @@ function AttachToThreadDialog({
 
 function ProjectConversationFiles({ project }: { project: Project }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const isArchived = project.status === "archived";
   // The API's maximum per-thread file cap: minimizes truncation frequency.
   // When a thread still exceeds it, the group renders a notice linking to
@@ -750,9 +837,13 @@ function ProjectConversationFiles({ project }: { project: Project }) {
   // or window-focus refetch refreshes them all — a member thread moved or
   // deleted between pages can never leave a stale group behind or duplicate
   // groups across a shifted page boundary.
-  const threadFilesQuery = useInfiniteProjectThreadFiles(project.id, {
-    file_limit: 200,
-  });
+  const threadFilesQuery = useInfiniteProjectThreadFiles(
+    project.id,
+    {
+      file_limit: 200,
+    },
+    { enabled: access.canReadProjectThreads },
+  );
 
   const groups =
     threadFilesQuery.data?.pages.flatMap((page) => page.groups) ?? [];
@@ -762,7 +853,11 @@ function ProjectConversationFiles({ project }: { project: Project }) {
       <h2 className="text-muted-foreground text-sm font-medium">
         {t.projects.conversationFiles}
       </h2>
-      {threadFilesQuery.isError ? (
+      {!access.canReadThreads ? (
+        <p role="alert" className="text-muted-foreground p-4 text-sm">
+          {t.agents.permissionRequired(PERMISSIONS.THREADS_READ)}
+        </p>
+      ) : threadFilesQuery.isError ? (
         <div role="alert" className="p-4 text-center text-sm">
           <p>{t.projects.threadFilesLoadFailed}</p>
           <Button
@@ -785,6 +880,7 @@ function ProjectConversationFiles({ project }: { project: Project }) {
               project={project}
               group={group}
               isArchived={isArchived}
+              canPromote={access.canPromoteThreadFile}
             />
           ))}
         </div>
@@ -811,10 +907,12 @@ function ConversationFileGroup({
   project,
   group,
   isArchived,
+  canPromote,
 }: {
   project: Project;
   group: ProjectThreadFileGroup;
   isArchived: boolean;
+  canPromote: boolean;
 }) {
   const { t } = useI18n();
   const promoteFile = usePromoteThreadFile(project.id);
@@ -827,7 +925,7 @@ function ConversationFileGroup({
   };
 
   const handleSave = () => {
-    if (!saveTarget) {
+    if (!saveTarget || !canPromote) {
       return;
     }
     const trimmed = shelfName.trim();
@@ -845,8 +943,8 @@ function ConversationFileGroup({
           toast.success(t.projects.savedToProject(result.document.name));
           setSaveTarget(null);
         },
-        onError: (error) => {
-          toast.error(errorToastMessage(error, t.projects.saveToProjectFailed));
+        onError: () => {
+          toast.error(t.projects.saveToProjectFailed);
         },
       },
     );
@@ -885,7 +983,7 @@ function ConversationFileGroup({
                     {t.common.preview}
                   </a>
                 </Button>
-                {!isArchived && (
+                {!isArchived && canPromote && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -919,9 +1017,22 @@ function ConversationFileGroup({
 
       <Dialog
         open={saveTarget !== null}
-        onOpenChange={(open) => !open && setSaveTarget(null)}
+        onOpenChange={(open) => {
+          if (!open && promoteFile.isPending) return;
+          if (!open) setSaveTarget(null);
+        }}
       >
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent
+          className="sm:max-w-[425px]"
+          showCloseButton={!promoteFile.isPending}
+          aria-busy={promoteFile.isPending}
+          onEscapeKeyDown={(event) => {
+            if (promoteFile.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (promoteFile.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{t.projects.saveToProject}</DialogTitle>
           </DialogHeader>
@@ -934,19 +1045,26 @@ function ConversationFileGroup({
             </label>
             <Input
               id={`shelf-name-${group.thread_id}`}
+              disabled={promoteFile.isPending}
               value={shelfName}
               onChange={(event) => setShelfName(event.target.value)}
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSaveTarget(null)}>
+            <Button
+              variant="outline"
+              disabled={promoteFile.isPending}
+              onClick={() => setSaveTarget(null)}
+            >
               {t.common.cancel}
             </Button>
             <Button
               disabled={!shelfName.trim() || promoteFile.isPending}
               onClick={handleSave}
             >
-              {t.projects.saveToProject}
+              {promoteFile.isPending
+                ? t.common.loading
+                : t.projects.saveToProject}
             </Button>
           </DialogFooter>
         </DialogContent>

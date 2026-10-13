@@ -65,6 +65,7 @@ import {
   buildSidecarContextPrompt,
 } from "@/core/sidecar";
 import { createSidecarThread } from "@/core/sidecar/api";
+import { reportSidecarFailure } from "@/core/sidecar/error-feedback";
 import {
   useDeleteThread,
   useThreadStream,
@@ -146,6 +147,9 @@ export function SidecarPanel({ className }: { className?: string }) {
   const { t } = useI18n();
   const { user } = useAuth();
   const canDeleteThreads = hasPermission(user, PERMISSIONS.THREADS_DELETE);
+  const canReadUploadLimits = hasPermission(user, PERMISSIONS.THREADS_READ);
+  // Sidecar text runs use the normal run permission; file ingestion needs thread write.
+  const canUploadFiles = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   const sidecar = useSidecar();
   const { thread: parentThread } = useParentThread();
   const [localSettings] = useLocalSettings();
@@ -161,6 +165,7 @@ export function SidecarPanel({ className }: { className?: string }) {
   } | null>(null);
   const { data: uploadLimits } = useUploadLimits(
     sidecar.sidecarThreadId ?? sidecar.parentThreadId,
+    { enabled: canReadUploadLimits },
   );
 
   const selectedModel = useMemo(() => {
@@ -428,9 +433,7 @@ export function SidecarPanel({ className }: { className?: string }) {
         }
       },
     ).catch((error) => {
-      toast.error(
-        error instanceof Error ? error.message : t.sidecar.sendFailed,
-      );
+      reportSidecarFailure("send", error, t.sidecar.sendFailed);
     });
   }, [
     queuedSubmit,
@@ -445,6 +448,10 @@ export function SidecarPanel({ className }: { className?: string }) {
     async (message: PromptInputMessage) => {
       const text = message.text.trim();
       const files = promptMessageFiles(message);
+      if (!canUploadFiles && message.files.length > 0) {
+        toast.error(t.inputBox.uploadPermissionRequired);
+        return Promise.reject(new Error("upload-permission-denied"));
+      }
       if ((!text && message.files.length === 0) || disabled) {
         return;
       }
@@ -473,18 +480,18 @@ export function SidecarPanel({ className }: { className?: string }) {
           },
         );
       } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t.sidecar.sendFailed,
-        );
+        reportSidecarFailure("send", error, t.sidecar.sendFailed);
       }
     },
     [
       disabled,
+      canUploadFiles,
       ensureSidecarThread,
       reportUploadLimitViolations,
       sidecar,
       submitToSidecarThread,
       t.sidecar.sendFailed,
+      t.inputBox.uploadPermissionRequired,
       uploadLimits,
     ],
   );
@@ -510,9 +517,7 @@ export function SidecarPanel({ className }: { className?: string }) {
       setDeleteDialogOpen(false);
       toast.success(t.sidecar.deleteSuccess);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : t.sidecar.deleteFailed,
-      );
+      reportSidecarFailure("delete", error, t.sidecar.deleteFailed);
     }
   }, [
     deleteThread,
@@ -604,6 +609,7 @@ export function SidecarPanel({ className }: { className?: string }) {
           <PromptInput
             className="bg-background/85 rounded-2xl backdrop-blur-sm *:data-[slot='input-group']:rounded-2xl"
             disabled={disabled}
+            fileUploadsEnabled={canUploadFiles}
             multiple
             onSubmit={handleSubmit}
           >
@@ -630,9 +636,22 @@ export function SidecarPanel({ className }: { className?: string }) {
                 placeholder={t.sidecar.placeholder}
               />
             </PromptInputBody>
+            {!canUploadFiles && (
+              <p role="status" className="text-muted-foreground px-3 text-xs">
+                {t.inputBox.uploadPermissionRequired}
+              </p>
+            )}
             <PromptInputFooter className="@container flex flex-nowrap gap-2">
               <PromptInputTools className="min-w-0 flex-1 flex-nowrap overflow-hidden">
-                <SidecarAddAttachmentsButton uploadLimits={uploadLimits} />
+                <SidecarAddAttachmentsButton
+                  disabled={!canUploadFiles}
+                  permissionHint={
+                    canUploadFiles
+                      ? undefined
+                      : t.inputBox.uploadPermissionRequired
+                  }
+                  uploadLimits={uploadLimits}
+                />
                 <SidecarModeMenu
                   context={sidecar.context}
                   supportThinking={supportThinking}
@@ -719,19 +738,25 @@ export function SidecarPanel({ className }: { className?: string }) {
 }
 
 function SidecarAddAttachmentsButton({
+  disabled,
+  permissionHint,
   uploadLimits,
 }: {
+  disabled?: boolean;
+  permissionHint?: string;
   uploadLimits?: UploadLimits;
 }) {
   const { t } = useI18n();
   const attachments = usePromptInputAttachments();
-  const tooltipContent = uploadLimits
-    ? t.uploads.limitsHint(
-        uploadLimits.max_files,
-        formatUploadSize(uploadLimits.max_file_size),
-        formatUploadSize(uploadLimits.max_total_size),
-      )
-    : t.inputBox.addAttachments;
+  const tooltipContent =
+    permissionHint ??
+    (uploadLimits
+      ? t.uploads.limitsHint(
+          uploadLimits.max_files,
+          formatUploadSize(uploadLimits.max_file_size),
+          formatUploadSize(uploadLimits.max_total_size),
+        )
+      : t.inputBox.addAttachments);
 
   return (
     <Tooltip content={<span className="block max-w-80">{tooltipContent}</span>}>
@@ -739,6 +764,8 @@ function SidecarAddAttachmentsButton({
         aria-label={t.inputBox.addAttachments}
         className="px-2!"
         data-testid="sidecar-add-attachments-button"
+        disabled={disabled}
+        title={permissionHint}
         onClick={() => attachments.openFileDialog()}
       >
         <PaperclipIcon className="size-3" />

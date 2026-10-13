@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -42,6 +43,7 @@ import {
   useStartLarkAuthorization,
   useStartLarkConfiguration,
 } from "@/core/integrations/lark";
+import { reportLarkFailure } from "@/core/integrations/lark/error-feedback";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -114,25 +116,43 @@ function uniqueScopes(scopes: string[]) {
   return Array.from(new Set(scopes));
 }
 
-export function LarkPluginSettings() {
+export function LarkPluginSettings({
+  onBusyChange,
+}: {
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const { t } = useI18n();
   return (
     <SettingsSection
       title={t.settings.integrations.title}
       description={t.settings.integrations.description}
     >
-      <LarkIntegrationCard />
+      <LarkIntegrationCard onBusyChange={onBusyChange} />
     </SettingsSection>
   );
 }
 
-function LarkIntegrationCard() {
+function LarkIntegrationCard({
+  onBusyChange,
+}: {
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const isAdmin = user?.system_role === "admin";
+  // 状态只读检查；安装还需要 admin/write，连接流程要求 read/write，因为完成路由会再次读取状态。
+  const canReadIntegration =
+    getPermissionState(user, PERMISSIONS.INTEGRATIONS_READ) !== "denied";
+  const canWriteIntegration =
+    getPermissionState(user, PERMISSIONS.INTEGRATIONS_WRITE) !== "denied";
+  const canAdminIntegration =
+    getPermissionState(user, PERMISSIONS.INTEGRATIONS_ADMIN) !== "denied";
+  const canConnectIntegration = canReadIntegration && canWriteIntegration;
+  const canInstallIntegration =
+    isAdmin && canConnectIntegration && canAdminIntegration;
   const { data, isLoading, error, refetch, isFetching } =
-    useLarkIntegrationStatus();
+    useLarkIntegrationStatus(canReadIntegration);
   const install = useInstallLarkIntegration();
   const startConfig = useStartLarkConfiguration();
   const completeConfig = useCompleteLarkConfiguration();
@@ -166,11 +186,9 @@ function LarkIntegrationCard() {
     startAuth.isPending ||
     completeAuth.isPending ||
     switchApp.isPending;
+  const mutationBusy = connectBusy || install.isPending;
   const integrationBusy =
-    connectBusy ||
-    isCheckingConnection ||
-    pendingFlow != null ||
-    install.isPending;
+    mutationBusy || isCheckingConnection || pendingFlow != null;
   const credentialsConfigured = data?.auth.status === "authenticated";
   const isConnected = credentialsConfigured && data?.auth.verified === true;
   // The sandbox-runtime readiness row only applies when the sandbox actually
@@ -180,7 +198,19 @@ function LarkIntegrationCard() {
   const hasAdditionalPermissionRequest =
     selectedAuthDomains.length > 0 || trimmedCustomAuthScope.length > 0;
 
+  useEffect(() => {
+    if (error) {
+      console.error("Failed to load Lark integration status:", error);
+    }
+  }, [error]);
+
+  useEffect(() => {
+    // 只把真实 Gateway mutation 提升给外层弹窗；等待用户打开授权链接时仍允许退出。
+    onBusyChange?.(mutationBusy);
+  }, [mutationBusy, onBusyChange]);
+
   const handleInstall = () => {
+    if (!canInstallIntegration) return;
     install.mutate(undefined, {
       onSuccess: (result) => toast.success(result.message),
       onError: (err) => {
@@ -188,7 +218,11 @@ function LarkIntegrationCard() {
           toast.error(t.settings.integrations.adminRequired);
           return;
         }
-        toast.error(err instanceof Error ? err.message : String(err));
+        reportLarkFailure(
+          "install",
+          err,
+          t.settings.integrations.lark.installFailed,
+        );
       },
     });
   };
@@ -265,6 +299,7 @@ function LarkIntegrationCard() {
     generation = flowGenerationRef.current,
     serverGeneration?: string,
   ) => {
+    if (!canConnectIntegration) return;
     startAuth.mutate(
       {
         ...request,
@@ -283,14 +318,19 @@ function LarkIntegrationCard() {
         onError: (err) => {
           if (!isActiveFlow(generation)) return;
           closePendingBrowserWindow(browserWindow);
-          toast.error(err instanceof Error ? err.message : String(err));
+          reportLarkFailure(
+            "start-authorization",
+            err,
+            t.settings.integrations.lark.authorizationFailed,
+          );
         },
       },
     );
   };
 
   const handleContinueConnection = () => {
-    if (!pendingFlow || pendingFlow.kind !== "config") return;
+    if (!canConnectIntegration || !pendingFlow || pendingFlow.kind !== "config")
+      return;
     const generation = flowGenerationRef.current;
     completeConfig.mutate(
       {
@@ -316,7 +356,11 @@ function LarkIntegrationCard() {
         onError: (err) => {
           if (!isActiveFlow(generation)) return;
           setPendingFlow(null);
-          toast.error(err instanceof Error ? err.message : String(err));
+          reportLarkFailure(
+            "complete-configuration",
+            err,
+            t.settings.integrations.lark.connectionFailed,
+          );
         },
       },
     );
@@ -327,6 +371,7 @@ function LarkIntegrationCard() {
     browserWindow: Window | null,
     generation: number,
   ) => {
+    if (!canConnectIntegration) return;
     startConfig.mutate(
       { brand },
       {
@@ -339,7 +384,11 @@ function LarkIntegrationCard() {
         onError: (err) => {
           if (!isActiveFlow(generation)) return;
           closePendingBrowserWindow(browserWindow);
-          toast.error(err instanceof Error ? err.message : String(err));
+          reportLarkFailure(
+            "start-configuration",
+            err,
+            t.settings.integrations.lark.connectionFailed,
+          );
         },
       },
     );
@@ -350,6 +399,7 @@ function LarkIntegrationCard() {
     browserWindow: Window | null,
     generation: number,
   ) => {
+    if (!canConnectIntegration) return;
     if (!status.app_configured) {
       startBrowserAppRegistration("feishu", browserWindow, generation);
       return;
@@ -358,6 +408,7 @@ function LarkIntegrationCard() {
   };
 
   const handleReRegisterInBrowser = () => {
+    if (!canConnectIntegration) return;
     authRequestRef.current = buildAuthRequest();
     const browserWindow = openPendingBrowserWindow();
     const generation = beginFlow();
@@ -365,6 +416,7 @@ function LarkIntegrationCard() {
   };
 
   const handleChangeAppSubmit = () => {
+    if (!canConnectIntegration) return;
     // Pre-open the browser tab synchronously inside the click gesture: the
     // subsequent user authorization runs only after the switch POST resolves,
     // and opening the window then would be outside the gesture and blocked by
@@ -397,7 +449,11 @@ function LarkIntegrationCard() {
         onError: (err) => {
           if (!isActiveFlow(generation)) return;
           closePendingBrowserWindow(browserWindow);
-          toast.error(err instanceof Error ? err.message : String(err));
+          reportLarkFailure(
+            "switch-app",
+            err,
+            t.settings.integrations.lark.changeAppFailed,
+          );
         },
       },
     );
@@ -416,6 +472,7 @@ function LarkIntegrationCard() {
   };
 
   const toggleAuthDomain = (domain: LarkAuthDomain) => {
+    if (!canConnectIntegration) return;
     setSelectedAuthDomains((current) => {
       if (domain === "all") {
         return current.includes("all") ? [] : ["all"];
@@ -429,7 +486,8 @@ function LarkIntegrationCard() {
   };
 
   const handleConnect = async () => {
-    if (!data) return;
+    if (!canConnectIntegration || !data || mutationBusy || isCheckingConnection)
+      return;
     authRequestRef.current = buildAuthRequest();
     // Pre-open the blank tab synchronously inside the click gesture. We cannot
     // trust the cached auth status here: an `authenticated` cache can be stale
@@ -441,14 +499,21 @@ function LarkIntegrationCard() {
     const generation = beginFlow();
     setIsCheckingConnection(true);
     try {
-      const refreshed = await refetch();
+      // refetch 默认把请求异常留在结果中；连接前必须读取成功的新状态，不能用旧缓存继续授权。
+      const refreshed = await refetch({ throwOnError: true });
       if (!isActiveFlow(generation)) return;
-      const latestStatus = refreshed.data ?? data;
-      startConnectionFlow(latestStatus, browserWindow, generation);
+      if (!refreshed.data) {
+        throw new Error("Lark connection status is missing after refresh");
+      }
+      startConnectionFlow(refreshed.data, browserWindow, generation);
     } catch (err) {
       if (!isActiveFlow(generation)) return;
       closePendingBrowserWindow(browserWindow);
-      toast.error(err instanceof Error ? err.message : String(err));
+      reportLarkFailure(
+        "check-connection",
+        err,
+        t.settings.integrations.lark.statusLoadFailed,
+      );
     } finally {
       if (isActiveFlow(generation)) {
         setIsCheckingConnection(false);
@@ -465,6 +530,10 @@ function LarkIntegrationCard() {
       generation,
     }: { automatic: boolean; attemptId?: number; generation: number },
   ) => {
+    if (!canConnectIntegration) {
+      clearAuthRetryTimer();
+      return;
+    }
     const toastOptions =
       authToastIdRef.current == null
         ? undefined
@@ -495,9 +564,9 @@ function LarkIntegrationCard() {
             browserWindowRef.current = null;
             return;
           }
+          // status.message 可能来自 lark-cli 或 OAuth 提供方，仅把稳定的等待状态展示给用户。
           toast.info(
-            result.message ||
-              t.settings.integrations.lark.authorizationStillPending,
+            t.settings.integrations.lark.authorizationStillPending,
             toastOptions,
           );
           if (automatic && attemptId != null) {
@@ -512,6 +581,21 @@ function LarkIntegrationCard() {
         onError: (err) => {
           if (!isActiveFlow(generation)) return;
           if (automatic && attemptId !== authAttemptIdRef.current) {
+            return;
+          }
+          if (
+            err instanceof LarkIntegrationRequestError &&
+            err.status === 409
+          ) {
+            // 409 明确表示服务端流程已被取代；使旧回调失效并恢复连接入口。
+            // 400 还可能是 CLI/网络异常，不能一概当作授权过期。
+            beginFlow();
+            browserWindowRef.current = null;
+            reportLarkFailure(
+              "complete-authorization",
+              err,
+              t.settings.integrations.lark.authorizationSuperseded,
+            );
             return;
           }
           if (
@@ -533,14 +617,26 @@ function LarkIntegrationCard() {
             }
             return;
           }
-          toast.error(
-            err instanceof Error ? err.message : String(err),
+          reportLarkFailure(
+            "complete-authorization",
+            err,
+            t.settings.integrations.lark.authorizationFailed,
             toastOptions,
           );
           authToastIdRef.current = null;
         },
       },
     );
+  };
+
+  const endAutomaticWaitIfNeeded = (generation: number) => {
+    if (!isActiveFlow(generation)) return true;
+    if (Date.now() < authDeadlineRef.current) return false;
+    // 本地自动检查期限结束不证明服务端授权已过期，只解除等待并提供重新连接。
+    beginFlow();
+    browserWindowRef.current = null;
+    toast.info(t.settings.integrations.lark.authorizationCheckEnded);
+    return true;
   };
 
   const scheduleAuthorizationRetry = (
@@ -550,12 +646,13 @@ function LarkIntegrationCard() {
     generation: number,
   ) => {
     clearAuthRetryTimer();
-    if (!isActiveFlow(generation)) return;
-    if (Date.now() >= authDeadlineRef.current) {
-      toast.info(t.settings.integrations.lark.authorizationStillPending);
-      return;
-    }
+    if (endAutomaticWaitIfNeeded(generation)) return;
     authRetryTimeoutRef.current = setTimeout(() => {
+      if (!isActiveFlow(generation) || attemptId !== authAttemptIdRef.current)
+        return;
+      authRetryTimeoutRef.current = null;
+      // 安排时尚未到期，不代表 1.5 秒后仍在期限内；真正发请求前再次复核。
+      if (endAutomaticWaitIfNeeded(generation)) return;
       completeAuthorization(deviceCode, serverGeneration, {
         automatic: true,
         attemptId,
@@ -571,8 +668,12 @@ function LarkIntegrationCard() {
     clearAuthRetryTimer();
     const attemptId = authAttemptIdRef.current + 1;
     authAttemptIdRef.current = attemptId;
-    authDeadlineRef.current =
-      Date.now() + Math.max(result.expires_in ?? 300, 30) * 1000;
+    const waitSeconds =
+      result.expires_in != null && Number.isFinite(result.expires_in)
+        ? Math.max(result.expires_in, 0)
+        : 300;
+    authDeadlineRef.current = Date.now() + waitSeconds * 1000;
+    if (endAutomaticWaitIfNeeded(generation)) return;
     completeAuthorization(result.device_code, result.generation, {
       automatic: true,
       attemptId,
@@ -581,7 +682,7 @@ function LarkIntegrationCard() {
   };
 
   const handleCompleteAuth = () => {
-    if (!pendingFlow) return;
+    if (!canConnectIntegration || !pendingFlow) return;
     if (pendingFlow.kind !== "auth") {
       return;
     }
@@ -605,10 +706,11 @@ function LarkIntegrationCard() {
 
   const installDisabled =
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-    !isAdmin ||
+    !canInstallIntegration ||
     integrationBusy;
   const authDisabled =
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+    !canConnectIntegration ||
     !data?.installed ||
     !data?.cli.available ||
     integrationBusy;
@@ -648,7 +750,7 @@ function LarkIntegrationCard() {
             variant="outline"
             size="sm"
             onClick={() => void refetch()}
-            disabled={isFetching}
+            disabled={!canReadIntegration || isFetching}
           >
             <RefreshCwIcon
               className={cn("size-4", isFetching && "animate-spin")}
@@ -658,7 +760,14 @@ function LarkIntegrationCard() {
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isLoading ? (
+        {(!canReadIntegration ||
+          !canWriteIntegration ||
+          (isAdmin && !canAdminIntegration)) && (
+          <p role="status" className="text-muted-foreground text-sm">
+            {t.settings.integrations.permissionRequired}
+          </p>
+        )}
+        {!canReadIntegration ? null : isLoading ? (
           <div className="text-muted-foreground text-sm">
             {t.common.loading}
           </div>
@@ -667,7 +776,7 @@ function LarkIntegrationCard() {
             <XCircleIcon />
             <AlertTitle>{t.settings.integrations.loadFailed}</AlertTitle>
             <AlertDescription>
-              {error instanceof Error ? error.message : String(error)}
+              {t.settings.integrations.lark.statusLoadFailed}
             </AlertDescription>
           </Alert>
         ) : data ? (
@@ -696,7 +805,8 @@ function LarkIntegrationCard() {
                 value={
                   data.cli.available
                     ? (data.cli.version ?? t.settings.integrations.available)
-                    : (data.cli.error ?? t.settings.integrations.unavailable)
+                    : // CLI 探测错误可能包含 Gateway 路径或命令输出，不直接展示服务端原文。
+                      t.settings.integrations.unavailable
                 }
               />
               <StatusItem
@@ -727,8 +837,8 @@ function LarkIntegrationCard() {
                               .sandboxRuntimeInitContainer
                           : t.settings.integrations.lark
                               .sandboxRuntimeGatewayDownload
-                      : (data.sandbox_runtime_detail ??
-                        t.settings.integrations.lark.sandboxRuntimeNotReady)
+                      : // runtime_detail 面向排障诊断；用户界面只显示稳定的未就绪状态。
+                        t.settings.integrations.lark.sandboxRuntimeNotReady
                   }
                 />
               )}
@@ -782,7 +892,7 @@ function LarkIntegrationCard() {
                         size="sm"
                         variant={selected ? "default" : "outline"}
                         onClick={() => toggleAuthDomain(domain.id)}
-                        disabled={integrationBusy}
+                        disabled={integrationBusy || !canConnectIntegration}
                         title={domain.description}
                       >
                         {domain.label}
@@ -796,7 +906,7 @@ function LarkIntegrationCard() {
                     onChange={(event) =>
                       setCustomAuthScope(event.currentTarget.value)
                     }
-                    disabled={integrationBusy}
+                    disabled={integrationBusy || !canConnectIntegration}
                     placeholder={
                       t.settings.integrations.lark.customScopePlaceholder
                     }
@@ -835,6 +945,7 @@ function LarkIntegrationCard() {
                   onClick={() => setShowChangeApp((current) => !current)}
                   disabled={
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                    !canConnectIntegration ||
                     integrationBusy
                   }
                 >
@@ -865,7 +976,7 @@ function LarkIntegrationCard() {
                       size="sm"
                       variant={changeAppBrand === brand ? "default" : "outline"}
                       onClick={() => setChangeAppBrand(brand)}
-                      disabled={integrationBusy}
+                      disabled={integrationBusy || !canConnectIntegration}
                     >
                       {brand === "feishu"
                         ? t.settings.integrations.lark.brandFeishu
@@ -879,7 +990,7 @@ function LarkIntegrationCard() {
                     onChange={(event) =>
                       setChangeAppId(event.currentTarget.value)
                     }
-                    disabled={integrationBusy}
+                    disabled={integrationBusy || !canConnectIntegration}
                     placeholder={t.settings.integrations.lark.changeAppIdLabel}
                     aria-label={t.settings.integrations.lark.changeAppIdLabel}
                   />
@@ -889,7 +1000,7 @@ function LarkIntegrationCard() {
                     onChange={(event) =>
                       setChangeAppSecret(event.currentTarget.value)
                     }
-                    disabled={integrationBusy}
+                    disabled={integrationBusy || !canConnectIntegration}
                     placeholder={
                       t.settings.integrations.lark.changeAppSecretLabel
                     }
@@ -907,6 +1018,7 @@ function LarkIntegrationCard() {
                     onClick={handleChangeAppSubmit}
                     disabled={
                       integrationBusy ||
+                      !canConnectIntegration ||
                       !changeAppId.trim() ||
                       !changeAppSecret.trim()
                     }
@@ -920,7 +1032,7 @@ function LarkIntegrationCard() {
                     size="sm"
                     variant="outline"
                     onClick={handleReRegisterInBrowser}
-                    disabled={integrationBusy}
+                    disabled={integrationBusy || !canConnectIntegration}
                   >
                     <ExternalLinkIcon className="size-4" />
                     {t.settings.integrations.lark.changeAppReRegister}
@@ -987,7 +1099,9 @@ function LarkIntegrationCard() {
                           size="sm"
                           variant="outline"
                           onClick={handleContinueConnection}
-                          disabled={completeConfig.isPending}
+                          disabled={
+                            !canConnectIntegration || completeConfig.isPending
+                          }
                         >
                           {completeConfig.isPending ? (
                             <RefreshCwIcon className="size-4 animate-spin" />
@@ -1002,13 +1116,31 @@ function LarkIntegrationCard() {
                           size="sm"
                           variant="default"
                           onClick={handleCompleteAuth}
-                          disabled={completeAuth.isPending}
+                          disabled={
+                            !canConnectIntegration || completeAuth.isPending
+                          }
                         >
                           {completeAuth.isPending
                             ? t.settings.integrations.lark.completingAuth
                             : t.settings.integrations.lark.completeAuth}
                         </Button>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleConnect()}
+                        disabled={
+                          mutationBusy ||
+                          isCheckingConnection ||
+                          !canConnectIntegration ||
+                          env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                          !data.installed ||
+                          !data.cli.available
+                        }
+                      >
+                        <RefreshCwIcon className="size-4" />
+                        {t.settings.integrations.lark.restartConnection}
+                      </Button>
                     </div>
                     {pendingFlow.expires_in != null && (
                       <p className="text-muted-foreground text-xs">

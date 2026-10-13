@@ -1,6 +1,8 @@
 """Tests for user-scoped path resolution in Paths."""
 
+import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -277,3 +279,29 @@ class TestResolveVirtualPathWithUserId:
         result = paths.resolve_virtual_path("t1", "/mnt/user-data/workspace/file.txt")
         expected_base = paths.sandbox_user_data_dir("t1").resolve()
         assert str(result).startswith(str(expected_base))
+
+
+class TestProjectDocumentPhysicalPath:
+    def test_long_windows_namespace_uses_stable_project_scoped_alias(self, paths: Paths, monkeypatch):
+        from deerflow.config import paths as paths_module
+
+        # Simulate the Windows branch without changing the process-wide os
+        # module used by pathlib or pytest.
+        monkeypatch.setattr(paths_module, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(paths_module, "_needs_compact_project_document_namespace", lambda _path: True)
+        relpath = f"project-123/documents/ab/{'a' * 64}/document-456"
+        alias = paths.project_document_path("alice", relpath)
+        expected_key = hashlib.sha256(relpath.encode("utf-8")).hexdigest()[:32]
+        expected = paths.user_project_dir("alice", "project-123") / "documents" / ".short" / expected_key
+
+        assert alias == expected.resolve()
+        assert paths.project_document_path("alice", relpath) == alias
+        assert paths.project_document_path("bob", relpath) != alias
+
+        alias.mkdir(parents=True)
+        assert paths.project_document_path("alice", relpath) == alias
+
+        legacy_relpath = f"project-123/documents/cd/{'b' * 64}/legacy-document"
+        legacy = paths.user_projects_dir("alice") / legacy_relpath
+        legacy.mkdir(parents=True)
+        assert paths.project_document_path("alice", legacy_relpath) == legacy.resolve()

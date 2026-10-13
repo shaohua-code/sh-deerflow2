@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { MCPPluginManager } from "@/components/workspace/capabilities/mcp-plugin-manager";
+import { MCPConfigRequestError } from "@/core/mcp/api";
 
 const mcpMockState = rs.hoisted(() => ({
+  permissions: null as string[] | null,
   isPending: false,
   isLoading: false,
   error: null as Error | null,
@@ -47,6 +49,7 @@ rs.mock("@/core/i18n/hooks", () => ({
       settings: {
         tools: {
           adminRequired: "Admin required",
+          loadFailed: "MCP tools unavailable",
           empty: "No tools",
           addServer: "Add server",
           addServerDescription: "Paste the definition",
@@ -66,8 +69,22 @@ rs.mock("@/core/i18n/hooks", () => ({
           removeServer: "Remove MCP server",
           removeServerDescription: 'Remove "{name}"?',
           unnamedServer: "(empty name)",
+          enableFailed: "MCP state update failed",
+          addFailed: "MCP server addition failed",
+          updateFailed: "MCP server save failed",
+          deleteFailed: "MCP server removal failed",
         },
       },
+    },
+  }),
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: {
+      id: "user-1",
+      system_role: "admin",
+      permissions: mcpMockState.permissions,
     },
   }),
 }));
@@ -126,6 +143,7 @@ function definitionTextbox(): HTMLTextAreaElement {
 }
 
 afterEach(() => {
+  mcpMockState.permissions = null;
   mcpMockState.isPending = false;
   mcpMockState.isLoading = false;
   mcpMockState.error = null;
@@ -137,6 +155,36 @@ afterEach(() => {
 });
 
 describe("MCPPluginManager MCP switches", () => {
+  it("disables MCP writes after an explicit mcp:admin denial", () => {
+    mcpMockState.permissions = [];
+    twoServers();
+    render(<MCPPluginManager />);
+
+    expect(screen.getByRole("status").textContent).toContain("Admin required");
+    expect(
+      (screen.getByRole("button", { name: "Add server" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("switch", {
+          name: "Enabled github",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Edit github" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Delete github",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it.each(["loading", "error"])(
     "preserves plugin filters and other plugins during an MCP %s",
     (state) => {
@@ -156,12 +204,25 @@ describe("MCPPluginManager MCP switches", () => {
     },
   );
 
-  it("renders a localized load error", () => {
+  it("keeps raw Gateway detail out of the load error", () => {
     mcpMockState.error = new Error("request failed");
 
     render(<MCPPluginManager />);
 
-    expect(screen.getByText("Error: request failed")).toBeDefined();
+    expect(screen.getByText("MCP tools unavailable")).toBeDefined();
+    expect(screen.queryByText("request failed")).toBeNull();
+  });
+
+  it("keeps the administrator-specific load error", () => {
+    mcpMockState.error = new MCPConfigRequestError(
+      403,
+      "private configuration path",
+    );
+
+    render(<MCPPluginManager />);
+
+    expect(screen.getByText("Admin required")).toBeDefined();
+    expect(screen.queryByText("private configuration path")).toBeNull();
   });
 
   it("disables every switch while a targeted update is pending", () => {
@@ -197,6 +258,23 @@ describe("MCPPluginManager MCP switches", () => {
 });
 
 describe("MCPPluginManager add server", () => {
+  it("locks the definition editor while a write is pending", () => {
+    const view = render(<MCPPluginManager />);
+    openAddDialog();
+
+    mcpMockState.updateIsPending = true;
+    view.rerender(<MCPPluginManager />);
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(definitionTextbox().disabled).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+
   it("submits only the pasted servers to the atomic create endpoint", () => {
     twoServers();
 
@@ -358,6 +436,23 @@ describe("MCPPluginManager edit server", () => {
 });
 
 describe("MCPPluginManager remove server", () => {
+  it("keeps the confirmation open while removal is pending", () => {
+    twoServers();
+    const view = render(<MCPPluginManager />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete github" }));
+
+    mcpMockState.updateIsPending = true;
+    view.rerender(<MCPPluginManager />);
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+
   it("submits only the selected server name", () => {
     twoServers();
 

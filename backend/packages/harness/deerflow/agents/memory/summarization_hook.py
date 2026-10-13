@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from deerflow.agents.memory import get_memory_manager
+from deerflow.agents.memory.authorization import is_memory_scope_authorized_sync
 from deerflow.agents.middlewares.summarization_middleware import SummarizationEvent
 from deerflow.config.memory_config import get_memory_config
 from deerflow.runtime.user_context import resolve_runtime_user_id
+
+logger = logging.getLogger(__name__)
 
 
 def memory_flush_hook(event: SummarizationEvent) -> None:
@@ -20,6 +25,15 @@ def memory_flush_hook(event: SummarizationEvent) -> None:
         return
 
     user_id = resolve_runtime_user_id(event.runtime)
+    runtime_context = getattr(event.runtime, "context", None)
+    if not is_memory_scope_authorized_sync(
+        runtime_context,
+        local_user_id=user_id,
+        actions=("read", "write"),
+    ):
+        logger.info("Skipping memory flush because authorization was denied")
+        return
+
     get_memory_manager().add_nowait(
         event.thread_id,
         list(event.messages_to_summarize),

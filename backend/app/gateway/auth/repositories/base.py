@@ -15,6 +15,10 @@ class UserNotFoundError(LookupError):
     """
 
 
+class LastActiveAdminError(ValueError):
+    """Raised when a change would leave the deployment without an active admin."""
+
+
 class UserRepository(ABC):
     """Abstract interface for user data storage.
 
@@ -104,4 +108,14 @@ class UserRepository(ABC):
         Returns:
             User if found, None otherwise
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_users(self, *, limit: int, offset: int) -> list[User]:
+        """Return a stable, paginated account list for trusted admin routes."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def set_user_active(self, user_id: str, is_active: bool) -> User | None:
+        """Update account access and revoke existing credentials atomically."""
         raise NotImplementedError

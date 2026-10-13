@@ -1,14 +1,15 @@
 """Gateway-side plumbing for app-scoped extension contributions.
 
 Every contributed router mounted here runs behind the host's ``AuthMiddleware``
-(added earlier in ``create_app()``) and cannot enter a host-reserved or
-auth-exempt prefix, so every request reaching a contributed route is already
-session-authenticated. "Logged in" and "administrator" are still different
+(added earlier in ``create_app()``). The sole public exception is Flow Desk's
+exact GET-only brand-name route; all other contributed routes cannot enter a
+host-reserved or auth-exempt path and are session-authenticated. "Logged in" and "administrator" are still different
 questions, though, and a contributed route asks the second one through
 ``deerflow_extension_api.auth``: ``resolve_principal(request)`` /
-``require_admin(request)`` read a resolver the host installs on ``app.state``,
-handing the router a neutral projection of identity rather than the host's
-own auth context.
+``require_admin(request)`` / ``require_permission(request, scope)`` read a
+resolver the host installs on ``app.state``, handing the router a neutral
+projection of identity and effective permissions rather than the host's own
+auth context.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from deerflow_extension_api import ExtensionRuntimeDeps
 
-from deerflow.extensions.loader import Diagnostic
+from deerflow.extensions.loader import Diagnostic, ExtensionLoadError
 from deerflow.extensions.policy import project_host_policy
 from deerflow.extensions.registry import LoadedExtensions
 
@@ -50,10 +52,15 @@ _HOST_PUBLIC_EXACT_PATHS = frozenset(
         "/api/v1/auth/setup-status",
         "/api/v1/auth/initialize",
         "/api/v1/auth/providers",
+        # Anonymous callers may fetch the configured product name only.
+        "/api/product/v1/public-brand",
     }
 )
 _HOST_CSRF_EXEMPT_EXACT_PATHS = frozenset({"/api/v1/auth/me"})
 _CSRF_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+# 只有运维安装的 Flow Desk 扩展可提供匿名品牌名称；其余扩展仍不能占用认证豁免路径。
+_PRODUCT_PUBLIC_BRAND_SOURCE = "flow_desk_product_extension:install"
+_PRODUCT_PUBLIC_BRAND_PATH = "/api/product/v1/public-brand"
 _STANDARD_CONVERTOR_REGEXES = {
     "str": "[^/]+",
     "path": ".*",
@@ -265,7 +272,7 @@ def _claim_can_enter_exact_path(claim: _RouteClaim, exact_path: str) -> bool:
     return False
 
 
-def _router_routes(router: Any) -> list[_RouteClaim]:
+def _router_routes(router: Any, source: str) -> list[_RouteClaim]:
     from fastapi.routing import _DefaultLifespan
     from starlette.routing import Mount, Route, WebSocketRoute
 
@@ -289,6 +296,7 @@ def _router_routes(router: Any) -> list[_RouteClaim]:
         claim = _route_claim(route, recompile=True)
         if claim is not None:
             enters_public_exact_path = any(_claim_can_enter_exact_path(claim, public_path) for public_path in _HOST_PUBLIC_EXACT_PATHS)
+            allowed_public_brand = source == _PRODUCT_PUBLIC_BRAND_SOURCE and claim.path == _PRODUCT_PUBLIC_BRAND_PATH and claim.methods == frozenset({"GET"}) and claim.scopes == frozenset({"http"})
             enters_csrf_exact_path = _methods_overlap(
                 claim.methods,
                 _CSRF_STATE_CHANGING_METHODS,
@@ -296,7 +304,7 @@ def _router_routes(router: Any) -> list[_RouteClaim]:
             enters_public_prefix = any(_claim_can_enter_prefix(claim, public_prefix) for public_prefix in _HOST_PUBLIC_PATH_PREFIXES)
             if enters_public_prefix:
                 raise TypeError(f"contributed route {claim.path} can enter a host public namespace")
-            if enters_public_exact_path or enters_csrf_exact_path:
+            if (enters_public_exact_path and not allowed_public_brand) or enters_csrf_exact_path:
                 raise TypeError(f"contributed route {claim.path} can enter a host-reserved exact path")
             claims.append(claim)
     return claims
@@ -523,8 +531,13 @@ def _find_route_clash(
     return None
 
 
-def include_contributed_routers(app: Any, extensions: LoadedExtensions) -> list[Diagnostic]:
-    """Mount reachable routers in order and reject definite shadows atomically."""
+def include_contributed_routers(
+    app: Any,
+    extensions: LoadedExtensions,
+    *,
+    required_sources: frozenset[str] = frozenset(),
+) -> list[Diagnostic]:
+    """Mount reachable routers; a required contribution must not fail silently."""
     diagnostics: list[Diagnostic] = []
     if not extensions.routers:
         return diagnostics
@@ -538,7 +551,7 @@ def include_contributed_routers(app: Any, extensions: LoadedExtensions) -> list[
 
     for source, router in extensions.routers:
         try:
-            routes = _router_routes(router)
+            routes = _router_routes(router, source)
             if not routes:
                 raise TypeError(f"contributed router exposes no routes: {router!r}")
             clash = _find_route_clash(routes, owners, source)
@@ -547,6 +560,8 @@ def include_contributed_routers(app: Any, extensions: LoadedExtensions) -> list[
                 message = f"router path {path} is already served by {holder}; this router was not mounted"
                 diagnostics.append(Diagnostic.error(source, message))
                 logger.error("Extension %s: %s", source, message)
+                if source in required_sources:
+                    raise ExtensionLoadError(f"required extension {source}: {message}")
                 continue
             app_routes = getattr(getattr(app, "router", None), "routes", None)
             route_mark = len(app_routes) if isinstance(app_routes, list) else None
@@ -563,9 +578,13 @@ def include_contributed_routers(app: Any, extensions: LoadedExtensions) -> list[
                 owners.append((route, source))
                 mounted.append(f"{source} -> {route.path}")
         except Exception as exc:
-            message = f"router could not be mounted; continuing without it: {exc}"
+            if isinstance(exc, ExtensionLoadError) and source in required_sources:
+                raise
+            message = f"router could not be mounted: {exc}" if source in required_sources else f"router could not be mounted; continuing without it: {exc}"
             diagnostics.append(Diagnostic.error(source, message))
             logger.exception("Extension %s: %s", source, message)
+            if source in required_sources:
+                raise ExtensionLoadError(f"required extension {source} router could not be mounted") from exc
 
     if mounted:
         logger.info("Extension routers mounted: %s", "; ".join(mounted))
@@ -578,9 +597,14 @@ async def start_services(
     session_factory: Any | None,
     *,
     run_evidence_reader: Any | None = None,
+    owner_data_reader: Any | None = None,
+    owner_data_deleter: Any | None = None,
+    owner_data_authorizer: Any | None = None,
+    product_data_directory: Path | None = None,
     attempted_services: list[tuple[str, Any]] | None = None,
+    required_sources: frozenset[str] = frozenset(),
 ) -> list[Diagnostic]:
-    """Start extension services in registration order, failing open per item."""
+    """Start services in order; optional failures are isolated, required failures abort."""
     diagnostics: list[Diagnostic] = []
     if not extensions.services:
         return diagnostics
@@ -590,6 +614,10 @@ async def start_services(
         policy=project_host_policy(app_config),
         session_factory=session_factory,
         run_evidence_reader=run_evidence_reader,
+        owner_data_reader=owner_data_reader,
+        owner_data_deleter=owner_data_deleter,
+        owner_data_authorizer=owner_data_authorizer,
+        product_data_directory=product_data_directory,
     )
     for entry in extensions.services:
         source, service = entry
@@ -600,13 +628,19 @@ async def start_services(
         cancellation_count = _cancellation_count()
         try:
             await service.start(deps)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             if _cancellation_count() > cancellation_count:
                 raise
+            if source in required_sources:
+                logger.exception("Required extension %s service start() raised CancelledError", source)
+                raise ExtensionLoadError(f"required extension {source} service failed to start") from exc
             message = "service start() raised CancelledError; continuing without it"
             diagnostics.append(Diagnostic.error(source, message))
             logger.exception("Extension %s: %s", source, message)
         except Exception as exc:
+            if source in required_sources:
+                logger.exception("Required extension %s service start() failed", source)
+                raise ExtensionLoadError(f"required extension {source} service failed to start") from exc
             message = f"service start() failed; continuing without it: {exc}"
             diagnostics.append(Diagnostic.error(source, message))
             logger.exception("Extension %s: %s", source, message)

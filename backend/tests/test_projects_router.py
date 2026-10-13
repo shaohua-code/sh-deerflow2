@@ -14,7 +14,7 @@ from typing import Any
 
 import anyio
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -135,6 +135,81 @@ def test_create_list_get_project(tmp_path):
         fetched = client.get(f"/api/projects/{project['id']}")
         assert fetched.status_code == 200
         assert fetched.json()["id"] == project["id"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "denied_scope_index"),
+    [
+        ("create", 0),
+        ("create", 1),
+        ("patch", 0),
+        ("patch", 1),
+        ("archive", 0),
+        ("archive", 1),
+        ("restore", 0),
+        ("restore", 1),
+        ("delete", 0),
+    ],
+)
+def test_project_mutations_require_iam_data_scope_before_writing(tmp_path, monkeypatch, operation, denied_scope_index):
+    """Every project write is guarded, including read scope for full responses.
+
+    The fake IAM guard rejects at each required scope in turn. Existing rows
+    must remain unchanged and project creation must leave no new row behind.
+    """
+    app = _build_projects_app(tmp_path)
+    original_scope_check = projects.require_iam_data_scope_for_request
+    with TestClient(app) as client:
+        project = None
+        if operation != "create":
+            project = client.post("/api/projects", json={"name": "before"}).json()
+            if operation == "restore":
+                assert client.post(f"/api/projects/{project['id']}/archive").status_code == 200
+
+        resource_id = project["id"] if project else None
+        scope_target = {
+            "create": [("projects:write", "write", None), ("projects:read", "read", None)],
+            "patch": [("projects:write", "write", resource_id), ("projects:read", "read", resource_id)],
+            "archive": [("projects:write", "write", resource_id), ("projects:read", "read", resource_id)],
+            "restore": [("projects:write", "write", resource_id), ("projects:read", "read", resource_id)],
+            "delete": [("projects:delete", "delete", resource_id)],
+        }[operation]
+        observed_scopes: list[tuple[str, str, str | None]] = []
+
+        async def deny_selected_scope(_request, _user, *, target, action="read", resource_id=None):
+            observed_scopes.append((target, action, resource_id))
+            if len(observed_scopes) - 1 == denied_scope_index:
+                raise HTTPException(status_code=403, detail="test scope denial")
+
+        monkeypatch.setattr(projects, "require_iam_data_scope_for_request", deny_selected_scope)
+        if operation == "create":
+            response = client.post("/api/projects", json={"name": "denied"})
+        elif operation == "patch":
+            response = client.patch(f"/api/projects/{resource_id}", json={"name": "after"})
+        elif operation == "archive":
+            response = client.post(f"/api/projects/{resource_id}/archive")
+        elif operation == "restore":
+            response = client.post(f"/api/projects/{resource_id}/restore")
+        else:
+            response = client.delete(f"/api/projects/{resource_id}")
+
+        assert response.status_code == 403, response.text
+        assert observed_scopes == scope_target[: denied_scope_index + 1]
+
+        # Restore the local no-op guard for the assertions below. This keeps
+        # the test focused on whether a denied IAM scope reached persistence.
+        monkeypatch.setattr(projects, "require_iam_data_scope_for_request", original_scope_check)
+        if operation == "create":
+            assert client.get("/api/projects").json()["projects"] == []
+        else:
+            still_owned = client.get(f"/api/projects/{resource_id}")
+            assert still_owned.status_code == 200
+            if operation == "patch":
+                assert still_owned.json()["name"] == "before"
+            elif operation == "archive":
+                assert still_owned.json()["status"] == "active"
+            elif operation == "restore":
+                assert still_owned.json()["status"] == "archived"
 
 
 def test_get_patch_delete_foreign_project_returns_404(tmp_path):

@@ -19,10 +19,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from _router_auth_helpers import make_authed_test_app
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.gateway.authz import AuthContext
 from app.gateway.routers import console
 from deerflow.persistence.base import Base
 from deerflow.persistence.run.model import RunRow
@@ -392,3 +394,86 @@ class TestNoSqlBackend:
             resp = c.get(path)
             assert resp.status_code == 503
             assert "SQL database backend" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_targets"),
+    [
+        ("/api/console/stats", ["runs:read", "threads:read", "agents:read"]),
+        ("/api/console/runs", ["runs:read", "threads:read"]),
+        ("/api/console/usage", ["runs:read"]),
+    ],
+)
+def test_console_reports_check_each_resource_data_scope(client, monkeypatch, path, expected_targets):
+    checked_targets = []
+
+    async def allow_scope(request, user, *, target, action="read", resource_id=None):
+        assert user is not None
+        assert action == "read"
+        checked_targets.append(target)
+
+    monkeypatch.setattr(console, "require_iam_data_scope_for_request", allow_scope)
+
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert checked_targets == expected_targets
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/console/stats", "/api/console/runs", "/api/console/usage"],
+)
+def test_console_scope_denial_happens_before_database_access(client, monkeypatch, path):
+    async def deny_scope(request, user, *, target, action="read", resource_id=None):
+        raise HTTPException(status_code=403, detail="scope denied")
+
+    monkeypatch.setattr(console, "require_iam_data_scope_for_request", deny_scope)
+    monkeypatch.setattr(
+        console,
+        "_session_factory_or_503",
+        lambda: pytest.fail("database access must not start before Central IAM scope authorization"),
+    )
+
+    response = client.get(path)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "scope denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "missing_permission", "granted_permissions"),
+    [
+        ("stats", "runs:read", ["threads:read", "agents:read"]),
+        ("stats", "threads:read", ["runs:read", "agents:read"]),
+        ("stats", "agents:read", ["runs:read", "threads:read"]),
+        ("runs", "runs:read", ["threads:read"]),
+        ("runs", "threads:read", ["runs:read"]),
+        ("usage", "runs:read", []),
+    ],
+)
+async def test_console_reports_require_every_resource_permission_before_scope(
+    monkeypatch, route, missing_permission, granted_permissions
+):
+    request = Request({"type": "http", "method": "GET", "path": "/api/console", "headers": []})
+    request.state.auth = AuthContext(user=SimpleNamespace(id="user-a", system_role="user"), permissions=granted_permissions)
+    scope_check = AsyncMock(side_effect=AssertionError("scope lookup must not run without route permission"))
+    monkeypatch.setattr(console, "require_iam_data_scope_for_request", scope_check)
+    monkeypatch.setattr(
+        console,
+        "_session_factory_or_503",
+        lambda: pytest.fail("database access must not start without route permission"),
+    )
+    handler = {
+        "stats": console.console_stats,
+        "runs": console.console_runs,
+        "usage": console.console_usage,
+    }[route]
+
+    with pytest.raises(HTTPException) as denied:
+        await handler(request=request)
+
+    assert denied.value.status_code == 403
+    assert denied.value.detail == f"Permission denied: {missing_permission}"
+    scope_check.assert_not_awaited()

@@ -16,6 +16,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from app.gateway.auth_disabled import AUTH_SOURCE_AUTH_DISABLED
+from app.gateway.authz import AuthContext
 from app.gateway.deps import require_admin_user
 from app.gateway.routers import mcp as mcp_router
 from app.gateway.routers.mcp import (
@@ -706,13 +708,18 @@ def test_roundtrip_mask_then_merge_preserves_original_secrets():
 
 
 def _request_with_role(system_role: str):
+    # Simulate trusted middleware state for direct handler calls. Keep the real
+    # authorization wrapper active; this is not the bypass-auth test stub.
     return SimpleNamespace(
         state=SimpleNamespace(
             user=SimpleNamespace(
                 id="user-1",
                 system_role=system_role,
-            )
-        )
+            ),
+            auth_source=AUTH_SOURCE_AUTH_DISABLED,
+        ),
+        cookies={},
+        headers={},
     )
 
 
@@ -1947,6 +1954,17 @@ def test_delete_mcp_server_route_uses_bodyless_path_parameter(server_name, reque
     monkeypatch.setattr(mcp_router, "reset_mcp_tools_cache", lambda: None)
 
     app = FastAPI()
+
+    @app.middleware("http")
+    async def attach_admin_auth_context(request, call_next):
+        # Exercise the real permission wrapper with the same trusted request
+        # context production middleware supplies.
+        request.state.auth = AuthContext(
+            user=SimpleNamespace(id="user-1", system_role="admin"),
+            permissions=["mcp:admin"],
+        )
+        return await call_next(request)
+
     app.router.redirect_slashes = False
     app.include_router(mcp_router.router)
     delete_route = next(route for route in app.routes if getattr(route, "path", None) == "/api/mcp/config/servers/{server_name:path}" and "DELETE" in route.methods)

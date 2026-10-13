@@ -39,7 +39,8 @@ export const TRASH_DOCUMENTS_PAGE_SIZE = 100;
 export function useInfiniteTrashDocuments({
   enabled = true,
 }: { enabled?: boolean } = {}) {
-  return useInfiniteQuery<
+  const active = enabled && !isStaticWebsiteOnly();
+  const query = useInfiniteQuery<
     TrashListResponse,
     Error,
     InfiniteData<TrashListResponse>,
@@ -58,8 +59,11 @@ export function useInfiniteTrashDocuments({
       return loaded < lastPage.total ? loaded : undefined;
     },
     // Static-demo mode has no Gateway; never fire trash requests there.
-    enabled: enabled && !isStaticWebsiteOnly(),
+    enabled: active,
   });
+  // Disabled permission queries can still have cached rows from an earlier
+  // render. Mask them immediately when the caller revokes read access.
+  return active ? query : { ...query, data: undefined };
 }
 
 export function useRestoreDocument() {

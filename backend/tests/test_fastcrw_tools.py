@@ -5,6 +5,14 @@ import json
 from unittest.mock import MagicMock, patch
 
 
+def _allow_example_com_dns():
+    # SSRF checks must run against a deterministic public address in offline tests.
+    return patch(
+        "deerflow.community.url_safety.resolve_host_addresses",
+        return_value=[ipaddress.ip_address("93.184.216.34")],
+    )
+
+
 class TestWebSearchTool:
     @patch.dict("os.environ", {}, clear=True)
     @patch("deerflow.community.fastcrw.tools.FirecrawlApp")
@@ -87,7 +95,8 @@ class TestWebFetchTool:
 
         from deerflow.community.fastcrw.tools import web_fetch_tool
 
-        result = web_fetch_tool.invoke({"url": "https://example.com"})
+        with _allow_example_com_dns():
+            result = web_fetch_tool.invoke({"url": "https://example.com"})
 
         assert result == "# Fetched Page\n\nFetched markdown"
         mock_get_app_config.return_value.get_tool_config.assert_any_call("web_fetch")
@@ -110,7 +119,10 @@ class TestWebFetchTool:
 
         from deerflow.community.fastcrw.tools import web_fetch_tool
 
-        assert web_fetch_tool.invoke({"url": "https://example.com"}) == "Error: No content found"
+        with _allow_example_com_dns():
+            result = web_fetch_tool.invoke({"url": "https://example.com"})
+
+        assert result == "Error: No content found"
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("deerflow.community.fastcrw.tools.FirecrawlApp")
@@ -121,7 +133,10 @@ class TestWebFetchTool:
 
         from deerflow.community.fastcrw.tools import web_fetch_tool
 
-        assert web_fetch_tool.invoke({"url": "https://example.com"}) == "Error: scrape failed"
+        with _allow_example_com_dns():
+            result = web_fetch_tool.invoke({"url": "https://example.com"})
+
+        assert result == "Error: scrape failed"
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("deerflow.community.fastcrw.tools.FirecrawlApp")

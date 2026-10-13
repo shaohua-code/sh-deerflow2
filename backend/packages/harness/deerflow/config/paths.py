@@ -15,8 +15,20 @@ _SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _SAFE_INTEGRATION_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _UNSAFE_USER_ID_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 _SAFE_USER_ID_DIGEST_HEX_LEN = 16
+_WINDOWS_DOCUMENT_PATH_SOFT_LIMIT = 240
+_WINDOWS_DOCUMENT_PATH_HEADROOM = 64
 
 logger = logging.getLogger(__name__)
+
+
+def _windows_path_units(path: Path) -> int:
+    """Count UTF-16 code units, the unit Windows uses for MAX_PATH checks."""
+    return len(str(path).encode("utf-16-le")) // 2
+
+
+def _needs_compact_project_document_namespace(path: Path) -> bool:
+    """Leave room for original, derived, and atomic-temp path components."""
+    return os.name == "nt" and _windows_path_units(path) + _WINDOWS_DOCUMENT_PATH_HEADROOM > _WINDOWS_DOCUMENT_PATH_SOFT_LIMIT
 
 
 def _default_local_base_dir() -> Path:
@@ -372,7 +384,10 @@ class Paths:
         Layout (Phase-2 spec §6.2): ``.staging/{uuid}`` for in-flight bytes,
         then one exclusive namespace per row at
         ``{sha256[:2]}/{sha256}/{document_id}/original/{name}`` with an
-        optional ``derived/converted.md`` companion.
+        optional ``derived/converted.md`` companion. When the complete original
+        path exceeds the conservative Windows path budget, new documents keep
+        the same namespace but use a compact physical original name and
+        ``d.md`` companion; the display name remains in the database.
         """
         return self.user_project_dir(user_id, project_id) / "documents"
 
@@ -381,11 +396,12 @@ class Paths:
 
         ``stored_relpath`` is stored relative to ``users/{user_id}/projects/``
         (it begins with ``{project_id}/documents/``) so a restore can re-point
-        a row without moving bytes. Resolution mirrors
-        :meth:`resolve_virtual_path`: join under the user projects root,
-        resolve, then re-check confinement — a relpath that escapes the root
-        is rejected. Relpaths only ever come from server-generated content
-        addresses, never from request text (§12).
+        a row without moving bytes. On Windows, a deterministic compact physical
+        alias is used for new namespaces when the logical path would leave too
+        little room for the original, converted file, and atomic temp file.
+        Resolution mirrors :meth:`resolve_virtual_path`: join under the user
+        projects root, resolve, then re-check confinement — a relpath that
+        escapes the root is rejected. Relpaths are server-generated (§12).
         """
         base = self.user_projects_dir(user_id).resolve()
         actual = (base / relpath).resolve()
@@ -393,6 +409,30 @@ class Paths:
             actual.relative_to(base)
         except ValueError:
             raise ValueError("Access denied: path traversal detected") from None
+
+        if os.name == "nt":
+            # Keep the alias under the project's own directory so project
+            # cleanup/trash code that resolves this method remains complete.
+            # A fixed digest makes the logical DB path stable across restarts;
+            # the alias is only a physical Windows path, never a user input.
+            normalized_relpath = relpath.replace("\\", "/")
+            project_id = normalized_relpath.split("/", 1)[0]
+            compact_key = hashlib.sha256(normalized_relpath.encode("utf-8")).hexdigest()[:32]
+            compact = (self.user_project_dir(user_id, project_id) / "documents" / ".short" / compact_key).resolve()
+            try:
+                compact.relative_to(base)
+            except ValueError:
+                raise ValueError("Access denied: compact document path escaped the user projects root") from None
+
+            # Prefer a namespace already written with the compact layout, then
+            # an existing legacy namespace. Only new long namespaces move to
+            # the compact alias; existing document bytes are not migrated.
+            if compact.exists():
+                return compact
+            if actual.exists():
+                return actual
+            if _needs_compact_project_document_namespace(actual):
+                return compact
         return actual
 
     def acp_workspace_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:

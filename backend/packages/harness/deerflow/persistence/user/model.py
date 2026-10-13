@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -37,6 +37,42 @@ class UserPreferenceRow(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     key: Mapped[str] = mapped_column(String(40), primary_key=True)
     value: Mapped[object] = mapped_column(JSON, nullable=True)
+
+
+class IamOidcTokenVaultRow(Base):
+    """Encrypted IAM credentials for one explicitly IAM-enabled OIDC session.
+
+    Plaintext tokens are never mapped to this table. The ciphertext is bound
+    to the provider identity and tenant by AES-GCM associated data in the
+    Gateway vault service.
+    """
+
+    __tablename__ = "iam_oidc_token_vault"
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    # A distinct local session key prevents parallel browsers/devices from
+    # overwriting each other's rotating IAM refresh-token family.
+    session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(512), nullable=False)
+    subject: Mapped[str] = mapped_column(String(512), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    access_token_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+
+    def to_dict(self, *, exclude: set[str] | None = None) -> dict:
+        """Keep ciphertext out of generic row serialization as well."""
+        hidden = {"access_token_ciphertext", "refresh_token_ciphertext"}
+        if exclude:
+            hidden.update(exclude)
+        return super().to_dict(exclude=hidden)
+
+    def __repr__(self) -> str:
+        return f"IamOidcTokenVaultRow(user_id={self.user_id!r}, provider_id={self.provider_id!r}, tokens=<redacted>)"
 
 
 class UserRow(Base):
@@ -67,6 +103,8 @@ class UserRow(Base):
     # Auth lifecycle flags
     needs_setup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     token_version: Mapped[int] = mapped_column(nullable=False, default=0)
+    # Account status is managed by the Gateway admin API; legacy accounts remain enabled.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
 
     __table_args__ = (
         # sqlite_where alone is a SQLAlchemy dialect-specific kwarg -- it

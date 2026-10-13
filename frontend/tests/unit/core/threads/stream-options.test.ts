@@ -51,6 +51,9 @@ async function captureThreadStreamOptions() {
   rs.doMock("@/core/i18n/hooks", () => ({
     useI18n: () => ({
       t: {
+        conversation: {
+          streamFailed: "The conversation could not be completed.",
+        },
         pages: { newChat: "New chat" },
         uploads: { uploadingFiles: "Uploading files" },
       },

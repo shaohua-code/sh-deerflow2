@@ -100,11 +100,8 @@ export function ThreadDeleteDialogProvider({
       setTarget(null);
     } catch (error) {
       console.error("Failed to delete chat:", error);
-      toast.error(
-        error instanceof Error && error.message
-          ? error.message
-          : t.chats.deleteFailed,
-      );
+      // 保留异常日志用于排查，用户界面只显示本地化安全提示。
+      toast.error(t.chats.deleteFailed);
     } finally {
       deleteInFlight.current = false;
     }

@@ -24,7 +24,11 @@ def _docker_available() -> bool:
     try:
         result = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
+        # On restricted Windows/dev environments the Docker CLI can exist but
+        # refuse process creation. Treat that the same as Docker being
+        # unavailable so the Docker-only class is skipped instead of breaking
+        # collection for the entire offline suite.
         return False
 
 

@@ -1,26 +1,9 @@
-import { Footer } from "@/components/landing/footer";
-import { Header } from "@/components/landing/header";
-import { Hero } from "@/components/landing/hero";
-import { CaseStudySection } from "@/components/landing/sections/case-study-section";
-import { CommunitySection } from "@/components/landing/sections/community-section";
-import { SandboxSection } from "@/components/landing/sections/sandbox-section";
-import { SkillsSection } from "@/components/landing/sections/skills-section";
-import { WhatsNewSection } from "@/components/landing/sections/whats-new-section";
-import { DEFAULT_LOCALE } from "@/core/i18n/locale";
+import { detectLocaleServer } from "@/core/i18n/server";
+import { ProductLandingPage } from "@/product/landing-page";
 
-export default function LandingPage() {
-  return (
-    <div className="min-h-screen w-full overflow-x-clip bg-[#0a0a0a]">
-      <Header locale={DEFAULT_LOCALE} />
-      <main className="flex w-full flex-col">
-        <Hero />
-        <CaseStudySection />
-        <SkillsSection />
-        <SandboxSection />
-        <WhatsNewSection />
-        <CommunitySection />
-      </main>
-      <Footer />
-    </div>
-  );
+// App Router 的 URL 入口保持稳定；品牌首页的具体实现放在产品目录，减少
+// 同步上游 landing 组件时产生的冲突。
+export default async function LandingPage() {
+  const locale = await detectLocaleServer();
+  return <ProductLandingPage locale={locale} />;
 }

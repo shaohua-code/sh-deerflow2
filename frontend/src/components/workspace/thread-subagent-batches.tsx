@@ -105,9 +105,6 @@ export function ThreadSubagentBatches({ threadId }: { threadId: string }) {
               <p className="text-destructive font-medium">
                 {t.subagentBatches.loadFailed}
               </p>
-              <p className="text-muted-foreground mt-1 text-xs">
-                {batchesQuery.error.message}
-              </p>
             </div>
           ) : batches.length === 0 ? (
             <div className="text-muted-foreground flex flex-col items-center px-6 py-14 text-center">
@@ -274,7 +271,7 @@ function BatchItems({
   if (query.isError) {
     return (
       <div className="text-destructive mt-3 border-t pt-3 text-xs">
-        {t.subagentBatches.itemsFailed}: {query.error.message}
+        {t.subagentBatches.itemsFailed}
       </div>
     );
   }

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from deerflow.authz.principal import build_principal_from_context
+from deerflow.authz.principal import (
+    bind_run_authorization_credentials,
+    build_principal_from_context,
+    reset_run_authorization_credentials,
+)
 
 
 class TestPrincipalBuilderFields:
@@ -144,3 +148,39 @@ class TestPureFunction:
         original = dict(context)
         build_principal_from_context(context, default_role="user")
         assert context == original
+
+
+class TestRunAuthorizationCredentials:
+    def test_credentials_attach_only_to_the_matching_oidc_subject(self):
+        credentials = {"iam_access_token": "secret", "iam_subject": "oidc-user-1"}
+        token = bind_run_authorization_credentials(credentials)
+        try:
+            principal = build_principal_from_context(
+                {"oauth_id": "oidc-user-1", "authz_attributes": {"team": "platform"}},
+                default_role="user",
+            )
+            assert principal.attributes == {"team": "platform", "iam_credentials": credentials}
+
+            other_principal = build_principal_from_context(
+                {
+                    "oauth_id": "oidc-user-2",
+                    "authz_attributes": {
+                        "iam_credentials": "client-value",
+                        "iam_access_token": "untrusted-token",
+                        "iam_subject": "oidc-user-2",
+                        "iam_tenant_id": "untrusted-tenant",
+                    },
+                },
+                default_role="user",
+            )
+            assert not any(key.startswith("iam_") for key in other_principal.attributes)
+        finally:
+            reset_run_authorization_credentials(token)
+
+    def test_credentials_do_not_leak_after_reset(self):
+        credentials = {"iam_access_token": "secret", "iam_subject": "oidc-user-1"}
+        token = bind_run_authorization_credentials(credentials)
+        reset_run_authorization_credentials(token)
+
+        principal = build_principal_from_context({"oauth_id": "oidc-user-1"}, default_role="user")
+        assert principal.attributes == {}

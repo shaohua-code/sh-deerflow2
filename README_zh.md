@@ -1,13 +1,65 @@
 # 🦌 DeerFlow - 2.0
 
-[English](./README.md) | 中文 | [日本語](./README_ja.md) | [Français](./README_fr.md) | [Русский](./README_ru.md)
+切换模型继续改造前，请先读[改造进度与后续计划](docs/改造进度与后续计划.md)：集中记录当前实现、验证缺口、后续任务和开工提示。每轮相关改动结束前同步更新，历史记录中的通过结果不自动覆盖新源码。
+
+其他资料按用途见[文档导航](docs/文档导航.md)。
+
+**2026-10-13 Central IAM B04 聚焦核验：** 最近完整 Windows Python 3.12 离线快照仍是修正前的 17,004 passed、186 failed、349 skipped、3 deselected、5 errors。独立定向结果：Studio 6；Gateway 启动/checkpoint/regenerate 45；FastCRW/thread routes 142；PAT auth/repository/vault 63；extension task runtime 15；context compaction + Gateway services 212 passed。修改 Python 文件 Ruff check/format 通过。本轮仅调整测试/文档及 PAT 说明注释，未改生产 runtime。全量未重跑，`uv`、`WinError 10106` 和其余失败仍待处理。未运行 migration、真实 IAM/Provider 或 quota enforcement。
+
+[English](README.md) | 中文 | [日本語](README_ja.md) | [Français](README_fr.md) | [Русский](README_ru.md)
+
+**2026-10-12 Central IAM Provider 路径审计：** 对仓内 `backend/app` 与 `backend/packages/harness/deerflow` 内置生产源码做静态审计：共享工厂与 Gateway 单次调用处于 LangChain usage callback 管道；DeerMem 直接 `init_chat_model()` 路径由 Gateway hook 覆盖；Codex Responses 自定义 Provider 也经共享工厂构造、继承 `BaseChatModel` 并返回 usage metadata。外部扩展动态加载的 Provider 未穷尽。IAM `request_id` 按 LangChain invocation 生成，因此 Codex 内部 HTTP 重试暂按一次预留/结算，具体计费语义仍待验证。本轮仅只读审计，未运行测试或真实外部请求。
+
+**2026-10-12 Central IAM 模型结果不确定时保留预留：** Provider 调用抛错或进程关闭时 callback 尚无终态，不再按零用量结算。callback 只清理进程内待处理状态，持久化的 IAM reservation 保留至 10 分钟到期后由管理员核对；只有能证明 Provider 从未被调用时才允许释放。用量、outbox、memory 授权与 Harness boundary 聚焦检查 33/33 通过，Ruff check/format 通过。完整后端最新结果与本轮测试夹具复测状态见本 README 顶部 B04 摘要；修复后的 Windows blocking-I/O 全套 140 passed、3 skipped、0 failed，9 个变更 Python 文件 Ruff check/format 通过；完整套件失败仍待分类。真实 IAM/Provider、迁移和镜像验收待完成，quota enforcement 保持关闭。
+
+**2026-10-12 Central IAM 后台记忆模型用量：** DeerMem timer 后台模型路径现在在每次调用前根据活动用户和匹配的 OIDC vault 创建一次性用量 callback，只附加到当前 LangChain invocation，结束后移除并关闭。队列不保存 IAM 凭证/capability。两组相关 memory/usage 回归在 Windows Python 3.12 隔离环境通过 20/20，Harness boundary 通过 1/1，6 个变更 Python 文件 Ruff check/format 通过，临时目录已删除；全量测试、数据库迁移和真实 IAM/Provider 检查未运行，配额强制执行保持关闭。
+
+**2026-10-12 Central IAM 模型调用授权：** Gateway Agent run 的每次模型 provider 调用按精确模型档案检查 `model:use`，并覆盖辅助模型；DeerMem 后台模型则在外呼前复核当前用户/vault、记忆本人读写范围和模型权限。Gateway 通过注入 hook 连接 Harness，授权失败时不调用供应商。定向回归 28/28、分层边界检查 1/1 通过。Python 回退提取现已保留安全文章链接和图片目标，既有 web-fetch 回归 50/50、Ruff 通过。修复前 Windows 隔离全量后端为 16,750 通过、442 失败、345 跳过、3 deselected；阻塞 I/O 为 116 通过、26 失败、1 跳过。修复后未重跑全量，其余失败尚未逐项归因。临时测试和 pytest 产物已清理，真实 IAM/Provider E2E 尚未验收。
+
+**2026-10-11 webhook 生产门禁：** `DEER_FLOW_ALLOW_UNVERIFIED_GITHUB_WEBHOOKS` 在 `DEER_FLOW_ENV` 或 `ENVIRONMENT` 明确为 production 时强制关闭；没有 webhook secret 时生产环境不挂载路由，运行时拒绝未签名投递。浏览器与 webhook 完整聚焦回归 76/76，包含数据范围拒绝和授权服务故障关闭场景；公网 URL SSRF 用例使用固定 DNS 结果，Ruff 通过。本轮未连接线上 webhook 或 IAM。
+
+**2026-10-11 Central IAM 浏览器实时流：** `/api/threads/{thread_id}/browser/stream` 在查询 thread 和访问保留的 browser session 前校验 `threads:read/write` 及匹配的 owner/self data_scope；已签名本地会话 `sid` 进入请求级 resolver，本地 owner 与 Origin 检查继续生效。浏览器与 webhook 合并回归 76/76、Ruff 通过。未改 IAM 数据库、前端、角色 grant 或登出行为；真实 IAM/WebSocket E2E 尚未完成。
+
+**2026-10-11 Central IAM 个人偏好授权：** `GET/PATCH /api/v1/auth/preferences` 分别要求 `preferences:read/write` 与已验证主体的 owner/self data_scope，判定在持久化读写前完成；浏览器 session 与本地账号 owner 校验继续保留。IAM migration `0030_deerflow_preference_permissions` 只登记权限码，管理员仍需配置映射、角色 grant 和本人范围。定向回归 19/19、Ruff check/format 通过；没有执行真实 IAM 联调或数据库迁移。
+**2026-10-11 runtime 镜像状态：** dev 镜像已生成，镜像内 uv 环境成功导入 deerflow.authz.iam_deerflow。默认 runtime 镜像未生成：Docker Hub Python manifest 和 GHCR uv 匿名 token 请求返回 EOF，pull=false 也失败。uv locked dry-run 通过，backend/uv.lock 未改动；待 registry 可达或配置镜像源后重建，未启动业务服务或数据库。
+
+**2026-10-11 Docker build context 安全：** config.yaml、extensions_config.json、备份副本和所有 .env* 变体现已从 Docker context 排除，避免运行配置凭证进入构建上下文。Docker daemon 在构建客户端退出后仍生成镜像 iam-deerflow-package-check:20261011（sha256:f2203cacf14d7a324dadcaa4d803145fcd9fd48129a9e9f15751e4beb4947456），一次性容器通过 uv run 导入 deerflow.authz.iam_deerflow；未启动完整服务或改动数据库。
+
+
+**2026-10-11 Central IAM 模型用量待核对：** DeerFlow 启用计量后，每次调用都会在 Provider 前让 IAM 持久化额度预留，即使配额拦截关闭也一样。未结预留满 10 分钟进入管理员核对队列；不会自动按预留上限收费或自动释放，并会继续占用保守 TPM。平台管理员依据 Provider 日志/账单补记实测或估算用量，只有确认 Provider 从未被调用后才能释放，操作进入审计。DeerFlow fd_0028 outbox 可重试已本地提交的账目，但无法从 Provider 完成到 outbox 提交前的崩溃窗口还原 Token；IAM 会保留预留供人工核对。IAM migration `0031_model_usage_reconciliation` 仅在源码、未迁移未验证；部署验收前继续关闭配额拦截。
+
+Central IAM 保护的 Console 聚合报表现按返回资源分别授权：stats 需 runs/threads/agents 读取权限和本人范围；跨会话运行列表需 runs/threads 读取；usage 需 runs 读取。范围检查先于 SQL session，查询继续按 DeerFlow 本地用户过滤。Console 路由回归 25/25、两个修改 Python 文件 Ruff 检查通过；角色 grant 和真实浏览器验收仍待部署配置。
+
+OIDC 首次开户一律创建普通用户。遗留 `admin_emails` 仅为兼容旧配置而继续解析，不再据此授予管理员。显式启用 IAM OIDC Provider 和中央 AuthorizationProvider 后，Gateway 已可从签名本地 session `sid` 解析服务端 AES-256-GCM vault，并在请求级 route、model catalog 与 sandbox-sync 鉴权中按需刷新上游 token。Gateway 启动的 Agent run 通过不可序列化的 `RunContext` capability 获得请求解析的凭证，Principal 仅对 subject 匹配的模型/工具授权检查附加该 capability，不写入 LangGraph context 或 checkpoint。数据范围已保护项目、线程/运行、项目资料、回收站、个人记忆与自建 Agent 管理，并继续与本地用户 owner 过滤求交。Agent API 使用 `agents:read/write/delete`；返回完整定义的写接口额外要求读取权限/范围。部署共享 `USER.md` 只由 `agents:admin` 管理并排除 PAT。DeerFlow Agent 授权/PAT/`/auth/me`/互操作回归 90/90（1 条 Starlette/httpx 弃用警告），8 个 Python 文件 Ruff check/format 通过；Windows pytest 需要允许 asyncio 本机 socketpair 的进程上下文。目标镜像部署、上游撤销和真实 IAM 联调仍待完成。浏览器只持有本地 HttpOnly 会话 Cookie；邮箱和本地默认值都不得授予管理员权限。本规则不会自动更改既有账号。
+项目与文档架的创建/修改/恢复在持久化前检查 `projects:write` 和完整响应所需的 `projects:read` 范围；文档软删除、回收站单项/批量清理和保留期清理检查 `projects:delete`，无删除范围时回收站列表跳过自动清理但仍可读取。会话文件提升/挂载另检查 `threads:read/write`。所有变更仍显式限制为当前 DeerFlow 用户。项目/文档/回收站路由回归 92/92 通过；IAM/DeerFlow 数据库、Compose 与真实浏览器联调尚未验收。
+线程/运行的 owner-checked 写操作也在本地归属检查后、handler 前校验 IAM data_scope：线程 `write/delete`、运行 `create/cancel`；运行取消用已有 run ID，运行创建在 ID 生成前判权。鉴权回归 101/101，离线组合路由 532 项通过，1 个公网 DNS 用例被排除。其它用户数据写入口仍需继续审计。
+
+定时任务 HTTP 接口现在也在查询/写入 owner-filtered repository 前检查中央 IAM 本人数据范围：列表/详情使用 `threads:read`；创建要求 `threads:write` 和 `runs:create`；编辑/暂停要求 `threads:write`；恢复/手动触发还要求 `runs:create`；删除要求 `threads:delete`；任务运行历史同时要求 `threads:read`、`runs:read`。复用会话时先校验该会话的 `threads:read` 范围。对应路由测试已补充，但本轮 Docker Desktop Linux engine pipe 不可用，测试未能启动；Python AST 语法解析和 Ruff 检查/格式检查通过。自动调度的后台执行尚未在每次未来触发时重新核验 IAM grant。
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](./backend/pyproject.toml)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](./Makefile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 <a href="https://trendshift.io/repositories/14699" target="_blank"><img src="https://trendshift.io/api/badge/repositories/14699" alt="bytedance%2Fdeer-flow | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
 > 2026 年 2 月 28 日，DeerFlow 2 发布后登上 GitHub Trending 第 1 名。非常感谢社区的支持，这是大家一起做到的。
+
+> [!NOTE]
+> 管理审计会准确提示是否还有更早记录，包括总数刚好达到整页条数的情况。
+> 记忆的主动导出、导入、清空和事实编辑，自定义 Agent 和用户资料管理，以及 Skill 安装、编辑、删除、回滚、启停和缓存刷新也会进入审计；记忆正文、Agent 指令、用户资料和 Skill 内容不会写入审计记录。
+> 管理员修改产品名后，公开首页、登录/初始化页和工作台会在读取成功后显示运行时品牌；服务器首屏 metadata 保留代码默认品牌作为回退。
+> 个人数据页还可将偏好、会话、项目、计划任务、Agent、记忆和受限文件七类 owner-scoped 导出合并为带覆盖清单的 ZIP；组合包始终标记为 `partial`，不是完整账号备份，也不提供全账号删除。后台数据任务仍由运维开关控制。
+> 个人数据设置还可按本人范围删除会话上传文件和项目资料：上传会永久删除，项目资料进入可恢复回收站；生成产物与工作区文件目前保留，并在结果中标记为部分完成。
+> 聊天欢迎页徽标和输入框发送/停止控件的无障碍名称会跟随当前语言。
+> 自定义智能体目录会区分“暂时读取失败”和“当前没有智能体”，连接恢复后可直接重试。
+> 进入智能体页面前的功能探测也会区分“Gateway 暂时无法连接”和“服务器明确关闭功能”；前者可从侧栏或工作台首页进入错误页重试，未知状态下不会读取智能体目录；后者需管理员核对 `agents_api.enabled`。参见[快速启动排障](docs/快速启动.md)。
+> 工作台的查询缓存按当前登录账号重建；同一浏览器切换账号后，旧账号列表和未提交草稿会先卸载，再读取新账号数据。服务端数据归属仍由 Gateway 校验。
+> 产物侧栏在当前标签页保存的路径和面板状态按账号隔离；旧版仅按 URL 保存的选择状态无法确认归属，升级后不会自动恢复到任何账号，原存储不作删除。
+> 登录和注册表单的密码字段可切换显示与隐藏，便于在窄屏核对输入；该控件只改变本地显示方式，不保存或提交额外数据。
+> 登录和注册表单的密码字段可切换显示与隐藏，便于在窄屏核对输入；该控件只改变本地显示方式，不保存或提交额外数据。
+> 从项目资料附加到对话的待发送文件也按账号和会话隔离。旧版只按会话暂存、无法确认归属的附件不会自动恢复，需要重新附加；旧存储不会自动删除。
+> 配置为 `required: true` 的 Flow Desk 扩展若路由无法挂载或服务启动失败，Gateway 会停止启动，避免部署健康检查把缺少产品能力的实例误报为就绪。
+> **本仓库自有产品改造说明：** 工作台正改造成 **Flow Desk（智能工作台）**，保留 DeerFlow 引擎和 MIT 开源许可。设置窗口在窄屏切换为紧凑的单行页面选择器。文件中心通过 Gateway 现有 owner-scoped 接口读取线程上传/输出、会话工作区和项目文件元数据；工作区文件只读，后台导出仍不包含工作区。账号设置提供可取消的当前 Gateway 可读取数据浏览器导出。个人偏好页提供偏好导出/删除后台任务，以及单独的会话历史部分导出（明确标记为 partial）；产品扩展偏好读取要求 preferences:read，保存或删除要求 preferences:write；权限明确拒绝后前端停查并隐藏旧缓存；需要运维启用 `plugins[].config.data_jobs.enabled`。启用管理扩展后，部署管理员可分页查看账号并启停登录；停用会废止会话/PAT、暂停后续计划任务，并请求中止已运行的 Agent。管理审计页还会通过 fail-open 扩展观察器记录个人访问令牌的创建/撤销（仅令牌 ID）、密码变更（仅账号 ID）、账号状态、项目/文件操作及计划任务的创建、编辑、暂停、恢复、手动触发和删除。完整账号级导出/删除、持久化跨存储文件索引、PostgreSQL 迁移和恢复演练仍未完成。首次启动请阅读[本地快速启动](docs/快速启动.md)；新接手的开发者也可查看[前端结构](docs/项目结构.md#source-1)、[后端结构](docs/项目结构.md#source-2)、[整体产品化 PRD](docs/plans/产品化需求与实施记录.md)和[首期启动 PRD](docs/plans/首期上线规划.md)，再按[自有项目改造指南](docs/自有项目改造指南.md)和[上游补丁台账](docs/上游补丁台账.md)实施改动。
 
 DeerFlow（**D**eep **E**xploration and **E**fficient **R**esearch **Flow**）是一个开源的 **super agent harness**。它把 **sub-agents**、**memory** 和 **sandbox** 组织在一起，再配合可扩展的 **skills**，让 agent 可以完成几乎任何事情。
 
@@ -239,11 +291,11 @@ DeerFlow 新近集成了 BytePlus 自研的智能搜索与抓取工具集——[
 
 可以先按下面的资源档位来选择 DeerFlow 的运行方式：
 
-| 部署场景 | 起步配置 | 推荐配置 | 说明 |
-|---------|-----------|------------|-------|
-| 本地体验 / `make dev` | 4 vCPU、8 GB 内存、20 GB SSD 可用空间 | 8 vCPU、16 GB 内存 | 适合单个开发者或单个轻量会话，且模型走外部 API。`2 核 / 4 GB` 通常跑不稳。 |
-| Docker 开发 / `make docker-start` | 4 vCPU、8 GB 内存、25 GB SSD 可用空间 | 8 vCPU、16 GB 内存 | 镜像构建、源码挂载和 sandbox 容器都会比纯本地模式更吃资源。 |
-| 长期运行服务 / `make up` | 8 vCPU、16 GB 内存、40 GB SSD 可用空间 | 16 vCPU、32 GB 内存 | 更适合共享环境、多 agent 任务、报告生成或更重的 sandbox 负载。 |
+| 部署场景                          | 起步配置                               | 推荐配置            | 说明                                                                       |
+| --------------------------------- | -------------------------------------- | ------------------- | -------------------------------------------------------------------------- |
+| 本地体验 / `make dev`             | 4 vCPU、8 GB 内存、20 GB SSD 可用空间  | 8 vCPU、16 GB 内存  | 适合单个开发者或单个轻量会话，且模型走外部 API。`2 核 / 4 GB` 通常跑不稳。 |
+| Docker 开发 / `make docker-start` | 4 vCPU、8 GB 内存、25 GB SSD 可用空间  | 8 vCPU、16 GB 内存  | 镜像构建、源码挂载和 sandbox 容器都会比纯本地模式更吃资源。                |
+| 长期运行服务 / `make up`          | 8 vCPU、16 GB 内存、40 GB SSD 可用空间 | 16 vCPU、32 GB 内存 | 更适合共享环境、多 agent 任务、报告生成或更重的 sandbox 负载。             |
 
 - 上面的配置只覆盖 DeerFlow 本身；如果你还要本机部署本地大模型，请单独为模型服务预留资源。
 - 持续运行的服务更推荐使用 Linux + Docker。macOS 和 Windows 更适合作为开发机或体验环境。
@@ -286,22 +338,26 @@ make down   # 停止并移除容器
 在 Windows 上，请使用 Git Bash 运行本地开发流程。基于 bash 的服务脚本不支持直接在原生 `cmd.exe` 或 PowerShell 中执行，且 WSL 也不保证可用，因为部分脚本依赖 Git for Windows 的 `cygpath` 等工具。
 
 1. **检查依赖环境**：
+
    ```bash
    make check  # 校验 Node.js 22+、pnpm、uv、nginx
    ```
 
 2. **安装依赖**：
+
    ```bash
    make install  # 安装 backend + frontend 依赖
    ```
 
 3. **（可选）预拉取 sandbox 镜像**：
+
    ```bash
    # 如果使用 Docker / Container sandbox，建议先执行
    make setup-sandbox
    ```
 
 4. **启动服务**：
+
    ```bash
    make dev
    ```
@@ -344,9 +400,11 @@ Gateway 运行时会自动强制对 `/mnt/user-data/outputs` 下创建或修改�
 DeerFlow 的内置自定义事件同时通过两种 LangGraph 流式接口提供：原生客户端可以继续订阅 `stream_mode="custom"`，基于回调的集成则可以从 `astream_events(version="v2")` 以 `on_custom_event` 记录的形式消费相同载荷。回调事件名与载荷的 `type` 字段一致。
 
 ### 进阶配置
+
 #### Sandbox 模式
 
 DeerFlow 支持多种 sandbox 执行方式：
+
 - **本地执行**（直接在宿主机上运行 sandbox 代码）
 - **Docker 执行**（在隔离的 Docker 容器里运行 sandbox 代码）
 - **Docker + Kubernetes 执行**（通过 provisioner 服务在 Kubernetes Pod 中运行 sandbox 代码）
@@ -361,20 +419,22 @@ DeerFlow 支持可配置的 MCP Server 和 skills，用来扩展能力。
 对于 HTTP/SSE MCP Server，还支持 OAuth token 流程（`client_credentials`、`refresh_token`）。
 详细说明见 [MCP Server 指南](backend/docs/MCP_SERVER.md)。
 
+启用持久 MCP 后台任务后，工作台按 `threads:read` 控制任务列表和详情读取，按 `threads:write` 控制取消操作；撤销读取权限会停止轮询并隐藏已缓存任务。
+
 #### IM 渠道
 
 DeerFlow 支持从即时通讯应用接收任务。只要配置完成，对应渠道会自动启动，而且都不需要公网 IP。
 
 DeerFlow 还可以在 workspace UI 里暴露用户自有的 IM 渠道连接。启用 `channel_connections` 后，已登录用户可以从侧边栏 / Settings > Channels 绑定 Telegram、Slack、Discord、Feishu/Lark、DingTalk、WeChat 或 WeCom。它复用现有的 `channels.*` 出站传输，因此不需要公网 IP 或 provider 回调地址。入站 IM 消息会以所连接的 DeerFlow 用户身份运行。设置和安全注意事项参见 [IM Channel Connections](backend/docs/IM_CHANNEL_CONNECTIONS.md)。
 
-| 渠道 | 传输方式 | 上手难度 |
-|---------|-----------|------------|
-| Telegram | Bot API（long-polling） | 简单 |
-| Slack | Socket Mode | 中等 |
-| Feishu / Lark | WebSocket | 中等 |
-| WeChat | Tencent iLink（long-polling） | 中等 |
-| 企业微信智能机器人 | WebSocket | 中等 |
-| 钉钉 | Stream Push（WebSocket） | 中等 |
+| 渠道               | 传输方式                      | 上手难度 |
+| ------------------ | ----------------------------- | -------- |
+| Telegram           | Bot API（long-polling）       | 简单     |
+| Slack              | Socket Mode                   | 中等     |
+| Feishu / Lark      | WebSocket                     | 中等     |
+| WeChat             | Tencent iLink（long-polling） | 中等     |
+| 企业微信智能机器人 | WebSocket                     | 中等     |
+| 钉钉               | Stream Push（WebSocket）      | 中等     |
 
 **`config.yaml` 中的配置示例：**
 
@@ -387,7 +447,7 @@ channels:
 
   # 可选：所有移动端渠道共用的全局 session 默认值
   session:
-    assistant_id: lead_agent  # 也可以填自定义 agent 名；渠道层会自动转换为 lead_agent + agent_name
+    assistant_id: lead_agent # 也可以填自定义 agent 名；渠道层会自动转换为 lead_agent + agent_name
     config:
       recursion_limit: 100
     context:
@@ -409,18 +469,18 @@ channels:
 
   slack:
     enabled: true
-    bot_token: $SLACK_BOT_TOKEN     # xoxb-...
-    app_token: $SLACK_APP_TOKEN     # xapp-...（Socket Mode）
-    allowed_users: []               # 留空表示允许所有人
+    bot_token: $SLACK_BOT_TOKEN # xoxb-...
+    app_token: $SLACK_APP_TOKEN # xapp-...（Socket Mode）
+    allowed_users: [] # 留空表示允许所有人
 
   telegram:
     enabled: true
     bot_token: $TELEGRAM_BOT_TOKEN
-    allowed_users: []               # 留空表示允许所有人
+    allowed_users: [] # 留空表示允许所有人
 
     # 可选：按渠道 / 按用户单独覆盖 session 配置
     session:
-      assistant_id: mobile-agent  # 这里同样支持自定义 agent 名
+      assistant_id: mobile-agent # 这里同样支持自定义 agent 名
       context:
         thinking_enabled: false
       users:
@@ -436,8 +496,8 @@ channels:
     enabled: false
     bot_token: $WECHAT_BOT_TOKEN
     ilink_bot_id: $WECHAT_ILINK_BOT_ID
-    qrcode_login_enabled: true      # 可选：bot_token 缺失时允许首次扫码登录引导
-    allowed_users: []               # 留空表示允许所有人
+    qrcode_login_enabled: true # 可选：bot_token 缺失时允许首次扫码登录引导
+    allowed_users: [] # 留空表示允许所有人
     polling_timeout: 35
     state_dir: ./.deer-flow/wechat/state
     max_inbound_image_bytes: 20971520
@@ -447,13 +507,14 @@ channels:
 
   dingtalk:
     enabled: true
-    client_id: $DINGTALK_CLIENT_ID             # 钉钉开放平台 ClientId
-    client_secret: $DINGTALK_CLIENT_SECRET     # 钉钉开放平台 ClientSecret
-    allowed_users: []                          # 留空表示允许所有人
-    card_template_id: ""                       # 可选：AI 卡片模板 ID，用于流式打字机效果
+    client_id: $DINGTALK_CLIENT_ID # 钉钉开放平台 ClientId
+    client_secret: $DINGTALK_CLIENT_SECRET # 钉钉开放平台 ClientSecret
+    allowed_users: [] # 留空表示允许所有人
+    card_template_id: "" # 可选：AI 卡片模板 ID，用于流式打字机效果
 ```
 
 说明：
+
 - `assistant_id: lead_agent` 会直接调用默认的 LangGraph assistant。
 - 如果 `assistant_id` 填的是自定义 agent 名，DeerFlow 仍然会走 `lead_agent`，同时把该值注入为 `agent_name`，这样 IM 渠道也会生效对应 agent 的 SOUL 和配置。
 
@@ -526,19 +587,19 @@ DINGTALK_CLIENT_SECRET=your_client_secret
 1. 在 [钉钉开放平台](https://open.dingtalk.com/) 创建应用，并启用 **机器人** 能力。
 2. 在机器人配置页面设置消息接收模式为 **Stream模式**。
 3. 复制 `Client ID` 和 `Client Secret`，在 `.env` 中设置 `DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，并在 `config.yaml` 中启用该渠道。
-4. *（可选）* 如需开启流式 AI 卡片回复（打字机效果），请在[钉钉卡片平台](https://open.dingtalk.com/document/dingstart/typewriter-effect-streaming-ai-card)创建 **AI 卡片**模板，然后在 `config.yaml` 中将 `card_template_id` 设为该模板 ID。同时需要申请 `Card.Streaming.Write` 和 `Card.Instance.Write` 权限。
+4. _（可选）_ 如需开启流式 AI 卡片回复（打字机效果），请在[钉钉卡片平台](https://open.dingtalk.com/document/dingstart/typewriter-effect-streaming-ai-card)创建 **AI 卡片**模板，然后在 `config.yaml` 中将 `card_template_id` 设为该模板 ID。同时需要申请 `Card.Streaming.Write` 和 `Card.Instance.Write` 权限。
 
 **命令**
 
 渠道连接完成后，你可以直接在聊天窗口里和 DeerFlow 交互：
 
-| 命令 | 说明 |
-|---------|-------------|
-| `/new` | 开启新对话 |
+| 命令      | 说明                 |
+| --------- | -------------------- |
+| `/new`    | 开启新对话           |
 | `/status` | 查看当前 thread 信息 |
-| `/models` | 列出可用模型 |
-| `/memory` | 查看 memory |
-| `/help` | 查看帮助 |
+| `/models` | 列出可用模型         |
+| `/memory` | 查看 memory          |
+| `/help`   | 查看帮助             |
 
 > 没有命令前缀的消息会被当作普通聊天处理。DeerFlow 会自动创建 thread，并以对话方式回复。
 
@@ -553,8 +614,8 @@ DINGTALK_CLIENT_SECRET=your_client_secret
 ```yaml
 logging:
   enhance:
-    enabled: true   # 将 trace_id 打印进日志记录
-    format: text    # 或 json
+    enabled: true # 将 trace_id 打印进日志记录
+    format: text # 或 json
 ```
 
 该开关默认关闭，因为开启会改变日志格式。`logging` 配置需要重启才能生效，所以请编辑 `config.yaml` 并重启 Gateway。该设置只影响日志输出——id、响应头和运行元数据不受影响。
@@ -667,6 +728,7 @@ npx skills add https://github.com/bytedance/deer-flow --skill claude-to-deerflow
 然后确认 DeerFlow 已经启动（默认地址是 `http://localhost:2026`），在 Claude Code 里使用 `/claude-to-deerflow` 命令即可。
 
 **你可以做的事情包括：**
+
 - 给 DeerFlow 发送消息，并接收流式响应
 - 选择执行模式：flash（更快）、standard、pro（规划模式）、ultra（sub-agents 模式）
 - 检查 DeerFlow 健康状态，列出 models / skills / agents
@@ -719,6 +781,12 @@ lead agent 只会在委派具有明确净收益时动态拉起 sub-agents，例�
 
 管理员可以在**设置 → 子智能体**中添加、修改、停用和删除可复用的工作智能体；内置项和 `config.yaml` 项会在同一目录中以只读方式展示。默认 Lead Agent 可以使用全部已启用的运行时 sub-agents；页面创建的每个 Custom Agent 则可以选择允许全部、全部禁用或仅允许指定项。该范围同时约束模型可见目录和服务端 `task` 工具，不能通过直接填写名称绕过。当前版本的设置页管理定义是部署级全局数据，并跟随 `agent_storage.backend`：单机使用原子文件，多实例使用共享应用数据库。
 
+新建自定义智能体时，若名称校验成功但初始化对话发送失败，页面会保留名称并返回重试步骤。再次继续会重新校验名称，使用新的临时会话，避免对结果不确定的旧请求重复提交；页面只显示本地化错误说明。
+
+设计智能体时，对话消息发送失败会保留输入框中的草稿，可以直接重试；成功发送后才清空。
+
+智能体保存成功但详情暂时无法读取时，可以在当前页面重试读取或返回智能体目录；重试不会再次发送保存命令。
+
 例如，彼此独立的只读研究可以在并行节省的时间明显高于重复检索和结果合并成本时并发执行；而会修改相同文件、依赖连续测试反馈的仓库重构则由 lead agent 直接完成。当 `max_concurrent_subagents` 为 `1` 时，提示词会关闭并行和多批次路由指导，仅在专业能力或上下文隔离具有明确收益时保留委派。
 
 ### Sandbox 与文件系统
@@ -760,6 +828,8 @@ workspace 的 Browser Live 客户端通过二进制 JPEG WebSocket 帧协商画�
 **隔离的 Sub-Agent Context**：每个 sub-agent 都在自己独立的上下文里运行。它看不到主 agent 的上下文，也看不到其他 sub-agents 的上下文。这样做的目的很直接，就是让它只聚焦当前任务，不被无关信息干扰。
 
 **摘要压缩**：在单个 session 内，DeerFlow 会比较积极地管理上下文，包括总结已完成的子任务、把中间结果转存到文件系统、压缩暂时不重要的信息。这样在长链路、多步骤任务里，它也能保持聚焦，而不会轻易把上下文窗口打爆。
+
+工作台可在输入框中引用最近的其他会话。会话列表读取要求 `threads:read`，运行期间读取引用内容要求 `runs:read`；列表缓存按账号隔离。切换会话或账号、撤销任一读取权限后，选择器会关闭并清除尚未发送的引用，避免旧选择进入下一次运行请求。
 
 ### 长期记忆
 
@@ -817,8 +887,9 @@ client.clear_goal("thread-1")
 
 移动会话会同时刷新会话顶部的归属信息和项目列表，即使还有较早的元数据请求尚未返回。
 
-项目依赖当前的数据库表和列。如果数据库停留在旧的 0018  rollout 的 `0019_thread_incarnations` 版本且缺少项目表结构，启动会被拒绝。请先在启动本版本之前按照[离线数据库恢复流程](docs/database-forward-revision-recovery.md)处理。
-项目依赖当前的数据库表和列。如果数据库停留在旧的 0018 rollout 的 `0019_thread_incarnations` 版本且缺少项目表结构，启动会被拒绝。请先在启动本版本之前按照[离线数据库恢复流程](docs/database-forward-revision-recovery.md)处理。
+项目依赖当前的数据库表和列。如果数据库停留在旧的 0018 rollout 的 `0019_thread_incarnations` 版本且缺少项目表结构，启动会被拒绝。请先在启动本版本之前按照[离线数据库恢复流程](docs/数据库版本恢复指南.md)处理。
+项目依赖当前的数据库表和列。如果数据库停留在旧的 0018 rollout 的 `0019_thread_incarnations` 版本且缺少项目表结构，启动会被拒绝。请先在启动本版本之前按照[离线数据库恢复流程](docs/数据库版本恢复指南.md)处理。
+
 ### 项目指令 (Project instructions)
 
 每个项目可以保存一段自由文本指令——适用于项目内所有会话的背景、约定和约束——在项目页的 Instructions 标签页编辑，并带有实时字节计数。成员线程每次发起运行时，Gateway 会一次性固定（pin）项目当前状态，把指令渲染成一个有界的、仅在本次请求内有效的 `<project>` 块：它不会进入系统提示词，也不会写入持久化历史；每次新运行都会读到最新保存的指令。指令长度上限为 `projects.instructions_max_bytes`（按 UTF-8 字节计，默认 8192，可配范围 256–262144），多字节字符按其 UTF-8 字节长度计数。超限的指令会在写入时被 `422` 拒绝，绝不会被静默截断。
@@ -862,7 +933,7 @@ DeerFlow 现在在 workspace 里内置了一个一等的定时任务（scheduled
 
 **通过 API 筛选执行历史**
 
-排查失败记录时，无需先下载所有成功记录。已认证且具有 `threads:read` 权限的客户端，可以针对自己的任务请求 `GET /api/scheduled-tasks/{task_id}/runs?status=failed&limit=50&offset=0`。可选的 `status` 支持 `queued`、`launching`、`running`、`success`、`failed`、`skipped`、`interrupted`；这些是执行记录的状态，`completed` 等任务状态会被拒绝（422）。
+排查失败记录时，无需先下载所有成功记录。已认证且具有 `threads:read`、`runs:read` 权限的客户端，可以针对自己的任务请求 `GET /api/scheduled-tasks/{task_id}/runs?status=failed&limit=50&offset=0`。可选的 `status` 支持 `queued`、`launching`、`running`、`success`、`failed`、`skipped`、`interrupted`；这些是执行记录的状态，`completed` 等任务状态会被拒绝（422）。
 
 筛选先于分页执行。`limit`（1–200，默认 50）和 `offset`（非负整数，默认 0）作用于匹配记录，按创建时间、ID 依次降序排列。不传 `status` 时保留原有的混合历史数组，无匹配项返回 `[]`。此 API 不改变任务执行行为，workspace 历史界面仍展示未筛选的记录。
 
@@ -883,7 +954,12 @@ DeerFlow 现在在 workspace 里内置了一个一等的定时任务（scheduled
 已认证且具有 `threads:read` 权限的客户端，可在创建任务前调用 `POST /api/scheduled-tasks/preview-cron`：
 
 ```json
-{"cron":"0 9 * * 1-5","timezone":"Asia/Shanghai","count":3,"start_at":"2026-09-12T00:00:00Z"}
+{
+  "cron": "0 9 * * 1-5",
+  "timezone": "Asia/Shanghai",
+  "count": 3,
+  "start_at": "2026-09-12T00:00:00Z"
+}
 ```
 
 响应包含规范化的 `cron`、`timezone`、生效的 UTC `start_at`，以及 `occurrences` 列表中的 UTC `run_at` 和带偏移量的 `local_time`。此例的首次执行时间为 `2026-09-14T01:00:00Z` / `2026-09-14T09:00:00+08:00`。
@@ -959,7 +1035,7 @@ Docker 部署栈默认只把入口端口发布在 `127.0.0.1` 上，与上文所
 
 ## 许可证
 
-本项目采用 [MIT License](./LICENSE) 开源发布。
+本项目采用 [MIT License](LICENSE) 开源发布。
 
 ## 致谢
 

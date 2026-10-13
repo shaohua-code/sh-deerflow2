@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "@rstest/core";
 import {
   getSettingsDialogSnapshot,
   openSettingsDialog,
+  setSettingsDialogSection,
   setSettingsDialogOpen,
   subscribeSettingsDialog,
 } from "@/components/workspace/settings/settings-dialog-store";
@@ -33,6 +34,16 @@ test("setSettingsDialogOpen(false) keeps the last section", () => {
   expect(getSettingsDialogSnapshot()).toEqual({
     open: false,
     section: "channels",
+  });
+});
+
+test("restores the active section after an external navigation is rejected", () => {
+  openSettingsDialog("about");
+  setSettingsDialogSection("product");
+
+  expect(getSettingsDialogSnapshot()).toEqual({
+    open: true,
+    section: "product",
   });
 });
 

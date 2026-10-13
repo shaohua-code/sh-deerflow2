@@ -8,6 +8,12 @@ export const env = createEnv({
    */
   server: {
     GITHUB_OAUTH_TOKEN: z.string().optional(),
+    FLOW_DESK_DOCS_REPOSITORY_BASE: z
+      .string()
+      .url()
+      .default(
+        "https://github.com/shaohua-code/sh-deerflow2/tree/main/frontend",
+      ),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -36,6 +42,7 @@ export const env = createEnv({
     NEXT_PUBLIC_STATIC_WEBSITE_ONLY:
       process.env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY,
     GITHUB_OAUTH_TOKEN: process.env.GITHUB_OAUTH_TOKEN,
+    FLOW_DESK_DOCS_REPOSITORY_BASE: process.env.FLOW_DESK_DOCS_REPOSITORY_BASE,
   },
   /**
    * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially

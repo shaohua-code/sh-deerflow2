@@ -225,6 +225,43 @@ class RunStore(abc.ABC):
     async def delete(self, run_id: str) -> None:
         pass
 
+    async def delete_by_thread(self, thread_id: str, *, user_id: str | None = None) -> int:
+        """Delete every run row for one thread using bounded pages.
+
+        This compatibility implementation lets existing extension stores keep
+        implementing the older single-row ``delete`` contract. Stores with a
+        transactional bulk delete should override it. ``list_by_thread`` is
+        responsible for applying the optional owner filter before IDs are
+        passed to the legacy delete method. Re-reading the newest page after
+        each batch also works with older stores that do not accept cursor args.
+        """
+        seen_run_ids: set[str] = set()
+        deleted = 0
+
+        while True:
+            rows = await self.list_by_thread(
+                thread_id,
+                user_id=user_id,
+                limit=100,
+            )
+            if not rows:
+                return deleted
+
+            for row in rows:
+                run_id = row.get("run_id")
+                if not isinstance(run_id, str) or not run_id:
+                    raise RuntimeError("Run store returned a row without a valid run_id")
+                if run_id in seen_run_ids:
+                    raise RuntimeError("Run store did not advance the thread deletion cursor")
+                seen_run_ids.add(run_id)
+                # The page has already been owner-filtered. Keep the call
+                # compatible with stores whose older delete() accepts only ID.
+                await self.delete(run_id)
+                deleted += 1
+
+            if len(rows) < 100:
+                return deleted
+
     async def delete_thread_operation(self, run_id: str, *, user_id: str | None) -> None:
         """Release an admitted thread operation for its recorded owner.
 

@@ -15,21 +15,30 @@ import {
   type ScheduledTaskPayload,
 } from "./api";
 
-export function useScheduledTasks() {
-  return useQuery({
+export function useScheduledTasks({
+  enabled = true,
+}: { enabled?: boolean } = {}) {
+  const query = useQuery({
     queryKey: ["scheduled-tasks"],
     queryFn: fetchScheduledTasks,
     refetchInterval: 15000,
     refetchIntervalInBackground: false,
+    enabled,
   });
+  return enabled ? query : { ...query, data: undefined };
 }
 
-export function useThreadScheduledTasks(threadId: string | null | undefined) {
-  return useQuery({
+export function useThreadScheduledTasks(
+  threadId: string | null | undefined,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
+  const active = enabled && Boolean(threadId);
+  const query = useQuery({
     queryKey: ["scheduled-tasks", "thread", threadId],
     queryFn: () => fetchThreadScheduledTasks(threadId ?? ""),
-    enabled: Boolean(threadId),
+    enabled: active,
   });
+  return active ? query : { ...query, data: undefined };
 }
 
 export function useCreateScheduledTask() {
@@ -41,7 +50,8 @@ export function useCreateScheduledTask() {
       void queryClient.invalidateQueries({ queryKey: ["scheduled-tasks"] });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.create}: ${error.message}`);
+      console.error("Failed to create scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.create);
     },
   });
 }
@@ -62,7 +72,8 @@ export function useUpdateScheduledTask(taskId: string) {
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.update}: ${error.message}`);
+      console.error("Failed to update scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.update);
     },
   });
 }
@@ -79,7 +90,8 @@ export function usePauseScheduledTask() {
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.pause}: ${error.message}`);
+      console.error("Failed to pause scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.pause);
     },
   });
 }
@@ -96,7 +108,8 @@ export function useResumeScheduledTask() {
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.resume}: ${error.message}`);
+      console.error("Failed to resume scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.resume);
     },
   });
 }
@@ -116,7 +129,8 @@ export function useTriggerScheduledTask() {
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.trigger}: ${error.message}`);
+      console.error("Failed to trigger scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.trigger);
     },
   });
 }
@@ -133,7 +147,8 @@ export function useDeleteScheduledTask() {
       });
     },
     onError: (error: Error) => {
-      toast.error(`${t.scheduledTasks.errors.delete}: ${error.message}`);
+      console.error("Failed to delete scheduled task:", error);
+      toast.error(t.scheduledTasks.errors.delete);
     },
   });
 }

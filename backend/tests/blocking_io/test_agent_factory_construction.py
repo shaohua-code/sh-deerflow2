@@ -37,12 +37,14 @@ async def _assert_factory_runs_off_the_event_loop(invoke) -> None:
     def agent_factory(*, config):
         factory_thread_ids.append(threading.get_ident())
         factory_started.set()
-        release_factory.wait(timeout=1)
+        # Leave enough room for a loaded Windows event loop to schedule the
+        # heartbeat; a short deadline made this regression spuriously flaky.
+        release_factory.wait(timeout=5)
         return _Agent()
 
     def release_after_factory_starts() -> None:
-        factory_started.wait(timeout=1)
-        heartbeat_during_factory.wait(timeout=1)
+        factory_started.wait(timeout=5)
+        heartbeat_during_factory.wait(timeout=5)
         release_factory.set()
 
     async def ticker() -> None:

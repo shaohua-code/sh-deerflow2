@@ -44,7 +44,9 @@ test("a full final page does not expose the next-page sentinel", async () => {
   });
   await waitFor(() => expect(result.current.hasOlder).toBe(true));
   expect(result.current.data).toHaveLength(50);
-  act(() => result.current.older());
+  act(() => {
+    void result.current.older();
+  });
   await waitFor(() => expect(result.current.isSuccess).toBe(true));
   expect(result.current.hasOlder).toBe(false);
   expect(result.current.data).toHaveLength(50);
@@ -72,7 +74,9 @@ test("switching tasks aborts an in-flight older page and rejects its late result
     { initialProps: { taskId: "task-a" }, wrapper: wrapper() },
   );
   await waitFor(() => expect(result.current.hasOlder).toBe(true));
-  act(() => result.current.older());
+  act(() => {
+    void result.current.older();
+  });
   await waitFor(() => expect(oldSignal).toBeDefined());
   expect(result.current.isPending).toBe(true);
   rerender({ taskId: "task-b" });
@@ -91,11 +95,33 @@ test("an empty older page retains a route back to the latest records", async () 
     wrapper: wrapper(),
   });
   await waitFor(() => expect(result.current.hasOlder).toBe(true));
-  act(() => result.current.older());
+  act(() => {
+    void result.current.older();
+  });
   await waitFor(() => expect(result.current.data).toEqual([]));
   expect(result.current.page).toBe(1);
   fetchRuns.mockImplementation(async () => rows(1, "new"));
-  act(() => result.current.latest());
+  act(() => {
+    void result.current.latest();
+  });
   await waitFor(() => expect(result.current.data?.[0]?.id).toBe("new-0"));
   expect(result.current.page).toBe(0);
+});
+
+test("disabled run history hides cached rows and does not issue a request", () => {
+  const testWrapper = wrapper();
+  const client = clients.at(-1)!;
+  client.setQueryData(["scheduled-tasks", "runs", "task-a", 0], rows(1));
+
+  const { result, unmount } = renderHook(
+    () => useScheduledTaskRunHistory("task-a", { enabled: false }),
+    { wrapper: testWrapper },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.hasOlder).toBe(false);
+    expect(fetchRuns).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+  }
 });

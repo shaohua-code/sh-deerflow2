@@ -129,6 +129,51 @@ class TestWriteAndRead:
         assert stat.S_IMODE(ref_dir.stat().st_mode) & 0o055 == 0o055
 
 
+class TestCustomSkillDataPurge:
+    def test_purge_removes_owned_packages_history_and_states_but_keeps_shared_skills(
+        self,
+        user_storage: UserScopedSkillStorage,
+        skills_root: Path,
+        base_dir: Path,
+    ) -> None:
+        from deerflow.skills.projection import get_skill_projection_paths
+
+        user_storage.write_custom_skill("private-skill", "SKILL.md", _skill_content("private-skill"))
+        user_storage.append_history("private-skill", {"action": "edit", "prev_content": "private history"})
+        user_storage.append_history("removed-before", {"action": "delete", "prev_content": "orphaned history"})
+        user_storage.set_skill_enabled_state("private-skill", False)
+        user_storage.set_skill_enabled_state("legacy-skill", False)
+        user_storage.set_skill_enabled_state("integration-skill", False)
+
+        legacy_file = skills_root / "custom" / "legacy-skill" / "SKILL.md"
+        legacy_file.parent.mkdir(parents=True)
+        legacy_file.write_text(_skill_content("legacy-skill"), encoding="utf-8")
+        integration_file = base_dir / "integrations" / "skills" / "provider" / "integration-skill" / "SKILL.md"
+        integration_file.parent.mkdir(parents=True)
+        integration_file.write_text(_skill_content("integration-skill"), encoding="utf-8")
+
+        projection = get_skill_projection_paths(user_storage)
+        stale_projection = projection.custom / "private-skill"
+        stale_projection.mkdir(parents=True)
+        (stale_projection / "SKILL.md").write_text("private projection", encoding="utf-8")
+
+        assert user_storage.purge_custom_skills() == 2
+
+        assert not user_storage.get_user_custom_root().exists()
+        states = user_storage._read_skill_states()
+        assert "private-skill" not in states
+        assert "removed-before" not in states
+        assert states["legacy-skill"] == {"enabled": False}
+        assert states["integration-skill"] == {"enabled": False}
+        assert legacy_file.read_text(encoding="utf-8") == _skill_content("legacy-skill")
+        assert integration_file.read_text(encoding="utf-8") == _skill_content("integration-skill")
+        assert not (projection.custom / "private-skill").exists()
+
+    def test_purge_is_idempotent(self, user_storage: UserScopedSkillStorage) -> None:
+        assert user_storage.purge_custom_skills() == 0
+        assert user_storage.purge_custom_skills() == 0
+
+
 class TestSkillLoading:
     """Public skills from global, custom from user dir + fallback."""
 

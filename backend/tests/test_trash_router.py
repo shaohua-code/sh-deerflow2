@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import anyio
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -101,6 +101,101 @@ def _upload(client: TestClient, project_id: str, name: str, data: bytes, **kwarg
 
 def _trash(client: TestClient, project_id: str, document_id: str, **kwargs) -> None:
     assert client.delete(f"/api/projects/{project_id}/documents/{document_id}", **kwargs).status_code == 204
+
+
+def _deny_scope_at(monkeypatch, denied_index: int):
+    original = trash.require_iam_data_scope_for_request
+    observed: list[tuple[str, str, str | None]] = []
+
+    async def check(_request, _user, *, target, action="read", resource_id=None):
+        observed.append((target, action, resource_id))
+        if len(observed) - 1 == denied_index:
+            raise HTTPException(status_code=403, detail="test scope denial")
+
+    monkeypatch.setattr(trash, "require_iam_data_scope_for_request", check)
+    return observed, original
+
+
+class TestTrashIamDataScopes:
+    def test_trash_listing_skips_retention_deletes_without_delete_scope(self, tmp_path, monkeypatch):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            project_id = _create_project(client)["id"]
+            document = _upload(client, project_id, "retention.txt", b"must remain listed")
+            _trash(client, project_id, document["id"])
+            observed: list[tuple[str, str, str | None]] = []
+            sweep_calls: list[bool] = []
+
+            async def scope_check(_request, _user, *, target, action="read", resource_id=None):
+                observed.append((target, action, resource_id))
+                if target == "projects:delete":
+                    raise HTTPException(status_code=403, detail="test delete scope denial")
+
+            async def record_sweep(*_args, **_kwargs):
+                sweep_calls.append(True)
+
+            monkeypatch.setattr(trash, "require_iam_data_scope_for_request", scope_check)
+            monkeypatch.setattr(trash, "run_trash_retention_sweep", record_sweep)
+
+            response = client.get("/api/trash/documents")
+            assert response.status_code == 200
+            assert [row["id"] for row in response.json()["documents"]] == [document["id"]]
+            assert observed == [("projects:read", "read", None), ("projects:delete", "delete", None)]
+            assert sweep_calls == []
+            assert _get_row(app, document["id"]) is not None
+
+    @pytest.mark.parametrize("denied_index", [0, 1])
+    def test_restore_requires_write_and_response_read_scopes_before_restore(self, tmp_path, monkeypatch, denied_index):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            project_id = _create_project(client)["id"]
+            document = _upload(client, project_id, "restore.txt", b"restore me")
+            _trash(client, project_id, document["id"])
+            observed, original = _deny_scope_at(monkeypatch, denied_index)
+
+            response = client.post(f"/api/trash/documents/{document['id']}/restore", json={"project_id": project_id})
+            assert response.status_code == 403
+            assert (
+                observed
+                == [
+                    ("projects:write", "write", project_id),
+                    ("projects:read", "read", project_id),
+                ][: denied_index + 1]
+            )
+
+            monkeypatch.setattr(trash, "require_iam_data_scope_for_request", original)
+            row = _get_row(app, document["id"])
+            assert row is not None and row.get("trashed_at")
+
+    def test_purge_requires_delete_scope_before_file_or_row_removal(self, tmp_path, monkeypatch):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            project_id = _create_project(client)["id"]
+            document = _upload(client, project_id, "purge.txt", b"keep until authorized")
+            _trash(client, project_id, document["id"])
+            observed, original = _deny_scope_at(monkeypatch, 0)
+
+            response = client.post(f"/api/trash/documents/{document['id']}/purge")
+            assert response.status_code == 403
+            assert observed == [("projects:delete", "delete", project_id)]
+
+            monkeypatch.setattr(trash, "require_iam_data_scope_for_request", original)
+            assert _get_row(app, document["id"]) is not None
+
+    def test_empty_trash_requires_delete_scope_before_batch_purge(self, tmp_path, monkeypatch):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            project_id = _create_project(client)["id"]
+            document = _upload(client, project_id, "empty.txt", b"keep until authorized")
+            _trash(client, project_id, document["id"])
+            observed, original = _deny_scope_at(monkeypatch, 0)
+
+            response = client.post("/api/trash/purge")
+            assert response.status_code == 403
+            assert observed == [("projects:delete", "delete", None)]
+
+            monkeypatch.setattr(trash, "require_iam_data_scope_for_request", original)
+            assert _get_row(app, document["id"]) is not None
 
 
 def _get_row(app: FastAPI, document_id: str, *, user_id: str = "user-a") -> dict | None:

@@ -31,6 +31,36 @@ import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "./context";
 
+type ArtifactArchiveErrorCopy = {
+  archiveBusy: string;
+  archiveTooLarge: string;
+  downloadFailed: string;
+  runNotReady: string;
+  runUnavailable: string;
+};
+
+function artifactArchiveErrorCopy(
+  error: unknown,
+  copy: ArtifactArchiveErrorCopy,
+): string {
+  if (!(error instanceof ArtifactRequestError)) {
+    return copy.downloadFailed;
+  }
+
+  switch (error.status) {
+    case 404:
+      return copy.runUnavailable;
+    case 409:
+      return copy.runNotReady;
+    case 413:
+      return copy.archiveTooLarge;
+    case 429:
+      return copy.archiveBusy;
+    default:
+      return copy.downloadFailed;
+  }
+}
+
 export function ArtifactFileList({
   archiveDownloadsEnabled = true,
   className,
@@ -85,14 +115,16 @@ export function ArtifactFileList({
         if (result.success) {
           toast.success(result.message);
         } else {
-          toast.error(result.message || "Failed to install skill");
+          // 失败详情来自 Gateway，仅用于诊断；界面统一使用产品文案。
+          console.error("Failed to install skill:", result.message);
+          toast.error(t.settings.skills.installFailed);
         }
       } catch (error) {
         console.error("Failed to install skill:", error);
         if (error instanceof SkillRequestError && error.isAdminRequired) {
           toast.error(t.settings.skills.installAdminRequired);
         } else {
-          toast.error("Failed to install skill");
+          toast.error(t.settings.skills.installFailed);
         }
       } finally {
         setInstallingFile(null);
@@ -120,11 +152,8 @@ export function ArtifactFileList({
       link.remove();
     } catch (error) {
       console.error("Failed to download artifact archive:", error);
-      toast.error(
-        error instanceof ArtifactRequestError
-          ? error.message
-          : t.artifactArchive.downloadFailed,
-      );
+      // Gateway detail 只用于诊断；页面按稳定状态码显示本地化产品提示。
+      toast.error(artifactArchiveErrorCopy(error, t.artifactArchive));
     } finally {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       setDownloadingArchive(false);

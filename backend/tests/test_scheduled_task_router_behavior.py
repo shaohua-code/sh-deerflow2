@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from _router_auth_helpers import call_unwrapped
@@ -208,6 +208,64 @@ async def test_create_scheduled_task_uses_repo():
 
 
 @pytest.mark.asyncio
+async def test_scheduled_task_list_checks_iam_scope_before_repository_query(monkeypatch):
+    repo = SimpleNamespace(list_by_user=AsyncMock())
+    user = SimpleNamespace(id="user-1")
+    scope_check = AsyncMock(side_effect=HTTPException(status_code=403, detail="scope denied"))
+    monkeypatch.setattr(scheduled_tasks, "get_scheduled_task_repo", lambda _request: repo)
+    monkeypatch.setattr(scheduled_tasks, "get_optional_user_from_request", AsyncMock(return_value=user))
+    monkeypatch.setattr(scheduled_tasks, "require_iam_data_scope_for_request", scope_check)
+
+    with pytest.raises(HTTPException) as denied:
+        await call_unwrapped(scheduled_tasks.list_scheduled_tasks, request=SimpleNamespace())
+
+    assert denied.value.status_code == 403
+    scope_check.assert_awaited_once_with(
+        ANY,
+        user,
+        target="threads:read",
+        action="read",
+        resource_id=None,
+    )
+    repo.list_by_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_task_creation_checks_run_scope_before_create(monkeypatch):
+    repo = SimpleNamespace(create=AsyncMock())
+    user = SimpleNamespace(id="user-1")
+    body = scheduled_tasks.ScheduledTaskCreateRequest(
+        context_mode="fresh_thread_per_run",
+        title="Daily summary",
+        prompt="Summarize activity",
+        schedule_type="cron",
+        schedule_spec={"cron": "0 9 * * *"},
+        timezone="UTC",
+    )
+    checked = []
+
+    async def deny_run_create(_request, _user, *, target, action, resource_id=None):
+        checked.append((target, action, resource_id))
+        if target == "runs:create":
+            raise HTTPException(status_code=403, detail="run scope denied")
+
+    monkeypatch.setattr(scheduled_tasks, "get_scheduled_task_repo", lambda _request: repo)
+    monkeypatch.setattr(scheduled_tasks, "get_optional_user_from_request", AsyncMock(return_value=user))
+    monkeypatch.setattr(scheduled_tasks, "require_iam_data_scope_for_request", deny_run_create)
+
+    with pytest.raises(HTTPException) as denied:
+        await call_unwrapped(
+            scheduled_tasks.create_scheduled_task,
+            request=SimpleNamespace(),
+            body=body,
+        )
+
+    assert denied.value.status_code == 403
+    assert checked == [("threads:write", "write", None), ("runs:create", "create", None)]
+    repo.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_fresh_thread_task_does_not_require_thread_id():
     repo = _Repo()
     request = SimpleNamespace()
@@ -334,6 +392,44 @@ async def test_trigger_scheduled_task_returns_conflict_when_dispatch_conflicts()
         scheduled_tasks.get_optional_user_from_request = old_user
 
     assert "already has an active run" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_trigger_scheduled_task_surfaces_authorization_denial(monkeypatch):
+    repo = _Repo()
+    service = _Service()
+    service.result = {
+        "outcome": "denied",
+        "status_code": 503,
+        "error": "Scheduled task IAM authorization is unavailable",
+    }
+    task = await repo.create(
+        task_id="task-1",
+        user_id="user-1",
+        thread_id="thread-1",
+        context_mode="reuse_thread",
+        assistant_id="lead_agent",
+        title="Daily summary",
+        prompt="Summarize thread",
+        schedule_type="cron",
+        schedule_spec={"cron": "0 9 * * *"},
+        timezone="UTC",
+        next_run_at=None,
+    )
+    request = SimpleNamespace(_deerflow_test_bypass_auth=True)
+    user = SimpleNamespace(id="user-1")
+    monkeypatch.setattr(scheduled_tasks, "get_scheduled_task_repo", lambda _request: repo)
+    monkeypatch.setattr(scheduled_tasks, "get_scheduled_task_service", lambda _request: service)
+    monkeypatch.setattr(scheduled_tasks, "get_optional_user_from_request", AsyncMock(return_value=user))
+    with pytest.raises(HTTPException) as denied:
+        await call_unwrapped(
+            scheduled_tasks.trigger_scheduled_task,
+            task_id=task["id"],
+            request=request,
+        )
+
+    assert denied.value.status_code == 503
+    assert denied.value.detail == service.result["error"]
 
 
 @pytest.mark.asyncio

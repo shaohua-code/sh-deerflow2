@@ -415,9 +415,9 @@ the generated zip before attaching it to a public issue.
 ## Need Help?
 
 - Check existing [Issues](https://github.com/bytedance/deer-flow/issues)
-- Read the [Documentation](backend/docs/)
+- Read the [Documentation](backend/docs)
 - Ask questions in [Discussions](https://github.com/bytedance/deer-flow/discussions)
 
 ## License
 
-By contributing to DeerFlow, you agree that your contributions will be licensed under the [MIT License](./LICENSE).
+By contributing to DeerFlow, you agree that your contributions will be licensed under the [MIT License](LICENSE).

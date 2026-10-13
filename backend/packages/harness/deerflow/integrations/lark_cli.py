@@ -466,16 +466,20 @@ def _resolve_current_user_sid() -> str:
         ["whoami", "/user", "/fo", "csv", "/nh"],
         capture_output=True,
         text=True,
+        # Windows 控制台输出的用户名可能使用不同代码页；SID 和 CSV 分隔符仍是 ASCII。
+        # 替换无法解码的姓名字符，避免读取线程失败后 stdout/stderr 变为 None。
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"failed to resolve current Windows user SID: {result.stderr.strip() or result.stdout.strip()}")
+        raise RuntimeError(f"failed to resolve current Windows user SID: {(result.stderr or result.stdout or '').strip()}")
+    output = (result.stdout or "").strip()
     try:
-        fields = next(csv.reader([result.stdout.strip()]))
+        fields = next(csv.reader([output]))
     except (csv.Error, StopIteration) as exc:
-        raise RuntimeError(f"unexpected whoami /user output: {result.stdout.strip()!r}") from exc
+        raise RuntimeError(f"unexpected whoami /user output: {output!r}") from exc
     if len(fields) < 2 or not fields[1].startswith("S-"):
-        raise RuntimeError(f"unexpected whoami /user output: {result.stdout.strip()!r}")
+        raise RuntimeError(f"unexpected whoami /user output: {output!r}")
     return fields[1]
 
 

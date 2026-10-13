@@ -38,6 +38,11 @@ async def get_or_provision_oidc_user(
     # 1. Existing OAuth link
     existing = await local_provider.get_user_by_oauth(provider_id, identity.subject)
     if existing:
+        if not existing.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account is disabled. Contact your administrator.",
+            )
         return {"user": existing, "created": False}
 
     # 2. Verified email requirement
@@ -82,7 +87,10 @@ async def get_or_provision_oidc_user(
             detail="Automatic account creation is disabled. Contact your administrator.",
         )
 
-    role = _resolve_role(email, provider_config.admin_emails)
+    # OIDC email claims and the legacy admin_emails setting are not an
+    # authorization source. New SSO accounts always start as ordinary users;
+    # elevated permissions are granted and checked by IAM explicitly.
+    role = "user"
     try:
         user = await local_provider.create_oauth_user(
             email=email,
@@ -102,11 +110,5 @@ async def get_or_provision_oidc_user(
             status_code=status.HTTP_409_CONFLICT,
             detail=("An account with this email already exists. Contact your administrator to link it to your SSO account."),
         ) from None
-    logger.info("Auto-created OIDC user %s (provider=%s, role=%s)", email, provider_id, role)
+    logger.info("Auto-created ordinary OIDC user (provider=%s)", provider_id)
     return {"user": user, "created": True}
-
-
-def _resolve_role(email: str, admin_emails: list[str]) -> str:
-    """Return ``admin`` if the email is in the admin list, otherwise ``user``."""
-    email_lower = email.lower()
-    return "admin" if any(e.lower() == email_lower for e in admin_emails) else "user"

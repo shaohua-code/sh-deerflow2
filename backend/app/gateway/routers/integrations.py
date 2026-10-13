@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_config, require_admin_user
 from deerflow.agents.lead_agent.prompt import refresh_skills_system_prompt_cache_async
 from deerflow.config.app_config import AppConfig
@@ -36,6 +37,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
 _ADMIN_REQUIRED_DETAIL = "Admin privileges required to install integrations."
+
+
+async def _require_integration_data_scope(request: Request, *, target: str, action: str = "read") -> None:
+    """Apply the verified user self-scope to personal Lark credentials and authorization."""
+    await require_iam_data_scope_for_request(request, None, target=target, action=action)
 
 
 async def _is_admin_user(request: Request) -> bool:
@@ -257,7 +263,9 @@ def _auth_complete_to_response(result: LarkAuthCompleteResult, *, include_host_p
 
 
 @router.get("/lark/status", response_model=LarkIntegrationStatusResponse, summary="Get Lark/Feishu Integration Status")
+@require_permission("integrations", "read")
 async def get_lark_status(request: Request, config: AppConfig = Depends(get_config)) -> LarkIntegrationStatusResponse:
+    await _require_integration_data_scope(request, target="integrations:read")
     try:
         status = await asyncio.to_thread(get_lark_integration_status, get_effective_user_id(), config, check_latest=True, check_runtime=True)
         return _status_to_response(status, include_host_paths=await _is_admin_user(request))
@@ -267,8 +275,13 @@ async def get_lark_status(request: Request, config: AppConfig = Depends(get_conf
 
 
 @router.post("/lark/install", response_model=LarkInstallResponse, summary="Install Lark/Feishu Skill Pack")
+@require_permission("integrations", "admin")
+@require_permission("integrations", "write")
+@require_permission("integrations", "read")
 async def install_lark(request: Request, config: AppConfig = Depends(get_config)) -> LarkInstallResponse:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
+    await _require_integration_data_scope(request, target="integrations:read")
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(install_lark_integration, get_effective_user_id(), config)
         await refresh_skills_system_prompt_cache_async()
@@ -285,7 +298,9 @@ async def install_lark(request: Request, config: AppConfig = Depends(get_config)
 
 
 @router.post("/lark/config/start", response_model=LarkConfigStartResponse, summary="Start Lark/Feishu App Configuration")
-async def start_lark_app_config(body: LarkConfigStartRequest) -> LarkConfigStartResponse:
+@require_permission("integrations", "write")
+async def start_lark_app_config(request: Request, body: LarkConfigStartRequest) -> LarkConfigStartResponse:
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(
             start_lark_config,
@@ -305,7 +320,11 @@ async def start_lark_app_config(body: LarkConfigStartRequest) -> LarkConfigStart
 
 
 @router.post("/lark/config/complete", response_model=LarkConfigCompleteResponse, summary="Complete Lark/Feishu App Configuration")
+@require_permission("integrations", "write")
+@require_permission("integrations", "read")
 async def complete_lark_app_config(request: Request, body: LarkConfigCompleteRequest, config: AppConfig = Depends(get_config)) -> LarkConfigCompleteResponse:
+    await _require_integration_data_scope(request, target="integrations:read")
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(
             complete_lark_config,
@@ -332,7 +351,11 @@ async def complete_lark_app_config(request: Request, body: LarkConfigCompleteReq
 
 
 @router.post("/lark/config/credentials", response_model=LarkConfigCompleteResponse, summary="Switch Lark/Feishu App Credentials")
+@require_permission("integrations", "write")
+@require_permission("integrations", "read")
 async def switch_lark_app_credentials(request: Request, body: LarkConfigCredentialsRequest, config: AppConfig = Depends(get_config)) -> LarkConfigCompleteResponse:
+    await _require_integration_data_scope(request, target="integrations:read")
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(
             set_lark_app_credentials,
@@ -355,7 +378,9 @@ async def switch_lark_app_credentials(request: Request, body: LarkConfigCredenti
 
 
 @router.post("/lark/auth/start", response_model=LarkAuthStartResponse, summary="Start Lark/Feishu Browser Authorization")
-async def start_lark_browser_auth(body: LarkAuthStartRequest) -> LarkAuthStartResponse:
+@require_permission("integrations", "write")
+async def start_lark_browser_auth(request: Request, body: LarkAuthStartRequest) -> LarkAuthStartResponse:
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(
             start_lark_auth,
@@ -380,7 +405,11 @@ async def start_lark_browser_auth(body: LarkAuthStartRequest) -> LarkAuthStartRe
 
 
 @router.post("/lark/auth/complete", response_model=LarkAuthCompleteResponse, summary="Complete Lark/Feishu Browser Authorization")
+@require_permission("integrations", "write")
+@require_permission("integrations", "read")
 async def complete_lark_browser_auth(request: Request, body: LarkAuthCompleteRequest, config: AppConfig = Depends(get_config)) -> LarkAuthCompleteResponse:
+    await _require_integration_data_scope(request, target="integrations:read")
+    await _require_integration_data_scope(request, target="integrations:write", action="write")
     try:
         result = await asyncio.to_thread(
             complete_lark_auth,

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -65,7 +66,11 @@ def _make_request(tmp_path) -> Request:
     store = ChannelRuntimeConfigStore(tmp_path / "channels" / "runtime-config.json")
     app.state.channel_runtime_config_store = store
     user = SimpleNamespace(id=UUID("11111111-2222-3333-4444-555555555555"), system_role="admin")
-    return Request({"type": "http", "app": app, "headers": [], "state": {"user": user}})
+    request = Request({"type": "http", "app": app, "headers": [], "state": {"user": user}})
+    # These direct-handler tests isolate filesystem offloading; route auth has
+    # separate coverage and must not be inferred from a bare ASGI scope.
+    request._deerflow_test_bypass_auth = True
+    return request
 
 
 async def test_configure_runtime_channel_does_not_block_event_loop(tmp_path) -> None:
@@ -107,6 +112,7 @@ async def test_disconnect_runtime_channel_does_not_block_event_loop(tmp_path) ->
     }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not represent inherited NTFS ACLs")
 async def test_runtime_config_store_file_is_owner_only(tmp_path) -> None:
     path = tmp_path / "channels" / "runtime-config.json"
     store = await asyncio.to_thread(ChannelRuntimeConfigStore, path)
@@ -121,6 +127,7 @@ async def test_runtime_config_store_file_is_owner_only(tmp_path) -> None:
     assert mode == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not represent inherited NTFS ACLs")
 async def test_runtime_config_store_overwrites_loose_existing_file(tmp_path) -> None:
     """A pre-existing world-readable file is tightened to 0o600 after a save.
 
@@ -171,5 +178,6 @@ async def test_runtime_config_store_chmod_failure_is_logged_not_fatal(tmp_path, 
 
     assert any("Unable to chmod temporary channel runtime config store" in record.getMessage() for record in caplog.records)
     mode = await asyncio.to_thread(lambda: path.stat().st_mode & 0o777)
-    assert mode == 0o600
+    if os.name != "nt":
+        assert mode == 0o600
     assert await asyncio.to_thread(store.get_provider_config, "slack") == {"enabled": True, "bot_token": "xoxb-ui"}

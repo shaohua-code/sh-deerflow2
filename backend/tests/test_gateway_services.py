@@ -48,6 +48,19 @@ def _make_start_run_request(run_manager, *, thread_store=None, auth_source=None)
     )
 
 
+@pytest.fixture
+def _stub_active_scheduled_owner(monkeypatch):
+    """Scheduled launch tests use a persisted, enabled account identity."""
+
+    async def get_user(user_id):
+        return SimpleNamespace(id=user_id, is_active=True)
+
+    monkeypatch.setattr(
+        "app.gateway.services.get_local_provider",
+        lambda: SimpleNamespace(get_user=get_user),
+    )
+
+
 def _run_create_request(content="hello", **kwargs):
     from app.gateway.routers.thread_runs import RunCreateRequest
 
@@ -2907,7 +2920,7 @@ async def test_start_run_peer_idempotent_reuse_does_not_reject_later_runs_after_
     assert follow_up.run_id != first.run_id
 
 
-def test_launch_scheduled_thread_run_marks_context_non_interactive(_stub_app_config):
+def test_launch_scheduled_thread_run_marks_context_non_interactive(_stub_app_config, _stub_active_scheduled_owner):
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -2918,12 +2931,13 @@ def test_launch_scheduled_thread_run_marks_context_non_interactive(_stub_app_con
     async def _scenario():
         captured: dict[str, object] = {}
 
-        async def fake_start_run(body, thread_id, request, *, idempotency_key=None):
+        async def fake_start_run(body, thread_id, request, *, idempotency_key=None, owner_user_id_override=None):
             captured["body"] = body
             captured["thread_id"] = thread_id
             captured["context"] = body.context
             captured["metadata"] = body.metadata
             captured["idempotency_key"] = idempotency_key
+            captured["owner_user_id_override"] = owner_user_id_override
             captured["if_not_exists"] = body.if_not_exists
             captured["on_completion"] = body.on_completion
             return SimpleNamespace(run_id="run-1", thread_id=thread_id)
@@ -2953,12 +2967,13 @@ def test_launch_scheduled_thread_run_marks_context_non_interactive(_stub_app_con
         "scheduled_task_run_id": "task-run-1",
     }
     assert captured["idempotency_key"] == "scheduled-task:task-run-1"
+    assert captured["owner_user_id_override"] is None
     assert captured["if_not_exists"] == "create"
     assert captured["on_completion"] is None
     assert result == {"run_id": "run-1", "thread_id": "thread-scheduled"}
 
 
-def test_launch_scheduled_thread_run_uses_configured_recursion_limit(_stub_app_config):
+def test_launch_scheduled_thread_run_uses_configured_recursion_limit(_stub_app_config, _stub_active_scheduled_owner):
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -2978,8 +2993,9 @@ def test_launch_scheduled_thread_run_uses_configured_recursion_limit(_stub_app_c
     async def _scenario():
         captured: dict[str, object] = {}
 
-        async def fake_start_run(body, thread_id, request, *, idempotency_key=None):
+        async def fake_start_run(body, thread_id, request, *, idempotency_key=None, owner_user_id_override=None):
             assert idempotency_key is None
+            assert owner_user_id_override is None
             captured["config"] = body.config
             return SimpleNamespace(run_id="run-1", thread_id=thread_id)
 
@@ -2997,7 +3013,7 @@ def test_launch_scheduled_thread_run_uses_configured_recursion_limit(_stub_app_c
     assert captured["config"] == {"recursion_limit": 1000}
 
 
-def test_launch_scheduled_thread_run_recursion_limit_is_clamped_to_ceiling(_stub_app_config, caplog):
+def test_launch_scheduled_thread_run_recursion_limit_is_clamped_to_ceiling(_stub_app_config, _stub_active_scheduled_owner, caplog):
     """A scheduler.recursion_limit above max_recursion_limit is clamped at dispatch, so the run request never carries an unclamped value."""
     import asyncio
     import logging
@@ -3020,8 +3036,9 @@ def test_launch_scheduled_thread_run_recursion_limit_is_clamped_to_ceiling(_stub
     async def _scenario():
         captured: dict[str, object] = {}
 
-        async def fake_start_run(body, thread_id, request, *, idempotency_key=None):
+        async def fake_start_run(body, thread_id, request, *, idempotency_key=None, owner_user_id_override=None):
             assert idempotency_key is None
+            assert owner_user_id_override is None
             captured["config"] = body.config
             return SimpleNamespace(run_id="run-1", thread_id=thread_id)
 
@@ -3041,7 +3058,7 @@ def test_launch_scheduled_thread_run_recursion_limit_is_clamped_to_ceiling(_stub
     assert any("scheduler.recursion_limit 5000 exceeds max_recursion_limit 1000" in r.message for r in caplog.records)
 
 
-def test_launch_scheduled_thread_run_falls_back_when_config_unloadable(_stub_app_config, caplog):
+def test_launch_scheduled_thread_run_falls_back_when_config_unloadable(_stub_app_config, _stub_active_scheduled_owner, caplog):
     """When the app config cannot be loaded, dispatch falls back to the server default recursion limit and logs a warning."""
     import asyncio
     import logging
@@ -3053,8 +3070,9 @@ def test_launch_scheduled_thread_run_falls_back_when_config_unloadable(_stub_app
     async def _scenario():
         captured: dict[str, object] = {}
 
-        async def fake_start_run(body, thread_id, request, *, idempotency_key=None):
+        async def fake_start_run(body, thread_id, request, *, idempotency_key=None, owner_user_id_override=None):
             assert idempotency_key is None
+            assert owner_user_id_override is None
             captured["config"] = body.config
             return SimpleNamespace(run_id="run-1", thread_id=thread_id)
 
@@ -3078,6 +3096,33 @@ def test_launch_scheduled_thread_run_falls_back_when_config_unloadable(_stub_app
     captured = asyncio.run(_scenario())
     assert captured["config"] == {"recursion_limit": 100}
     assert any("failed to load app config; falling back to recursion_limit=100" in r.message for r in caplog.records)
+
+
+def test_launch_scheduled_thread_run_rejects_disabled_owner(_stub_app_config, monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.gateway.services import launch_scheduled_thread_run
+
+    class DisabledProvider:
+        async def get_user(self, user_id):
+            return SimpleNamespace(id=user_id, is_active=False)
+
+    monkeypatch.setattr("app.gateway.services.get_local_provider", DisabledProvider)
+
+    async def _scenario():
+        with pytest.raises(HTTPException) as exc_info:
+            await launch_scheduled_thread_run(
+                thread_id="thread-scheduled",
+                assistant_id="lead_agent",
+                prompt="Run in background",
+                app=SimpleNamespace(state=SimpleNamespace()),
+                owner_user_id="user-disabled",
+            )
+        assert exc_info.value.status_code == 403
+
+    asyncio.run(_scenario())
 
 
 def test_launch_scheduled_thread_run_rejects_legacy_auth_token():
@@ -3598,6 +3643,22 @@ class TestInjectAuthenticatedUserContextAuthz:
         request = _make_request_with_auth_source("session")
         config = _assemble_authz_run_config({"configurable": {"authz_attributes": {"forged": True}}}, request)
         assert "authz_attributes" not in config["configurable"]
+
+    def test_route_permissions_are_server_owned_and_runtime_only(self):
+        from types import SimpleNamespace
+
+        request = _make_request_with_auth_source("session")
+        request.state.auth = SimpleNamespace(permissions=["runs:create", "agents:read"])
+        config = _assemble_authz_run_config(
+            {
+                "context": {"route_permissions": ["agents:admin"]},
+                "configurable": {"route_permissions": ["agents:admin"]},
+            },
+            request,
+        )
+
+        assert config["context"]["route_permissions"] == ["runs:create", "agents:read"]
+        assert "route_permissions" not in config["configurable"]
 
     @pytest.mark.parametrize("section", ["context", "configurable"])
     @pytest.mark.parametrize("key", ["langgraph_auth_user", "langgraph_auth_user_id"])

@@ -14,9 +14,14 @@ from deerflow_extension_api.assembly import (
     ToolDescriptor,
 )
 from deerflow_extension_api.auth import (
+    EXTENSION_DATA_SCOPE_CHECKER_KEY,
     EXTENSION_PRINCIPAL_RESOLVER_KEY,
+    ExtensionDataScopeError,
     ExtensionPrincipal,
+    OwnerDataAuthorizationError,
     require_admin,
+    require_data_scope,
+    require_permission,
     resolve_principal,
 )
 from deerflow_extension_api.compaction import (
@@ -24,12 +29,28 @@ from deerflow_extension_api.compaction import (
     ContextCompactionObserver,
 )
 from deerflow_extension_api.contracts import (
+    AdminActionEvent,
+    AdminActionObserver,
     ExtensionInstall,
     ExtensionRegistry,
     ExtensionRuntimeDeps,
     ExtensionService,
     HostPolicySnapshot,
     MiddlewareContributor,
+    OwnerAgentPage,
+    OwnerDataAuthorizer,
+    OwnerDataDeleter,
+    OwnerDataReader,
+    OwnerDataScope,
+    OwnerFile,
+    OwnerFileEntry,
+    OwnerFilePage,
+    OwnerFiles,
+    OwnerMessagePage,
+    OwnerProjectPage,
+    OwnerRunPage,
+    OwnerScheduledTaskPage,
+    OwnerThreadPage,
     SystemModelCallObserver,
     SystemModelRequest,
     SystemModelResult,
@@ -77,11 +98,14 @@ from deerflow_extension_api.state import ExtensionData
 
 #: Contract version. Before 1.0, minors may break and patches are additive.
 #: From 1.0 on, bump the major for breaking changes.
-API_VERSION = "0.2.1"
+API_VERSION = "0.2.18"
 
 __all__ = [
     "API_VERSION",
+    "AdminActionEvent",
+    "AdminActionObserver",
     "EXTENSION_PRINCIPAL_RESOLVER_KEY",
+    "EXTENSION_DATA_SCOPE_CHECKER_KEY",
     "EXTENSION_TASK_STORE_KEY",
     "MESSAGE_CONTENT_KIND_KEY",
     "MESSAGE_PRODUCER_ENTITY_ID_KEY",
@@ -95,6 +119,7 @@ __all__ = [
     "ContentKind",
     "ContextCompactionObserver",
     "ExtensionData",
+    "ExtensionDataScopeError",
     "ExtensionInstall",
     "ExtensionPrincipal",
     "ExtensionRegistry",
@@ -106,6 +131,21 @@ __all__ = [
     "MiddlewareContributor",
     "MiddlewareDescriptor",
     "MiddlewarePlacement",
+    "OwnerAgentPage",
+    "OwnerDataAuthorizationError",
+    "OwnerDataAuthorizer",
+    "OwnerDataDeleter",
+    "OwnerDataReader",
+    "OwnerDataScope",
+    "OwnerFile",
+    "OwnerFileEntry",
+    "OwnerFilePage",
+    "OwnerFiles",
+    "OwnerMessagePage",
+    "OwnerProjectPage",
+    "OwnerRunPage",
+    "OwnerScheduledTaskPage",
+    "OwnerThreadPage",
     "Placement",
     "ReleasePolicyProvider",
     "RunEvidenceReader",
@@ -128,6 +168,8 @@ __all__ = [
     "provenance_kwargs",
     "read_provenance",
     "require_admin",
+    "require_data_scope",
+    "require_permission",
     "resolve_principal",
     "task_store_from_runtime",
 ]

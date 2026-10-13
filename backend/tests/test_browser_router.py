@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 from types import SimpleNamespace
@@ -5,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from _router_auth_helpers import make_authed_test_app
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -56,6 +57,86 @@ def test_browser_stream_closes_4403_for_cross_origin_upgrade():
     app = _browser_ws_app()
     with patch.object(browser_router, "_authenticate_ws", AsyncMock(return_value=_user())):
         _expect_ws_close(app, 4403, headers={"origin": "https://evil.example.com"})
+
+
+def test_browser_stream_requires_thread_read_and_write_before_thread_lookup():
+    store = MagicMock()
+    store.get = AsyncMock()
+    app = _browser_ws_app(store)
+    with (
+        patch.object(browser_router, "_authenticate_ws", AsyncMock(return_value=_user())),
+        patch.object(browser_router, "resolve_route_permissions_for_request", AsyncMock(return_value=["threads:read"])),
+        patch.object(browser_router, "require_iam_data_scope_for_request", AsyncMock()) as scope_check,
+    ):
+        _expect_ws_close(app, 4403)
+
+    store.get.assert_not_awaited()
+    scope_check.assert_not_awaited()
+
+
+def test_browser_stream_checks_read_and_write_data_scopes_for_the_thread():
+    store = MagicMock()
+    store.get = AsyncMock(return_value={"thread_id": "thread-1", "user_id": "browser-user"})
+    app = _browser_ws_app(store)
+    user = _user()
+    with (
+        patch.object(browser_router, "_authenticate_ws", AsyncMock(return_value=user)),
+        patch.object(
+            browser_router,
+            "resolve_route_permissions_for_request",
+            AsyncMock(return_value=["threads:read", "threads:write"]),
+        ),
+        patch.object(browser_router, "require_iam_data_scope_for_request", AsyncMock()) as scope_check,
+        patch.object(browser_router, "_browser_tools_enabled", return_value=False),
+    ):
+        # The configured feature is disabled, so a 4404 proves authorization
+        # completed first without opening the retained browser session.
+        _expect_ws_close(app, 4404)
+
+    assert [call.kwargs for call in scope_check.await_args_list] == [
+        {"target": "threads:read", "action": "read", "resource_id": "thread-1"},
+        {"target": "threads:write", "action": "write", "resource_id": "thread-1"},
+    ]
+
+
+def test_browser_stream_closes_4403_when_iam_data_scope_denies():
+    store = MagicMock()
+    store.get = AsyncMock()
+    app = _browser_ws_app(store)
+    with (
+        patch.object(browser_router, "_authenticate_ws", AsyncMock(return_value=_user())),
+        patch.object(
+            browser_router,
+            "resolve_route_permissions_for_request",
+            AsyncMock(return_value=["threads:read", "threads:write"]),
+        ),
+        patch.object(
+            browser_router,
+            "require_iam_data_scope_for_request",
+            AsyncMock(side_effect=HTTPException(status_code=403, detail="scope denied")),
+        ),
+    ):
+        _expect_ws_close(app, 4403)
+
+    store.get.assert_not_awaited()
+
+
+def test_browser_stream_fails_closed_when_iam_authorization_is_unavailable(caplog):
+    store = MagicMock()
+    store.get = AsyncMock()
+    app = _browser_ws_app(store)
+    with (
+        patch.object(browser_router, "_authenticate_ws", AsyncMock(return_value=_user())),
+        patch.object(
+            browser_router,
+            "resolve_route_permissions_for_request",
+            AsyncMock(side_effect=RuntimeError("provider response contains private detail")),
+        ),
+    ):
+        _expect_ws_close(app, 1011)
+
+    assert "provider response contains private detail" not in caplog.text
+    store.get.assert_not_awaited()
 
 
 def test_browser_stream_closes_4404_when_thread_store_missing():
@@ -185,6 +266,25 @@ def test_browser_navigate_redacts_failure_url_from_logs_and_response(caplog):
 
 def test_browser_stream_seed_applies_to_blank_page():
     assert _should_apply_browser_seed("about:blank", "https://github.com/bytedance/deer-flow")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_ws_preserves_local_session_id_for_central_iam():
+    user = SimpleNamespace(id="browser-user", is_active=True, token_version=3)
+    payload = SimpleNamespace(sub="browser-user", ver=3, sid="opaque-local-session-id")
+    provider = SimpleNamespace(get_user=AsyncMock(return_value=user))
+    websocket = SimpleNamespace(cookies={"access_token": "signed-local-token"}, state=SimpleNamespace())
+
+    with (
+        patch("app.gateway.auth.decode_token", return_value=payload),
+        patch("app.gateway.deps.get_local_provider", return_value=provider),
+    ):
+        authenticated_user = await browser_router._authenticate_ws(websocket)
+
+    assert authenticated_user is user
+    assert websocket.state.user is user
+    assert websocket.state.auth_source == "session"
+    assert websocket.state.iam_session_id == "opaque-local-session-id"
 
 
 def test_browser_stream_seed_applies_when_current_url_differs():
@@ -326,6 +426,14 @@ def test_validate_browser_url_rejects_private_and_non_http(monkeypatch):
 
     # Isolate from any local config.yaml that may set allow_private_addresses.
     monkeypatch.setattr(browser_tools, "_get_tool_config", lambda _tool_name: {})
+    # Keep the public-host allow case deterministic and independent of the
+    # machine's DNS/proxy configuration; private literal-IP cases above still
+    # exercise the real address classifier.
+    monkeypatch.setattr(
+        browser_tools,
+        "_resolve_host_addresses",
+        lambda _hostname: [ipaddress.ip_address("93.184.216.34")],
+    )
 
     assert validate_browser_url("http://169.254.169.254/latest/meta-data/") is not None
     assert validate_browser_url("http://127.0.0.1:8001/") is not None

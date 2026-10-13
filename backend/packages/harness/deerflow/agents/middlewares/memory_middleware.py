@@ -10,6 +10,10 @@ from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from deerflow.agents.memory import get_memory_manager
+from deerflow.agents.memory.authorization import (
+    is_memory_scope_authorized,
+    is_memory_scope_authorized_sync,
+)
 from deerflow.config.memory_config import get_memory_config
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, resolve_trace_id
@@ -93,6 +97,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
             return None
         thread_id, messages, user_id, trace_id = add_args
 
+        runtime_context = runtime.context if isinstance(runtime.context, dict) else {}
+        if not is_memory_scope_authorized_sync(
+            runtime_context,
+            local_user_id=user_id,
+            actions=("read", "write"),
+        ):
+            logger.info("Skipping passive memory update because authorization was denied")
+            return None
+
         # Hand raw messages to the manager; the backend filters to user + final-AI
         # turns, validates, detects correction/reinforcement, and enqueues.
         get_memory_manager().add(
@@ -112,6 +125,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         if add_args is None:
             return None
         thread_id, messages, user_id, trace_id = add_args
+        runtime_context = runtime.context if isinstance(runtime.context, dict) else {}
+        if not await is_memory_scope_authorized(
+            runtime_context,
+            local_user_id=user_id,
+            actions=("read", "write"),
+        ):
+            logger.info("Skipping passive memory update because authorization was denied")
+            return None
         manager = await asyncio.to_thread(get_memory_manager)
         await manager.aadd(
             thread_id,

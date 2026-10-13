@@ -48,6 +48,7 @@ import {
 import { getAPIClient } from "@/core/api";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { useProjects } from "@/core/projects";
@@ -75,6 +76,7 @@ import {
 } from "@/core/threads/utils";
 import { env } from "@/env";
 import { isIMEComposing } from "@/lib/ime";
+import { buildThreadShareUrl } from "@/product/thread-share-url";
 
 import { MoveToProjectMenu, NewProjectDialog } from "./move-to-project-menu";
 import { ThreadChannelIcon } from "./thread-channel-source";
@@ -111,12 +113,9 @@ export function ThreadSidebarItem({
   // `onError` always fires. Same ownership-hoisting precedent as the
   // `NewProjectDialog` below.
   const { mutate: moveThreadToProject } = useMoveThreadToProject({
-    onError: (error) => {
-      toast.error(
-        error instanceof Error && error.message
-          ? error.message
-          : t.projects.moveFailed,
-      );
+    onError: () => {
+      // 项目移动失败可能暴露 Gateway detail；仅展示本地化产品文案。
+      toast.error(t.projects.moveFailed);
     },
   });
 
@@ -141,12 +140,9 @@ export function ThreadSidebarItem({
             setRenameDialogOpen(false);
             setRenameValue("");
           },
-          onError: (error) => {
-            toast.error(
-              error instanceof Error && error.message
-                ? error.message
-                : t.common.renameFailed,
-            );
+          onError: () => {
+            // 后端异常细节只用于诊断，重命名失败显示固定本地化提示。
+            toast.error(t.common.renameFailed);
           },
         },
       );
@@ -160,24 +156,19 @@ export function ThreadSidebarItem({
         pinned: !isThreadPinned(thread),
       },
       {
-        onError: (err) => {
-          toast.error(
-            err instanceof Error ? err.message : t.chats.pinChatFailed,
-          );
+        onError: () => {
+          // 置顶失败不把 Gateway detail 直接展示给用户。
+          toast.error(t.chats.pinChatFailed);
         },
       },
     );
   }, [t.chats.pinChatFailed, thread, updatePinnedThread]);
 
   const handleShare = useCallback(async () => {
-    // Always use Vercel URL for sharing so others can access
-    const VERCEL_URL = "https://deer-flow-v2.vercel.app";
-    const isLocalhost =
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1";
-    // On localhost: use Vercel URL; On production: use current origin
-    const baseUrl = isLocalhost ? VERCEL_URL : window.location.origin;
-    const shareUrl = `${baseUrl}${pathOfThread(thread)}`;
+    const shareUrl = buildThreadShareUrl(
+      window.location.origin,
+      pathOfThread(thread),
+    );
     try {
       const didCopy = await writeTextToClipboard(shareUrl);
       if (!didCopy) {
@@ -355,6 +346,7 @@ export function ThreadSidebarItem({
           </DialogHeader>
           <div className="py-4">
             <Input
+              aria-label={t.common.rename}
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               placeholder={t.common.rename}
@@ -390,6 +382,8 @@ export function ThreadSidebarItem({
 
 export function RecentChatList() {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
   const pathname = usePathname();
   const { thread_id: threadIdFromPath } = useParams<{
     thread_id: string;
@@ -406,10 +400,13 @@ export function RecentChatList() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteThreads({
-    archived:
-      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
-  });
+  } = useInfiniteThreads(
+    {
+      archived:
+        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
+    },
+    { enabled: access.canReadThreads },
+  );
   // Project discovery doubles as the exclusion oracle for grouped mode: an
   // assigned thread may leave this flat list ONLY when its project group can
   // actually render in `ProjectsSection`. Any query error (or not-yet-loaded
@@ -420,8 +417,13 @@ export function RecentChatList() {
   // flat mode the results are read by nobody, so keep the two project round
   // trips off the page load (`GroupedProjectList` fetches these same keys
   // when grouped mode is on, and TanStack dedupes the observers).
-  const activeProjectsQuery = useProjects("active", { enabled: grouped });
-  const archivedProjectsQuery = useProjects("archived", { enabled: grouped });
+  const canDiscoverProjectGroups = grouped && access.canReadProjects;
+  const activeProjectsQuery = useProjects("active", {
+    enabled: canDiscoverProjectGroups,
+  });
+  const archivedProjectsQuery = useProjects("archived", {
+    enabled: canDiscoverProjectGroups,
+  });
   const knownProjectIds = useMemo(() => {
     const activeProjects = activeProjectsQuery.data;
     const archivedProjects = archivedProjectsQuery.data;

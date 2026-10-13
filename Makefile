@@ -1,6 +1,6 @@
 # DeerFlow - Unified Development Environment
 
-.PHONY: help config config-upgrade check check-agent-guidance install extension-install extension-upgrade extension-list extension-enable extension-disable extension-remove setup doctor support-bundle detect-thread-boundaries detect-blocking-io dev dev-daemon start start-daemon nginx stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway docker-logs-redis setup-sandbox
+.PHONY: help config config-upgrade check check-agent-guidance release-manifest-check install extension-install extension-upgrade extension-list extension-enable extension-disable extension-remove setup doctor support-bundle detect-thread-boundaries detect-blocking-io dev dev-daemon start start-daemon nginx stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway docker-logs-redis setup-sandbox
 
 BASH ?= bash
 BACKEND_UV_RUN = cd backend && uv run
@@ -30,6 +30,7 @@ help:
 	@echo "  make config-upgrade  - Merge new fields from config.example.yaml into config.yaml"
 	@echo "  make check           - Check if all required tools are installed"
 	@echo "  make check-agent-guidance - Validate scoped AGENTS.md file and chain budgets"
+	@echo "  make release-manifest-check RELEASE_MANIFEST=... - Validate a filled Flow Desk release record"
 	@echo "  make detect-thread-boundaries - Inventory backend executor/thread/event-loop boundaries"
 	@echo "  make detect-blocking-io        - Inventory blocking IO that may block the backend event loop"
 	@echo "  make install         - Install all dependencies (frontend + backend + pre-commit hooks)"
@@ -89,6 +90,11 @@ check:
 
 check-agent-guidance:
 	@$(PYTHON) ./scripts/check_agent_guidance.py
+
+# Validate an operator-filled, secret-free deployment release record.
+release-manifest-check:
+	$(if $(and $(filter command line,$(origin RELEASE_MANIFEST)),$(strip $(value RELEASE_MANIFEST))),,$(error usage: make release-manifest-check RELEASE_MANIFEST=<release.json>))
+	@$(PYTHON) ./scripts/verify_release_manifest.py "$(RELEASE_MANIFEST)"
 
 # Install all dependencies
 install:

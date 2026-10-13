@@ -6,7 +6,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from app.gateway.authz import require_permission
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import get_auth_context, require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_config, get_project_repo, get_thread_store
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.projects_config import ProjectsConfig
@@ -117,15 +118,36 @@ def _validate_instructions_length(instructions: str | None) -> None:
 @require_permission("projects", "write")
 async def create_project(body: ProjectCreateRequest, request: Request) -> ProjectResponse:
     _validate_instructions_length(body.instructions)
+    user = get_auth_context(request).require_user()
+    # Data scopes must authorize both the write and the full project payload
+    # returned by this route before a row is created.
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write")
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read")
     repo = get_project_repo(request)
-    return _to_response(await repo.create(name=body.name, instructions=body.instructions, presentation=body.presentation))
+    response = _to_response(
+        await repo.create(
+            name=body.name,
+            instructions=body.instructions,
+            presentation=body.presentation,
+            user_id=str(user.id),
+        )
+    )
+    await notify_action_audit(
+        request,
+        action="project.create",
+        resource_type="project",
+        resource_id=response.id,
+    )
+    return response
 
 
 @router.get("", response_model=ProjectListResponse)
 @require_permission("projects", "read")
 async def list_projects(request: Request, status: ProjectStatus | None = None) -> ProjectListResponse:
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read")
     repo = get_project_repo(request)
-    return ProjectListResponse(projects=[_to_response(r) for r in await repo.list(status=status)])
+    return ProjectListResponse(projects=[_to_response(r) for r in await repo.list(status=status, user_id=str(user.id))])
 
 
 @router.get("/config", response_model=ProjectsConfigResponse)
@@ -146,9 +168,11 @@ async def get_projects_config(request: Request, config: AppConfig = Depends(get_
 @router.get("/{project_id}", response_model=ProjectResponse)
 @require_permission("projects", "read")
 async def get_project(project_id: str, request: Request) -> ProjectResponse:
-    row = await get_project_repo(request).get(project_id)
+    user = get_auth_context(request).require_user()
+    row = await get_project_repo(request).get(project_id, user_id=str(user.id))
     if row is None:
         raise _not_found()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", resource_id=project_id)
     return _to_response(row)
 
 
@@ -156,43 +180,91 @@ async def get_project(project_id: str, request: Request) -> ProjectResponse:
 @require_permission("projects", "write")
 async def patch_project(project_id: str, body: ProjectPatchRequest, request: Request) -> ProjectResponse:
     _validate_instructions_length(body.instructions)
-    row = await get_project_repo(request).patch(project_id, name=body.name, instructions=body.instructions, presentation=body.presentation)
+    user = get_auth_context(request).require_user()
+    # The route returns the updated row, so require both mutation and read
+    # scopes before touching the owner-scoped repository.
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
+    row = await get_project_repo(request).patch(
+        project_id,
+        name=body.name,
+        instructions=body.instructions,
+        presentation=body.presentation,
+        user_id=str(user.id),
+    )
     if row is None:
         raise _not_found()
-    return _to_response(row)
+    response = _to_response(row)
+    await notify_action_audit(
+        request,
+        action="project.update",
+        resource_type="project",
+        resource_id=project_id,
+    )
+    return response
 
 
 @router.post("/{project_id}/archive", response_model=ProjectResponse)
 @require_permission("projects", "write")
 async def archive_project(project_id: str, request: Request) -> ProjectResponse:
-    row = await get_project_repo(request).set_status(project_id, "archived")
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
+    row = await get_project_repo(request).set_status(project_id, "archived", user_id=str(user.id))
     if row is None:
         raise _not_found()
-    return _to_response(row)
+    response = _to_response(row)
+    await notify_action_audit(
+        request,
+        action="project.archive",
+        resource_type="project",
+        resource_id=project_id,
+    )
+    return response
 
 
 @router.post("/{project_id}/restore", response_model=ProjectResponse)
 @require_permission("projects", "write")
 async def restore_project(project_id: str, request: Request) -> ProjectResponse:
-    row = await get_project_repo(request).set_status(project_id, "active")
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=project_id)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=project_id)
+    row = await get_project_repo(request).set_status(project_id, "active", user_id=str(user.id))
     if row is None:
         raise _not_found()
-    return _to_response(row)
+    response = _to_response(row)
+    await notify_action_audit(
+        request,
+        action="project.restore",
+        resource_type="project",
+        resource_id=project_id,
+    )
+    return response
 
 
 @router.delete("/{project_id}", status_code=204)
 @require_permission("projects", "delete")
 async def delete_project(project_id: str, request: Request) -> None:
-    if not await get_project_repo(request).delete(project_id):
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:delete", action="delete", resource_id=project_id)
+    if not await get_project_repo(request).delete(project_id, user_id=str(user.id)):
         raise _not_found()
+    await notify_action_audit(
+        request,
+        action="project.delete",
+        resource_type="project",
+        resource_id=project_id,
+    )
 
 
 @router.get("/{project_id}/threads", response_model=list[ProjectThreadResponse])
 @require_permission("projects", "read")
 @require_permission("threads", "read")
 async def list_project_threads(project_id: str, request: Request, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)) -> list[ProjectThreadResponse]:
-    if await get_project_repo(request).get(project_id) is None:
+    user = get_auth_context(request).require_user()
+    if await get_project_repo(request).get(project_id, user_id=str(user.id)) is None:
         raise _not_found()
+    await require_iam_data_scope_for_request(request, user, target="projects:read", resource_id=project_id)
     # Active members only, mirroring the sidebar's `archived: false` lists:
     # an archived chat leaves the project's pages the same way it leaves the
     # sidebar and returns only via the global Archived tab.
@@ -201,6 +273,7 @@ async def list_project_threads(project_id: str, request: Request, limit: int = Q
         archived=False,
         limit=limit,
         offset=offset,
+        user_id=str(user.id),
     )
     return [
         ProjectThreadResponse(

@@ -1,7 +1,7 @@
 "use client";
 
 import { LoaderIcon, RotateCcw, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,10 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { formatArtifactBytes } from "@/components/workspace/artifacts/artifact-file-preview";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import {
   PROJECTS_CONFIG_DEFAULT,
   useProjects,
@@ -38,10 +41,6 @@ import {
 } from "@/core/trash";
 import { getFileIcon } from "@/core/utils/files";
 
-function errorToastMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
 /** Remaining whole days of the retention window (spec §8.3); the effective
  * window comes from ``GET /api/projects/config`` — expired rows are swept
  * server-side. */
@@ -57,8 +56,12 @@ function retentionDaysLeft(trashedAt: string, retentionDays: number): number {
  */
 export function TrashView() {
   const { t } = useI18n();
-  const trashQuery = useInfiniteTrashDocuments();
-  const configQuery = useProjectsConfig();
+  const { user } = useAuth();
+  const access = getProjectPermissionAccess(user);
+  const trashQuery = useInfiniteTrashDocuments({
+    enabled: access.canReadProjects,
+  });
+  const configQuery = useProjectsConfig({ enabled: access.canReadProjects });
   const retentionDays =
     configQuery.data?.trash_retention_days ??
     PROJECTS_CONFIG_DEFAULT.trash_retention_days;
@@ -67,13 +70,30 @@ export function TrashView() {
   const documentsTotal = trashQuery.data?.pages.at(-1)?.total ?? 0;
   const [purgeTarget, setPurgeTarget] = useState<TrashDocument | null>(null);
   const [emptyConfirmOpen, setEmptyConfirmOpen] = useState(false);
+  const purgeDocument = usePurgeDocument();
   const emptyTrash = useEmptyTrash();
+
+  useEffect(() => {
+    if (
+      (!access.canDeleteProjects || !access.canReadProjects) &&
+      !purgeDocument.isPending &&
+      !emptyTrash.isPending
+    ) {
+      setPurgeTarget(null);
+      setEmptyConfirmOpen(false);
+    }
+  }, [
+    access.canDeleteProjects,
+    access.canReadProjects,
+    emptyTrash.isPending,
+    purgeDocument.isPending,
+  ]);
 
   return (
     <div className="mx-auto flex w-full max-w-(--container-width-md) flex-col gap-6 p-6 pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">{t.trash.title}</h1>
-        {documents.length > 0 && (
+        {access.canDeleteProjects && documents.length > 0 && (
           <Button
             variant="destructive"
             size="sm"
@@ -86,7 +106,14 @@ export function TrashView() {
         )}
       </div>
 
-      {trashQuery.isError ? (
+      {!access.canReadProjects ? (
+        <p
+          role="alert"
+          className="text-muted-foreground py-16 text-center text-sm"
+        >
+          {t.agents.permissionRequired(PERMISSIONS.PROJECTS_READ)}
+        </p>
+      ) : trashQuery.isError ? (
         <div role="alert" className="p-4 text-center text-sm">
           <p>{t.trash.loadFailed}</p>
           <Button
@@ -120,6 +147,8 @@ export function TrashView() {
                 key={document.id}
                 document={document}
                 retentionDays={retentionDays}
+                canRestore={access.canWriteProjects}
+                canDelete={access.canDeleteProjects}
                 onPurge={() => setPurgeTarget(document)}
               />
             ))}
@@ -146,105 +175,130 @@ export function TrashView() {
         </>
       )}
 
-      <Dialog
-        open={purgeTarget !== null}
-        onOpenChange={(open) => !open && setPurgeTarget(null)}
-      >
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>{t.trash.deletePermanentlyTitle}</DialogTitle>
-            <DialogDescription>
-              {purgeTarget &&
-                t.trash.deletePermanentlyConfirm(purgeTarget.name)}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPurgeTarget(null)}>
-              {t.common.cancel}
-            </Button>
-            <PurgeConfirmButton
-              target={purgeTarget}
-              onDone={() => setPurgeTarget(null)}
-            />
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {access.canDeleteProjects || purgeDocument.isPending ? (
+        <Dialog
+          open={purgeTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && purgeDocument.isPending) return;
+            if (!open) setPurgeTarget(null);
+          }}
+        >
+          <DialogContent
+            className="sm:max-w-[425px]"
+            showCloseButton={!purgeDocument.isPending}
+            aria-busy={purgeDocument.isPending}
+            onEscapeKeyDown={(event) => {
+              if (purgeDocument.isPending) event.preventDefault();
+            }}
+            onPointerDownOutside={(event) => {
+              if (purgeDocument.isPending) event.preventDefault();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{t.trash.deletePermanentlyTitle}</DialogTitle>
+              <DialogDescription>
+                {purgeTarget &&
+                  t.trash.deletePermanentlyConfirm(purgeTarget.name)}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={purgeDocument.isPending}
+                onClick={() => setPurgeTarget(null)}
+              >
+                {t.common.cancel}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={purgeDocument.isPending || purgeTarget === null}
+                onClick={() => {
+                  if (!purgeTarget) return;
+                  purgeDocument.mutate(purgeTarget.id, {
+                    onSuccess: () => setPurgeTarget(null),
+                    onError: () => {
+                      toast.error(t.trash.purgeFailed);
+                    },
+                  });
+                }}
+              >
+                {purgeDocument.isPending
+                  ? t.common.loading
+                  : t.trash.deletePermanently}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
-      <Dialog open={emptyConfirmOpen} onOpenChange={setEmptyConfirmOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>{t.trash.emptyTrashTitle}</DialogTitle>
-            <DialogDescription>
-              {t.trash.emptyTrashConfirm(documentsTotal)}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setEmptyConfirmOpen(false)}
-            >
-              {t.common.cancel}
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={emptyTrash.isPending}
-              onClick={() =>
-                emptyTrash.mutate(undefined, {
-                  onSuccess: () => setEmptyConfirmOpen(false),
-                  onError: (error) => {
-                    toast.error(
-                      errorToastMessage(error, t.trash.emptyTrashFailed),
-                    );
-                  },
-                })
-              }
-            >
-              {t.trash.emptyTrash}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {access.canDeleteProjects || emptyTrash.isPending ? (
+        <Dialog
+          open={emptyConfirmOpen}
+          onOpenChange={(open) => {
+            // 清空请求已经提交后，关闭确认框不会中止服务端删除。
+            if (!open && emptyTrash.isPending) return;
+            setEmptyConfirmOpen(open);
+          }}
+        >
+          <DialogContent
+            className="sm:max-w-[425px]"
+            showCloseButton={!emptyTrash.isPending}
+            aria-busy={emptyTrash.isPending}
+            onEscapeKeyDown={(event) => {
+              if (emptyTrash.isPending) event.preventDefault();
+            }}
+            onPointerDownOutside={(event) => {
+              if (emptyTrash.isPending) event.preventDefault();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{t.trash.emptyTrashTitle}</DialogTitle>
+              <DialogDescription>
+                {t.trash.emptyTrashConfirm(documentsTotal)}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={emptyTrash.isPending}
+                onClick={() => setEmptyConfirmOpen(false)}
+              >
+                {t.common.cancel}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={emptyTrash.isPending}
+                onClick={() =>
+                  emptyTrash.mutate(undefined, {
+                    onSuccess: () => setEmptyConfirmOpen(false),
+                    onError: () => {
+                      // 回收站接口异常不直接展示 detail，避免将服务端诊断信息带到用户界面。
+                      toast.error(t.trash.emptyTrashFailed);
+                    },
+                  })
+                }
+              >
+                {emptyTrash.isPending ? t.common.loading : t.trash.emptyTrash}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </div>
-  );
-}
-
-function PurgeConfirmButton({
-  target,
-  onDone,
-}: {
-  target: TrashDocument | null;
-  onDone: () => void;
-}) {
-  const { t } = useI18n();
-  const purgeDocument = usePurgeDocument();
-  return (
-    <Button
-      variant="destructive"
-      disabled={purgeDocument.isPending || target === null}
-      onClick={() => {
-        if (!target) {
-          return;
-        }
-        purgeDocument.mutate(target.id, {
-          onSuccess: onDone,
-          onError: (error) => {
-            toast.error(errorToastMessage(error, t.trash.purgeFailed));
-          },
-        });
-      }}
-    >
-      {t.trash.deletePermanently}
-    </Button>
   );
 }
 
 function TrashDocumentRow({
   document,
   retentionDays,
+  canRestore,
+  canDelete,
   onPurge,
 }: {
   document: TrashDocument;
   retentionDays: number;
+  canRestore: boolean;
+  canDelete: boolean;
   onPurge: () => void;
 }) {
   const { t } = useI18n();
@@ -253,7 +307,12 @@ function TrashDocumentRow({
   // archived, so the row offers the active-project picker (§8.2, §11).
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  useEffect(() => {
+    if (!canRestore && !restoreDocument.isPending) setPickerOpen(false);
+  }, [canRestore, restoreDocument.isPending]);
+
   const restore = (projectId?: string) => {
+    if (!canRestore) return;
     restoreDocument.mutate(
       { documentId: document.id, projectId },
       {
@@ -275,7 +334,8 @@ function TrashDocumentRow({
             setPickerOpen(true);
             return;
           }
-          toast.error(errorToastMessage(error, t.trash.restoreFailed));
+          // 已知冲突由上方稳定错误类型映射；其他异常统一使用本地化提示。
+          toast.error(t.trash.restoreFailed);
         },
       },
     );
@@ -299,53 +359,82 @@ function TrashDocumentRow({
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={restoreDocument.isPending}
-          onClick={() => restore()}
-        >
-          <RotateCcw className="size-4" />
-          {t.trash.restore}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onPurge}>
-          <Trash2 className="size-4" />
-          {t.trash.deletePermanently}
-        </Button>
+        {canRestore ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={restoreDocument.isPending}
+            onClick={() => restore()}
+          >
+            <RotateCcw className="size-4" />
+            {t.trash.restore}
+          </Button>
+        ) : null}
+        {canDelete ? (
+          <Button variant="ghost" size="sm" onClick={onPurge}>
+            <Trash2 className="size-4" />
+            {t.trash.deletePermanently}
+          </Button>
+        ) : null}
       </div>
 
-      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>{t.trash.restorePickProjectTitle}</DialogTitle>
-            <DialogDescription>
-              {t.trash.restorePickProjectHint}
-            </DialogDescription>
-          </DialogHeader>
-          <RestoreProjectPicker
-            isPending={restoreDocument.isPending}
-            onPick={(projectId) => restore(projectId)}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPickerOpen(false)}>
-              {t.common.cancel}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {canRestore || restoreDocument.isPending ? (
+        <Dialog
+          open={pickerOpen}
+          onOpenChange={(open) => {
+            if (!open && restoreDocument.isPending) return;
+            setPickerOpen(open);
+          }}
+        >
+          <DialogContent
+            className="sm:max-w-[425px]"
+            showCloseButton={!restoreDocument.isPending}
+            aria-busy={restoreDocument.isPending}
+            onEscapeKeyDown={(event) => {
+              if (restoreDocument.isPending) event.preventDefault();
+            }}
+            onPointerDownOutside={(event) => {
+              if (restoreDocument.isPending) event.preventDefault();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{t.trash.restorePickProjectTitle}</DialogTitle>
+              <DialogDescription>
+                {t.trash.restorePickProjectHint}
+              </DialogDescription>
+            </DialogHeader>
+            <RestoreProjectPicker
+              enabled={canRestore}
+              isPending={restoreDocument.isPending}
+              onPick={(projectId) => restore(projectId)}
+            />
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={restoreDocument.isPending}
+                onClick={() => setPickerOpen(false)}
+              >
+                {t.common.cancel}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </li>
   );
 }
 
 function RestoreProjectPicker({
+  enabled,
   isPending,
   onPick,
 }: {
+  enabled: boolean;
   isPending: boolean;
   onPick: (projectId: string) => void;
 }) {
   const { t } = useI18n();
-  const projectsQuery = useProjects("active");
+  const projectsQuery = useProjects("active", { enabled });
   const projects = projectsQuery.data ?? [];
   if (projectsQuery.isLoading) {
     return (

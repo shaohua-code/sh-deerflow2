@@ -2,6 +2,15 @@
 
 This directory owns memory capture, storage, retrieval, prompt injection, and model-driven memory tools.
 
+The Harness exposes `set_gateway_memory_authorizers()` as a host hook. Gateway
+registers model-use and memory-write callbacks during startup, before the
+singleton manager is constructed or warmed. Keep this dependency one-way:
+Harness must not import `app.*`. In Central IAM mode, every background memory
+model call rechecks the active user/vault, exact `model:use`, and both
+`memory:read` and `memory:write` owner scopes immediately before provider
+dispatch; denial or callback failure fails closed. Standalone runs with no
+registered host callbacks retain local behavior.
+
 #### Main components
 
 - `manager.py` defines the backend-neutral `MemoryManager` contract.
@@ -34,6 +43,45 @@ Gateway memory routes use `_resolve_memory_user_id(request)`.
 Trusted IM requests can act for the connection owner.
 Other requests use `get_effective_user_id()`.
 Only `AuthMiddleware` can authorize the internal owner header.
+
+When Central IAM is enabled, `authorization.py` checks the server-bound run
+capability before prompt memory injection, memory tools or passive-write queue
+admission touch the manager. Prompt injection/search require `memory:read`;
+add/update require read+write; delete requires read+delete; after-agent capture
+and summarization flush require read+write. All IAM scope
+branches must be exact owner/self constraints for the verified subject and
+tenant, and the runtime local `user_id` must equal the manager's storage owner.
+Never accept credential-shaped data from serialized runtime context. Local
+RBAC/no-auth behavior remains unchanged. The queue retains its existing
+conversation metadata and local owner ID; it must not carry IAM tokens or
+authorization capabilities.
+Before each `apply_changes()`/`save()` commit, including every optimistic
+revision retry, `MemoryUpdater` invokes the host `before_memory_write` callback.
+The Gateway host callback reloads the active user and matching vault session on
+the serving loop and requires current read+write owner/self scopes. Missing
+loop/session, provider errors, broad scopes, and timeouts fail closed. The
+default standalone callback preserves non-Gateway behavior. A queue entry
+already removed from `_items` still cannot be interrupted, but its commit is
+rejected if authorization has been revoked before persistence.
+The commit boundary is covered by tests for both storage APIs, denied writes,
+and a revocation arriving after a revision conflict; Gateway bridge tests cover
+active user/vault reload, exact owner scopes, broad-scope rejection, and queue
+credential-field absence.
+
+When Gateway Central IAM usage metering is enabled, `LangfuseMemoryCallbacks`
+asks the host usage-callback factory immediately before DeerMem's model call.
+The factory reloads the active user and exact OIDC vault session on the Gateway
+loop and pins the configured model profile. Attach that callback only to the
+current LangChain invocation; after the terminal result, remove and close it
+before sending the invoke config to extension observers. If metering is disabled,
+do not create a callback. If enabled admission fails, do not call the Provider.
+The debounce queue must continue to carry only local IDs and never credentials
+or IAM capabilities.
+
+后台产品数据导出运行在请求上下文之外，必须把任务持久化的 owner ID 显式传给
+`MemoryManager.get_memory(user_id=...)`；不得依赖线程 ContextVar 或进程默认用户。
+当前记忆导出遵循所选 backend 的 owner-scoped `get_memory` 语义，并经过 Gateway/产品双层
+字段白名单；由于 remote backend 的 bucket/filter 语义不同，用户说明要明确“范围随配置后端变化”。
 
 No-auth mode uses `DEFAULT_USER_ID`, which is `"default"`.
 An absolute `storage_path` opts out of the default per-user root.

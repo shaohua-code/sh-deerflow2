@@ -1,0 +1,30 @@
+# Optional product deployment overlay. The base stack remains suitable for
+# local development; this file adds a durable PostgreSQL volume for production.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flow-desk-postgres
+    environment:
+      POSTGRES_DB: deerflow
+      POSTGRES_USER: deerflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+    volumes:
+      - product-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deerflow -d deerflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  gateway:
+    environment:
+      - DATABASE_URL=postgresql://deerflow:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}@postgres:5432/deerflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  product-postgres-data:

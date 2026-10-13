@@ -18,6 +18,8 @@ import {
   useDeleteProjectDocument,
   useInfiniteProjectDocuments,
   useInfiniteProjectThreadFiles,
+  useProject,
+  useProjects,
   useProjectsConfig,
   usePromoteThreadFile,
   useUploadProjectDocument,
@@ -118,16 +120,110 @@ test("useProjectsConfig fetches the server limits under the config key", async (
   const client = makeClient();
   const body = { instructions_max_bytes: 16384, trash_retention_days: 7 };
   mocks.fetch.mockResolvedValue(new Response(JSON.stringify(body)));
-  const { result, unmount } = renderHook(() => useProjectsConfig(), {
-    wrapper: wrapperFor(client),
-  });
+  const { result, unmount } = renderHook(
+    () => useProjectsConfig({ enabled: true }),
+    { wrapper: wrapperFor(client) },
+  );
   try {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     const [url] = mocks.fetch.mock.calls[0] as [string];
     expect(url).toBe("/backend/api/projects/config");
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(client.getQueryData(["projects", "config"])).toEqual(body);
   } finally {
     unmount();
+    client.clear();
+  }
+});
+
+test("useProjectsConfig hides and removes cached limits without projects:read", async () => {
+  const client = makeClient();
+  client.setQueryData(["projects", "config"], {
+    instructions_max_bytes: 16384,
+    trash_retention_days: 7,
+  });
+
+  const { result, unmount } = renderHook(
+    () => useProjectsConfig({ enabled: false }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.error).toBeNull();
+    expect(result.current.isLoading).toBe(false);
+    await waitFor(() =>
+      expect(client.getQueryData(["projects", "config"])).toBeUndefined(),
+    );
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("useProjectsConfig aborts a read after projects:read is withdrawn", async () => {
+  const client = makeClient();
+  let requestSignal: AbortSignal | null | undefined;
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  );
+
+  const { result, rerender, unmount } = renderHook(
+    ({ enabled }: { enabled: boolean }) => useProjectsConfig({ enabled }),
+    { initialProps: { enabled: true }, wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    rerender({ enabled: false });
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(["projects", "config"])).toBeUndefined(),
+    );
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("project list and detail queries mask cached data when disabled", () => {
+  const client = makeClient();
+  const project = {
+    id: "proj-1",
+    name: "Private project",
+    instructions: "private instructions",
+    presentation: {},
+    status: "active",
+    created_at: "2026-09-10T00:00:00Z",
+    updated_at: "2026-09-10T00:00:00Z",
+  };
+  client.setQueryData(["projects", "detail", "proj-1"], project);
+  client.setQueryData(["projects", { status: "active" }], [project]);
+
+  const detail = renderHook(() => useProject("proj-1", { enabled: false }), {
+    wrapper: wrapperFor(client),
+  });
+  const list = renderHook(() => useProjects("active", { enabled: false }), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    expect(detail.result.current.data).toBeUndefined();
+    expect(list.result.current.data).toBeUndefined();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    detail.unmount();
+    list.unmount();
     client.clear();
   }
 });

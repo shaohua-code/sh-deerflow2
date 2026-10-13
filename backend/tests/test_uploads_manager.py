@@ -107,6 +107,42 @@ class TestDeduplicateFilename:
         seen = {"data.txt"}
         assert claim_unique_filename("data.txt", seen) == "data_1.txt"
 
+    def test_custom_byte_limit_truncates_without_losing_extension(self):
+        seen: set[str] = set()
+        name = "a" * 251 + ".txt"
+
+        claimed = claim_unique_filename(name, seen, max_bytes=40)
+
+        assert claimed.endswith(".txt")
+        assert len(claimed.encode("utf-8")) <= 40
+        assert claimed in seen
+
+    def test_custom_byte_limit_keeps_collision_suffixes_within_limit(self):
+        name = "a" * 251 + ".txt"
+        seen: set[str] = set()
+
+        first = claim_unique_filename(name, seen, max_bytes=40)
+        second = claim_unique_filename(name, seen, max_bytes=40)
+        third = claim_unique_filename(name, seen, max_bytes=40)
+
+        assert first.endswith(".txt")
+        assert second.endswith("_1.txt")
+        assert third.endswith("_2.txt")
+        assert len({first, second, third}) == 3
+        assert all(len(filename.encode("utf-8")) <= 40 for filename in (first, second, third))
+
+    def test_custom_byte_limit_preserves_utf8_boundaries(self):
+        seen: set[str] = set()
+
+        claimed = claim_unique_filename("深" * 85, seen, max_bytes=40)
+
+        assert len(claimed.encode("utf-8")) <= 40
+        claimed.encode("utf-8").decode("utf-8")
+
+    def test_custom_byte_limit_never_truncates_a_filename_into_a_dot_path(self):
+        with pytest.raises(ValueError, match="too small"):
+            claim_unique_filename("...", set(), max_bytes=1)
+
 
 # ---------------------------------------------------------------------------
 # validate_path_traversal

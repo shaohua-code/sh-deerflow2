@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.gateway.authz import require_permission
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
 from app.gateway.pagination import trim_run_message_page
 from app.gateway.run_models import RunCreateRequest
@@ -30,6 +30,16 @@ def _resolve_thread_id(body: RunCreateRequest) -> str:
     return resolve_thread_id(thread_id)
 
 
+async def _require_stateless_run_data_scope(request: Request) -> None:
+    """Require the Central IAM row-scope decision before either stateless run path."""
+    await require_iam_data_scope_for_request(
+        request,
+        getattr(request.state, "user", None),
+        target="runs:create",
+        action="create",
+    )
+
+
 @router.post("/stream")
 @require_permission("runs", "create")
 async def stateless_stream(body: RunCreateRequest, request: Request) -> StreamingResponse:
@@ -39,6 +49,7 @@ async def stateless_stream(body: RunCreateRequest, request: Request) -> Streamin
     on the given thread so that conversation history is preserved.
     Otherwise a new temporary thread is created.
     """
+    await _require_stateless_run_data_scope(request)
     thread_id = _resolve_thread_id(body)
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)
@@ -65,6 +76,7 @@ async def stateless_wait(body: RunCreateRequest, request: Request) -> dict:
     on the given thread so that conversation history is preserved.
     Otherwise a new temporary thread is created.
     """
+    await _require_stateless_run_data_scope(request)
     thread_id = _resolve_thread_id(body)
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)

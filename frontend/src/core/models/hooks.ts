@@ -5,6 +5,7 @@ import { UnauthorizedError } from "@/core/api/errors";
 import { loadModels } from "./api";
 
 export const MODELS_QUERY_KEY = ["models"] as const;
+const MODELS_STALE_TIME_MS = 60_000;
 
 export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
   const { data, isLoading, isFetching, error, refetch } = useQuery({
@@ -15,13 +16,11 @@ export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
     // for transient startup or network errors.
     retry: (failureCount, queryError) =>
       !(queryError instanceof UnauthorizedError) && failureCount < 1,
-    refetchOnWindowFocus: false,
-    // Model config changes rarely and every subtask card mounts its own
-    // observer of this query; without a staleTime each newly-mounted card would
-    // refetch /api/models on mount (default staleTime: 0). Treat the list as
-    // fresh for the session so a long conversation with many cards issues one
-    // request, not one per card.
-    staleTime: Infinity,
+    refetchOnWindowFocus: true,
+    // Multiple Agent/subtask cards share one cached list. Keep it fresh for a
+    // short window to avoid duplicate requests, then recheck authorization on
+    // remount or window focus so IAM model grants can take effect in-session.
+    staleTime: MODELS_STALE_TIME_MS,
   });
   return {
     models: data?.models ?? [],

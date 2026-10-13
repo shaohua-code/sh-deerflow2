@@ -7,19 +7,24 @@ import re
 import secrets
 import time
 import urllib.parse
+from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, field_validator
 from starlette.responses import RedirectResponse
 
+from app.gateway.action_audit import notify_action_audit
 from app.gateway.auth import (
     UserResponse,
     create_access_token,
+    decode_token,
 )
 from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
+from app.gateway.auth.iam_token_vault import IamTokenVaultError, delete_iam_session, persist_iam_authentication
 from app.gateway.auth.oidc import OIDCError, OIDCService
 from app.gateway.auth.oidc_state import (
     OIDCStatePayload,
@@ -32,11 +37,12 @@ from app.gateway.auth.oidc_state import (
     set_state_cookie,
 )
 from app.gateway.auth.pat import PAT_MAX_NAME_LENGTH
+from app.gateway.auth.repositories.base import LastActiveAdminError
 from app.gateway.auth.session_cookie import ACCESS_TOKEN_COOKIE_NAME, SESSION_PERSISTENCE_COOKIE_NAME, set_session_cookie
 from app.gateway.auth.session_cookie_state import SKIP_AUTH_CSRF_COOKIE_STATE_ATTR
 from app.gateway.auth.user_provisioning import get_or_provision_oidc_user
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, _request_origin, auth_csrf_cookie_settings, generate_csrf_token, is_secure_request
-from app.gateway.deps import get_current_user_from_request, get_local_provider
+from app.gateway.deps import get_current_user_from_request, get_local_provider, require_admin_user
 from deerflow.config.auth_config import OIDCProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -149,6 +155,40 @@ class MessageResponse(BaseModel):
     """Generic message response."""
 
     message: str
+
+
+class AdminUserStatusPatch(BaseModel):
+    """The administrator may change account availability only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: StrictBool
+
+
+class AdminUserSummary(BaseModel):
+    """Safe account fields for the admin table; credentials stay server-side."""
+
+    id: str
+    email: str
+    system_role: str
+    is_active: bool
+    needs_setup: bool
+    created_at: datetime
+
+
+class AdminUserStatusChange(AdminUserSummary):
+    """Status-write result, including the outcome of stopping active runs."""
+
+    active_runs_stopped: int = 0
+    active_runs_stop_pending: int = 0
+    active_runs_stop_failed: int = 0
+
+
+class AdminUserPage(BaseModel):
+    users: list[AdminUserSummary]
+    total: int
+    limit: int
+    offset: int
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -480,12 +520,33 @@ async def register(request: Request, response: Response, body: RegisterRequest):
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request, remember_me=body.remember_me)
 
+    # 注册请求没有既有登录主体；使用成功创建后的主机账号 ID，审计不带邮箱或密码。
+    await notify_action_audit(
+        request,
+        action="auth.account.register",
+        resource_type="account",
+        resource_id=str(user.id),
+        actor_user_id=str(user.id),
+    )
+
     return UserResponse(id=str(user.id), email=user.email, system_role=user.system_role, oauth_provider=user.oauth_provider)
 
 
 @router.post("/logout", response_model=MessageResponse)
 async def logout(request: Request, response: Response):
     """Logout current user by clearing the cookie."""
+    access_token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+    if access_token:
+        from app.gateway.auth.errors import TokenError
+
+        payload = decode_token(access_token)
+        if not isinstance(payload, TokenError) and payload.sid:
+            try:
+                await delete_iam_session(user_id=payload.sub, session_id=payload.sid)
+            except Exception:
+                # Logout still clears the browser session; keep the failure
+                # generic because database exceptions can contain SQL detail.
+                logger.warning("Unable to clear an IAM token-vault session during logout")
     is_https = is_secure_request(request)
     response.delete_cookie(key=ACCESS_TOKEN_COOKIE_NAME, secure=is_https, samesite="lax")
     response.delete_cookie(key=CSRF_COOKIE_NAME, secure=is_https, samesite="strict")
@@ -550,6 +611,14 @@ async def change_password(request: Request, response: Response, body: ChangePass
 
     await provider.update_user(user)
 
+    # 只记录账户 ID 与固定动作码，不把新密码、密码摘要或可选邮箱写入产品审计。
+    await notify_action_audit(
+        request,
+        action="auth.password.change",
+        resource_type="account",
+        resource_id=str(user.id),
+    )
+
     # Re-issue cookie with new token_version
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request, remember_me=body.remember_me)
@@ -597,6 +666,158 @@ def require_session_source(request: Request) -> None:
 
     if getattr(request.state, "auth_source", None) != AUTH_SOURCE_SESSION:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This endpoint requires interactive session authentication")
+
+
+@router.get(
+    "/admin/users",
+    response_model=AdminUserPage,
+    dependencies=[Depends(require_session_source)],
+)
+async def list_admin_users(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+) -> AdminUserPage:
+    """List accounts for administrators without exposing password/token data."""
+    await require_admin_user(request, detail="Administrator access required")
+    provider = get_local_provider()
+    users = await provider.list_users(limit=limit, offset=offset)
+    return AdminUserPage(
+        users=[
+            AdminUserSummary(
+                id=str(user.id),
+                email=user.email,
+                system_role=user.system_role,
+                is_active=user.is_active,
+                needs_setup=user.needs_setup,
+                created_at=user.created_at,
+            )
+            for user in users
+        ],
+        total=await provider.count_users(),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.patch(
+    "/admin/users/{user_id}",
+    response_model=AdminUserStatusChange,
+    dependencies=[Depends(require_session_source)],
+)
+async def set_admin_user_status(
+    request: Request,
+    user_id: str,
+    body: AdminUserStatusPatch,
+) -> AdminUserSummary:
+    """Enable or disable an account; role changes remain outside this action."""
+    await require_admin_user(request, detail="Administrator access required")
+    actor = await get_current_user_from_request(request)
+    if not body.is_active and str(actor.id) == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Administrators cannot disable their own account",
+        )
+
+    try:
+        user = await get_local_provider().set_user_active(user_id, body.is_active)
+    except LastActiveAdminError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    active_runs_stopped = 0
+    active_runs_stop_pending = 0
+    active_runs_stop_failed = 0
+    if not body.is_active:
+        # 账号状态先持久化以阻止新认证，再中止已启动的 run。多 Gateway 部署
+        # 通过 RunManager 的持久租约传递取消信号，不能只清本进程中的任务。
+        run_manager = getattr(request.app.state, "run_manager", None)
+        if run_manager is None:
+            active_runs_stop_failed = 1
+            logger.error("Run manager is unavailable while disabling account %s", user_id)
+        else:
+            from deerflow.runtime import CancelOutcome
+
+            try:
+                outcomes = await run_manager.cancel_active_runs_for_user(str(user.id))
+            except Exception:
+                # 账号已停用；将未能检查/中止活动任务的情况显式返回管理员。
+                active_runs_stop_failed = 1
+                logger.exception("Unable to stop active runs for disabled account %s", user_id)
+            else:
+                for outcome in outcomes.values():
+                    if outcome in {CancelOutcome.cancelled, CancelOutcome.taken_over}:
+                        active_runs_stopped += 1
+                    elif outcome == CancelOutcome.requested:
+                        active_runs_stop_pending += 1
+                    elif outcome in {
+                        CancelOutcome.unknown,
+                        CancelOutcome.not_active_locally,
+                        CancelOutcome.lease_valid_elsewhere,
+                    }:
+                        active_runs_stop_failed += 1
+                if active_runs_stop_failed:
+                    logger.error(
+                        "Could not confirm cancellation for %d active run(s) belonging to disabled account %s",
+                        active_runs_stop_failed,
+                        user_id,
+                    )
+
+    # 只把操作者、目标账号 ID、固定动作码和 Gateway trace ID 交给扩展；
+    # 不记录邮箱、凭据或账号的其他个人资料。
+    from deerflow_extension_api import AdminActionEvent
+
+    from deerflow.extensions.notify import notify_admin_action
+    from deerflow.trace_context import ensure_trace_id
+
+    extensions = getattr(request.app.state, "extensions", None)
+    if extensions is not None:
+        await notify_admin_action(
+            extensions,
+            AdminActionEvent(
+                actor_user_id=str(actor.id),
+                action=("account.status.enable" if body.is_active else "account.status.disable"),
+                resource_type="account",
+                resource_id=str(user.id),
+                outcome="success",
+                occurred_at=datetime.now(UTC),
+                request_id=ensure_trace_id(),
+            ),
+        )
+
+    if not body.is_active:
+        # Pausing is best-effort across the separate task repository; every
+        # scheduler dispatch also checks the owner account before admission.
+        task_repo = getattr(request.app.state, "scheduled_task_repo", None)
+        if task_repo is not None:
+            try:
+                for task in await task_repo.list_by_user(user_id):
+                    if task.get("status") not in {"enabled", "running"}:
+                        continue
+                    await task_repo.pause_with_queue_cancellation(
+                        str(task["id"]),
+                        user_id=user_id,
+                        error="scheduled task paused because its owner account was disabled",
+                        now=datetime.now(UTC),
+                        allow_executing=True,
+                    )
+            except Exception:
+                # The account is already disabled, and the dispatch-time owner
+                # check remains authoritative if this convenience pause fails.
+                logger.exception("Unable to pause scheduled tasks for a disabled account")
+
+    return AdminUserStatusChange(
+        id=str(user.id),
+        email=user.email,
+        system_role=user.system_role,
+        is_active=user.is_active,
+        needs_setup=user.needs_setup,
+        created_at=user.created_at,
+        active_runs_stopped=active_runs_stopped,
+        active_runs_stop_pending=active_runs_stop_pending,
+        active_runs_stop_failed=active_runs_stop_failed,
+    )
 
 
 class PATCreateRequest(BaseModel):
@@ -675,6 +896,13 @@ async def create_pat(request: Request, body: PATCreateRequest):
         token_digest=pat_token_digest(token),
         expires_at=expires_at,
     )
+    # 只审计已持久化的令牌 ID；名称、权限范围和只返回一次的密钥都不进入事件。
+    await notify_action_audit(
+        request,
+        action="auth.pat.create",
+        resource_type="personal_access_token",
+        resource_id=str(record["id"]),
+    )
     return PATCreatedResponse(
         id=str(record["id"]),
         name=str(record["name"]),
@@ -704,6 +932,13 @@ async def revoke_pat(request: Request, pat_id: str):
     revoked = await get_pat_repo(request).revoke(pat_id, str(user.id))
     if not revoked:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+    # 令牌不存在或不属于当前用户时，上面已经返回 404；只有成功撤销才写审计。
+    await notify_action_audit(
+        request,
+        action="auth.pat.revoke",
+        resource_type="personal_access_token",
+        resource_id=pat_id,
+    )
     return MessageResponse(message="Token revoked")
 
 
@@ -818,6 +1053,15 @@ async def initialize_admin(request: Request, response: Response, body: Initializ
 
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request, remember_me=body.remember_me)
+
+    # 首次初始化是匿名入口，明确以本次刚创建的管理员账号作为事件操作者。
+    await notify_action_audit(
+        request,
+        action="auth.admin.initialize",
+        resource_type="account",
+        resource_id=str(user.id),
+        actor_user_id=str(user.id),
+    )
 
     return UserResponse(id=str(user.id), email=user.email, system_role=user.system_role, oauth_provider=user.oauth_provider)
 
@@ -1050,7 +1294,7 @@ async def oauth_callback(
 
     # ── Authenticate ─────────────────────────────────────────────────
     try:
-        identity = await service.authenticate_callback(
+        authentication = await service.authenticate_callback(
             provider_id=provider,
             metadata=metadata,
             client_id=provider_config.client_id,
@@ -1061,6 +1305,7 @@ async def oauth_callback(
             nonce=state_payload.nonce,
             auth_method=provider_config.token_endpoint_auth_method,
         )
+        identity = authentication.identity
     except OIDCError as exc:
         logger.error("OIDC callback authentication failed for %s: %s", provider, exc)
         redirect = _build_error_redirect(oidc_config.frontend_base_url, "sso_failed")
@@ -1081,8 +1326,47 @@ async def oauth_callback(
 
     user = result["user"]
 
+    if result.get("created") is True:
+        # OIDC 首次开通在认证回调中完成；仅在仓储明确返回新建后审计账号 ID。
+        await notify_action_audit(
+            request,
+            action="auth.oidc.provision",
+            resource_type="account",
+            resource_id=str(user.id),
+            actor_user_id=str(user.id),
+        )
+    elif result.get("created") is False:
+        # 已有关联账号的登录只记录服务端账号 ID，不记录 provider subject 或身份声明。
+        await notify_action_audit(
+            request,
+            action="auth.oidc.login",
+            resource_type="account",
+            resource_id=str(user.id),
+            actor_user_id=str(user.id),
+        )
+
+    # Only explicitly marked IAM providers enter the encrypted token vault.
+    # Generic social OIDC providers keep their existing identity-only behavior.
+    iam_session_id: str | None = None
+    if provider_config.iam_token_vault_enabled:
+        iam_session_id = str(uuid4())
+        try:
+            await persist_iam_authentication(
+                user=user,
+                session_id=iam_session_id,
+                provider_id=provider,
+                issuer=metadata.issuer,
+                authentication=authentication,
+            )
+        except IamTokenVaultError:
+            # Do not issue a local session that cannot satisfy the configured
+            # IAM authorization path. Never log token-bearing exception data.
+            logger.warning("Failed to prepare IAM token vault for OIDC provider %s", provider)
+            redirect = _build_error_redirect(oidc_config.frontend_base_url, "sso_failed")
+            return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
+
     # ── Issue DeerFlow session ───────────────────────────────────────
-    token = create_access_token(str(user.id), token_version=user.token_version)
+    token = create_access_token(str(user.id), token_version=user.token_version, session_id=iam_session_id)
 
     # Revalidate as defense-in-depth if future state writers populate this target.
     redirect_target = validate_next_param(state_payload.next_path) or "/workspace"

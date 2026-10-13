@@ -33,6 +33,7 @@ def _default_route_authorization_config(monkeypatch):
         "/api/v1/auth/register",
         "/api/v1/auth/logout",
         "/api/v1/auth/setup-status",
+        "/api/product/v1/public-brand",
     ],
 )
 def test_public_paths(path: str):
@@ -73,6 +74,7 @@ def test_protected_paths(path: str):
         "/api/v1/auth/register/",
         "/api/v1/auth/logout/",
         "/api/v1/auth/setup-status/",
+        "/api/product/v1/public-brand/",
     ],
 )
 def test_public_auth_paths_with_trailing_slash(path: str):
@@ -85,6 +87,7 @@ def test_public_auth_paths_with_trailing_slash(path: str):
         "/api/models/",
         "/api/v1/auth/me/",
         "/api/v1/auth/change-password/",
+        "/api/product/v1/public-brand/private",
     ],
 )
 def test_protected_paths_with_trailing_slash(path: str):

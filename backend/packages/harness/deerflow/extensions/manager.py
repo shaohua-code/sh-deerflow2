@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 _ENTRY_POINT_GROUP = "deerflow.extensions"
 _LOCK_RETRY_INTERVAL_SECONDS = 0.2
-_SNAPSHOT_IGNORES = (".git", ".venv", "venv", "__pycache__", "*.pyc")
+_SNAPSHOT_IGNORED_DIRS = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache")
+_SNAPSHOT_IGNORES = (*_SNAPSHOT_IGNORED_DIRS, "*.pyc")
 _DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 _SENSITIVE_FILENAMES = {".npmrc", ".pypirc", "credentials.json"}
 _SENSITIVE_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
@@ -598,7 +599,8 @@ def _validate_entry_point(name: str, use: str) -> None:
 
 
 def _validate_local_snapshot(source: Path) -> None:
-    ignored_names = {".git", ".venv", "venv", "__pycache__"}
+    # 校验与实际复制共用忽略目录；不可读的测试/格式缓存不属于可部署源码。
+    ignored_names = set(_SNAPSHOT_IGNORED_DIRS)
     for directory, dirnames, filenames in os.walk(source, followlinks=False):
         directory_path = Path(directory)
         retained_dirs: list[str] = []

@@ -75,6 +75,21 @@ def test_setup_agent_rejects_absolute_agent_name_before_writing(tmp_path, monkey
     assert not (Path(absolute_agent) / "SOUL.md").exists()
 
 
+def test_setup_agent_respects_explicit_gateway_agent_write_denial(tmp_path):
+    runtime = _DummyRuntime(
+        context={"agent_name": "test-agent", "route_permissions": ["agents:read", "runs:create"]},
+        tool_call_id="tool-denied",
+    )
+
+    result = setup_agent.func(soul="# My Agent", description="desc", runtime=runtime)
+
+    message = result.update["messages"][0]
+    assert message.status == "error"
+    assert "agents:write" in message.content
+    assert "created_agent_name" not in result.update
+    assert not (tmp_path / "users" / "test-user-autouse" / "agents" / "test-agent").exists()
+
+
 # --- Data loss prevention tests ---
 
 

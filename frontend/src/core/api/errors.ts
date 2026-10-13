@@ -12,6 +12,35 @@ export class UnauthorizedError extends Error {
 }
 
 /**
+ * A failed Gateway response with a stable HTTP status for product-level UX.
+ * The message keeps the original detail for diagnostics, but callers should
+ * map the status to localized copy instead of displaying `message` directly.
+ */
+export class GatewayApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GatewayApiError";
+  }
+}
+
+/** Read a Gateway error envelope while retaining status for safe UI mapping. */
+export async function createGatewayApiError(
+  response: Response,
+  fallback: string,
+): Promise<GatewayApiError> {
+  const body = (await response.json().catch(() => ({}))) as {
+    detail?: unknown;
+  };
+  return new GatewayApiError(
+    response.status,
+    typeof body.detail === "string" ? body.detail : fallback,
+  );
+}
+
+/**
  * Throw an Error from a failed Gateway REST response.
  *
  * Parses the FastAPI error envelope (`{ detail: string }`) and falls back to
@@ -23,8 +52,5 @@ export async function throwGatewayApiError(
   response: Response,
   fallback: string,
 ): Promise<never> {
-  const body = (await response.json().catch(() => ({}))) as {
-    detail?: unknown;
-  };
-  throw new Error(typeof body.detail === "string" ? body.detail : fallback);
+  throw await createGatewayApiError(response, fallback);
 }

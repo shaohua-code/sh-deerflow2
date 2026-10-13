@@ -76,4 +76,55 @@ describe("ScheduledTaskScheduleInput", () => {
     expect((amountInput as HTMLInputElement).value).toBe("60");
     expect(emitted.at(-1)?.schedule_spec.every_seconds).toBe(60);
   });
+
+  test.each([
+    {
+      locale: "en-US" as const,
+      repeatLabel: "Repeat",
+      timezoneLabel: "Timezone",
+      intervalLabel: "Interval",
+      intervalUnitLabel: "Interval unit",
+    },
+    {
+      locale: "zh-CN" as const,
+      repeatLabel: "重复方式",
+      timezoneLabel: "时区",
+      intervalLabel: "间隔",
+      intervalUnitLabel: "间隔单位",
+    },
+  ])(
+    "provides localized names for schedule selectors in $locale",
+    ({
+      locale,
+      repeatLabel,
+      timezoneLabel,
+      intervalLabel,
+      intervalUnitLabel,
+    }) => {
+      // Match the cookie-backed locale selection used on real workspace pages.
+      document.cookie = `locale=${locale}; path=/`;
+      render(
+        <I18nProvider initialLocale={locale}>
+          <ScheduledTaskScheduleInput
+            initial={{
+              schedule_type: "cron",
+              schedule_spec: { cron: "0 9 * * *" },
+              timezone: "UTC",
+            }}
+            onChange={() => undefined}
+          />
+        </I18nProvider>,
+      );
+
+      expect(screen.getByRole("combobox", { name: repeatLabel })).toBeTruthy();
+      expect(
+        screen.getByRole("combobox", { name: timezoneLabel }),
+      ).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: intervalLabel }));
+      expect(
+        screen.getByRole("combobox", { name: intervalUnitLabel }),
+      ).toBeTruthy();
+    },
+  );
 });

@@ -33,7 +33,11 @@ import { useSubtaskContext, useUpdateSubtask } from "../tasks/context";
 import { taskEventToSubtaskUpdate } from "../tasks/lifecycle";
 import { messageToStep } from "../tasks/steps";
 import type { UploadedFileInfo } from "../uploads";
-import { promptInputFilePartToFile, uploadFiles } from "../uploads";
+import {
+  promptInputFilePartToFile,
+  UploadRequestError,
+  uploadFiles,
+} from "../uploads";
 import { uuid } from "../utils/uuid";
 
 import {
@@ -1658,29 +1662,6 @@ export async function stopThreadAndInvalidateCaches(
   }
 }
 
-function getStreamErrorMessage(error: unknown): string {
-  if (typeof error === "string" && error.trim()) {
-    return error;
-  }
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  if (typeof error === "object" && error !== null) {
-    const message = Reflect.get(error, "message");
-    if (typeof message === "string" && message.trim()) {
-      return message;
-    }
-    const nestedError = Reflect.get(error, "error");
-    if (nestedError instanceof Error && nestedError.message.trim()) {
-      return nestedError.message;
-    }
-    if (typeof nestedError === "string" && nestedError.trim()) {
-      return nestedError;
-    }
-  }
-  return "Request failed.";
-}
-
 async function readResponseErrorMessage(
   response: Response,
   fallback = "Request failed.",
@@ -1997,20 +1978,19 @@ export function useThreadStream({
       }
 
       if (eventType === "llm_retry") {
-        const e = event as { type: "llm_retry"; message?: unknown };
-        if (typeof e.message === "string" && e.message.trim()) {
-          toast(e.message);
-        }
+        // 重试事件可能携带供应商诊断信息；界面只显示本地化的状态提示。
+        toast(t.conversation.streamRetrying);
       }
     },
-    onError(error) {
+    onError() {
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
       setLiveMessagesThreadId(null);
       pendingPreparedReplayRef.current = null;
       setPendingSupersededRunIds(new Set());
       setPendingSupersededMessageIds(new Set());
-      toast.error(getStreamErrorMessage(error));
+      // 流式请求异常可能包含服务端路径或底层提供商详情；只展示本地化提示。
+      toast.error(t.conversation.streamFailed);
       pendingUsageBaselineMessageIdsRef.current = new Set(
         messagesRef.current
           .map(messageIdentity)
@@ -2321,6 +2301,7 @@ export function useThreadStream({
       listeners.current.onSend?.(threadId);
 
       let uploadedFileInfo: UploadedFileInfo[] = [];
+      let uploadFailureWasNotified = false;
 
       try {
         // Upload files first if any
@@ -2375,11 +2356,15 @@ export function useThreadStream({
               });
             }
           } catch (error) {
+            // 5xx 详情仅供后端排查；聊天界面使用当前语言的通用安全提示。
             const errorMessage =
-              error instanceof Error
-                ? error.message
-                : "Failed to upload files.";
+              error instanceof UploadRequestError && error.status >= 500
+                ? t.uploads.uploadFailed
+                : error instanceof Error
+                  ? error.message
+                  : t.uploads.uploadFailed;
             toast.error(errorMessage);
+            uploadFailureWasNotified = true;
             setOptimisticMessages([]);
             setOptimisticThreadId(null);
             setLiveMessagesThreadId(null);
@@ -2436,6 +2421,11 @@ export function useThreadStream({
         setLiveMessagesThreadId(null);
         setIsUploading(false);
         localTurnAnchorRef.current = null;
+        if (!uploadFailureWasNotified) {
+          // Gateway/model-provider exception bodies can contain private
+          // diagnostics. Keep them in logs and show only product copy here.
+          toast.error(t.conversation.streamFailed);
+        }
         throw error;
       } finally {
         sendInFlightRef.current = false;
@@ -2443,6 +2433,8 @@ export function useThreadStream({
     },
     [
       thread,
+      t.conversation.streamFailed,
+      t.uploads.uploadFailed,
       t.uploads.uploadingFiles,
       context,
       queryClient,
@@ -2574,7 +2566,7 @@ export function useThreadStream({
           queryKey: threadTokenUsageQueryKey(threadId),
         });
         return true;
-      } catch (error) {
+      } catch {
         setOptimisticMessages([]);
         setOptimisticThreadId(null);
         setLiveMessagesThreadId(null);
@@ -2589,7 +2581,8 @@ export function useThreadStream({
             removeSetItems(current, preparedSupersededMessageIds),
           );
         }
-        toast.error(getStreamErrorMessage(error));
+        // 与流式回调保持一致，不把 Gateway 或模型提供商异常正文显示给用户。
+        toast.error(t.conversation.streamFailed);
         return false;
       } finally {
         sendInFlightRef.current = false;
@@ -2601,6 +2594,7 @@ export function useThreadStream({
       persistedMessages,
       queryClient,
       thread,
+      t,
       visibleHistory,
     ],
   );
@@ -2985,7 +2979,9 @@ export function useThreadHistory(
 
   return {
     messages,
-    loading: historyQuery.isLoading || historyQuery.isFetchingNextPage,
+    loading:
+      historyQuery.isLoading === true ||
+      historyQuery.isFetchingNextPage === true,
     hasMore: Boolean(historyQuery.hasNextPage),
     loadMore: historyQuery.fetchNextPage,
   };
@@ -2993,11 +2989,23 @@ export function useThreadHistory(
 
 export function useThreads(
   params: ThreadSearchParams = DEFAULT_THREAD_SEARCH_PARAMS,
+  {
+    enabled = true,
+    cacheScope,
+  }: { enabled?: boolean; cacheScope?: string } = {},
 ) {
   const apiClient = getAPIClient();
-  return useQuery<AgentThread[]>({
-    ...buildThreadsSearchQueryOptions(apiClient, params),
+  const queryOptions = buildThreadsSearchQueryOptions(apiClient, params);
+  const query = useQuery<AgentThread[]>({
+    ...queryOptions,
+    // The picker is user data. A shared search key could briefly show the
+    // previous account's conversations after an in-app account switch.
+    queryKey: [...queryOptions.queryKey, cacheScope],
+    enabled,
   });
+  // A disabled query can still have a previous successful result in cache.
+  // Permission-gated consumers must not render that stale thread directory.
+  return enabled ? query : { ...query, data: undefined };
 }
 
 export const INFINITE_THREADS_PAGE_SIZE = 50;
@@ -3220,9 +3228,10 @@ export function useInfiniteThreads(
     sortOrder: "desc",
     select: ["thread_id", "updated_at", "values", "metadata"],
   },
+  { enabled = true }: { enabled?: boolean } = {},
 ) {
   const apiClient = getAPIClient();
-  return useInfiniteQuery<
+  const query = useInfiniteQuery<
     AgentThread[],
     Error,
     InfiniteData<AgentThread[]>,
@@ -3240,8 +3249,12 @@ export function useInfiniteThreads(
       ),
     getNextPageParam: (lastPage, allPages) =>
       getInfiniteThreadsNextPageParam(lastPage, allPages),
+    enabled,
     refetchOnWindowFocus: false,
   });
+  // TanStack keeps disabled query data cached; permission-gated consumers must
+  // not render a prior authorization snapshot after access is revoked.
+  return enabled ? query : { ...query, data: undefined };
 }
 
 export function useThreadRuns(

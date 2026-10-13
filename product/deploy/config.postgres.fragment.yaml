@@ -1,0 +1,17 @@
+# Merge these sections into your ignored local config.yaml after make config.
+# Keep the config_version from the current config.example.yaml; do not copy a
+# stale version number from this fragment across an upstream upgrade.
+database:
+  backend: postgres
+  postgres_url: $DATABASE_URL
+  postgres_schema: deerflow
+
+# Run events contain persisted chat/tool evidence used by history and recovery.
+run_events:
+  backend: db
+  track_token_usage: true
+
+# Keep Custom Agent definitions available after a container restart. This shares
+# the app database; agent memory and sandbox files still live in their own stores.
+agent_storage:
+  backend: db

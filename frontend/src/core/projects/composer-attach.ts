@@ -11,7 +11,7 @@ import type { AttachProjectDocumentResult } from "./types";
  * server-confirmed ingestion result — never an in-flight upload — so the
  * composer receives a completed attachment only on success.
  *
- * The staged set is a per-thread pending LIST that persists until the
+ * The staged set is a per-user, per-thread pending LIST that persists until the
  * message is actually sent or the chip is explicitly removed:
  *
  * - Attaching a second document appends to the list (re-attaching the same
@@ -24,12 +24,13 @@ import type { AttachProjectDocumentResult } from "./types";
  *   genuinely proceeds.
  *
  * sessionStorage (not module memory) so the pending list also survives a
- * full page load of the target thread.
+ * full page load of the target thread. The old thread-only key cannot prove
+ * ownership, so v2 never reads or deletes it.
  */
-const STORAGE_KEY_PREFIX = "deerflow.project-attachment.";
+const STORAGE_KEY_PREFIX = "deerflow.project-attachment.v2.";
 
-function storageKey(threadId: string): string {
-  return `${STORAGE_KEY_PREFIX}${threadId}`;
+function storageKey(userId: string, threadId: string): string {
+  return `${STORAGE_KEY_PREFIX}${encodeURIComponent(userId)}.${encodeURIComponent(threadId)}`;
 }
 
 function safeSessionStorage(): Storage | null {
@@ -59,6 +60,7 @@ function isAttachment(value: unknown): value is AttachProjectDocumentResult {
  * refreshes its entry instead of duplicating it.
  */
 export function stageProjectAttachment(
+  userId: string,
   threadId: string,
   attachment: AttachProjectDocumentResult,
 ): void {
@@ -66,28 +68,29 @@ export function stageProjectAttachment(
   if (!storage) {
     return;
   }
-  const pending = readProjectAttachments(threadId).filter(
+  const pending = readProjectAttachments(userId, threadId).filter(
     (candidate) => candidate.virtual_path !== attachment.virtual_path,
   );
   storage.setItem(
-    storageKey(threadId),
+    storageKey(userId, threadId),
     JSON.stringify([...pending, attachment]),
   );
 }
 
 /**
- * Read a thread's pending attachments **without consuming them**. Corrupt
- * payloads are dropped; the pre-list single-object payload shape is read as a
- * one-element list so a mid-session upgrade keeps the staged chip.
+ * Read this user's thread attachments **without consuming them**. Corrupt
+ * v2 payloads are dropped; a single-object v2 payload remains readable.
  */
 export function readProjectAttachments(
+  userId: string,
   threadId: string,
 ): AttachProjectDocumentResult[] {
   const storage = safeSessionStorage();
   if (!storage) {
     return [];
   }
-  const raw = storage.getItem(storageKey(threadId));
+  // 旧键只有 thread ID，没有可验证的 owner；不能自动迁入当前账号。
+  const raw = storage.getItem(storageKey(userId, threadId));
   if (raw === null) {
     return [];
   }
@@ -102,7 +105,7 @@ export function readProjectAttachments(
   } catch {
     // Corrupt payload: drop it.
   }
-  storage.removeItem(storageKey(threadId));
+  storage.removeItem(storageKey(userId, threadId));
   return [];
 }
 
@@ -118,34 +121,45 @@ export function readProjectAttachments(
  * The returned setter accepts the same value-or-updater shapes as
  * ``useState`` and is stable per thread.
  */
-export function useStagedProjectAttachments(threadId: string) {
-  const [attachments, setAttachmentsState] = useState<
-    AttachProjectDocumentResult[]
-  >([]);
-  const pendingRef = useRef<AttachProjectDocumentResult[]>([]);
+export function useStagedProjectAttachments(userId: string, threadId: string) {
+  const key = storageKey(userId, threadId);
+  const [state, setState] = useState<{
+    key: string;
+    attachments: AttachProjectDocumentResult[];
+  }>({ key, attachments: [] });
+  const pendingRef = useRef<{
+    key: string;
+    attachments: AttachProjectDocumentResult[];
+  }>({ key, attachments: [] });
+  // 账号或会话切换的第一帧就隐藏旧作用域内容，effect 只负责读取新键。
+  const attachments = state.key === key ? state.attachments : [];
 
   useEffect(() => {
-    const pending = readProjectAttachments(threadId);
-    pendingRef.current = pending;
-    setAttachmentsState(pending);
-  }, [threadId]);
+    const pending = readProjectAttachments(userId, threadId);
+    pendingRef.current = { key, attachments: pending };
+    setState({ key, attachments: pending });
+  }, [key, threadId, userId]);
 
   const setAttachments = useCallback(
     (value: SetStateAction<AttachProjectDocumentResult[]>) => {
-      const next =
-        typeof value === "function" ? value(pendingRef.current) : value;
-      pendingRef.current = next;
+      // 新作用域尚未水合时只从它自己的键读取，绝不沿用旧账号的 ref。
+      const current =
+        pendingRef.current.key === key
+          ? pendingRef.current.attachments
+          : readProjectAttachments(userId, threadId);
+      const next = typeof value === "function" ? value(current) : value;
+      pendingRef.current = { key, attachments: next };
       const storage = safeSessionStorage();
       if (storage) {
         if (next.length === 0) {
-          storage.removeItem(storageKey(threadId));
+          storage.removeItem(storageKey(userId, threadId));
         } else {
-          storage.setItem(storageKey(threadId), JSON.stringify(next));
+          storage.setItem(storageKey(userId, threadId), JSON.stringify(next));
         }
       }
-      setAttachmentsState(next);
+      setState({ key, attachments: next });
     },
-    [threadId],
+    [key, threadId, userId],
   );
 
   return [attachments, setAttachments] as const;

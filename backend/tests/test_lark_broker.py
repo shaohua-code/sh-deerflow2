@@ -55,6 +55,33 @@ def _config(tmp_path: Path, port: int = 0) -> BrokerConfig:
     )
 
 
+@pytest.fixture(autouse=True)
+def _make_fake_cli_runnable_on_windows(monkeypatch):
+    """Model the fake CLI executable when Windows cannot spawn a .py file directly."""
+    if os.name != "nt":
+        return
+
+    real_run = subprocess.run
+
+    def portable_run(command, *args, **kwargs):
+        argv = list(command) if isinstance(command, (list, tuple)) else [command]
+        if Path(argv[0]).name == "fake-lark-cli":
+            assert kwargs.get("shell", False) is False
+            forwarded_args = argv[1:]
+            payload = {
+                "argv": forwarded_args,
+                "stdin": (kwargs.get("input") or b"").decode("utf-8"),
+                "config_dir": kwargs["env"].get("LARKSUITE_CLI_CONFIG_DIR"),
+                "data_dir": kwargs["env"].get("LARKSUITE_CLI_DATA_DIR"),
+            }
+            stdout = (json.dumps(payload) + "\n").encode("utf-8")
+            stderr = ("ERR:" + " ".join(forwarded_args) + "\n").encode("utf-8")
+            return subprocess.CompletedProcess(argv, 7 if "--boom" in forwarded_args else 0, stdout, stderr)
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(lark_broker.subprocess, "run", portable_run)
+
+
 # ── run_lark_cli (in-process, no server) ───────────────────────────────────
 
 
@@ -192,12 +219,15 @@ def test_shim_fails_loudly_when_broker_unreachable(tmp_path: Path) -> None:
     shim = tmp_path / "lark-cli"
     shim.write_text(lark_broker.LARK_CLI_BROKER_SHIM_SCRIPT, encoding="utf-8")
     shim.chmod(0o755)
+    isolated_env = {key: value for key, value in os.environ.items() if key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}}
+    isolated_env["NO_PROXY"] = "127.0.0.1,localhost"
+    isolated_env["no_proxy"] = "127.0.0.1,localhost"
     completed = subprocess.run(
         [sys.executable, str(shim), "auth", "status"],
         input=b"",
         capture_output=True,
         # Nothing is listening here.
-        env={**os.environ, lark_broker.LARK_BROKER_URL_ENV: "http://127.0.0.1:1"},
+        env={**isolated_env, lark_broker.LARK_BROKER_URL_ENV: "http://127.0.0.1:1"},
         timeout=30,
     )
     assert completed.returncode != 0
@@ -230,6 +260,7 @@ def test_install_shim_writes_runtime_layout(tmp_path: Path) -> None:
     assert marker == {"version": "v1.0.65", "kind": "shim"}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the installed launcher is a POSIX /bin/sh script; runtime is exercised on Linux")
 def test_launcher_resolves_python_and_forwards(broker_server, tmp_path: Path) -> None:
     """The /bin/sh launcher finds python3 on PATH and execs the shim body."""
     host, port = broker_server
@@ -253,6 +284,7 @@ def test_launcher_resolves_python_and_forwards(broker_server, tmp_path: Path) ->
     assert b"ERR:do --boom" in completed.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the installed launcher is a POSIX /bin/sh script; runtime is exercised on Linux")
 def test_launcher_can_pin_interpreter_via_env(broker_server, tmp_path: Path) -> None:
     """DEERFLOW_LARK_BROKER_PYTHON pins the interpreter for images with no python3
     on PATH (the launcher must not silently ENOEXEC)."""
@@ -276,6 +308,7 @@ def test_launcher_can_pin_interpreter_via_env(broker_server, tmp_path: Path) -> 
     assert completed.returncode == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the installed launcher is a POSIX /bin/sh script; runtime is exercised on Linux")
 def test_launcher_fails_loudly_without_python(tmp_path: Path) -> None:
     """With no python interpreter resolvable, the launcher exits 127 with an
     actionable message rather than an opaque ENOEXEC."""

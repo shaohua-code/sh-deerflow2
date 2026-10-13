@@ -25,7 +25,7 @@ from app.gateway.auth_disabled import (
     get_auth_disabled_user,
     is_auth_disabled,
 )
-from app.gateway.authz import AuthContext, resolve_route_permissions
+from app.gateway.authz import AuthContext, resolve_route_permissions_for_request
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
 from app.gateway.request_path import get_request_route_path
 from deerflow.runtime.user_context import reset_current_user, set_current_user
@@ -53,6 +53,8 @@ _PUBLIC_EXACT_PATHS: frozenset[str] = frozenset(
         "/api/v1/auth/setup-status",
         "/api/v1/auth/initialize",
         "/api/v1/auth/providers",
+        # 未登录页只读取自有产品的中英文名称，功能开关和用户身份仍保持受保护。
+        "/api/product/v1/public-brand",
     }
 )
 
@@ -181,10 +183,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # JWT-decode + DB-lookup pipeline a second time per request).
         request.state.user = user
         request.state.auth_source = auth_source
-        permissions = await resolve_route_permissions(
-            user,
-            is_internal=auth_source == AUTH_SOURCE_INTERNAL,
-        )
+        # The request-aware resolver may attach a redacted, in-memory IAM
+        # credential capability from the signed local session sid. It never
+        # enters the browser JWT payload, Agent config, or checkpoint.
+        permissions = await resolve_route_permissions_for_request(request, user)
         if auth_source == AUTH_SOURCE_PAT:
             # A PAT can only narrow its owning user's permissions: the stored
             # scopes intersect the resolved route permissions, never widen

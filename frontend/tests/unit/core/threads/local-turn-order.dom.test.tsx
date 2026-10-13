@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, rs, test } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { toast } from "sonner";
 
 import { I18nContext } from "@/core/i18n/context";
 import { enUS } from "@/core/i18n/locales/en-US";
@@ -24,6 +25,13 @@ const streamMockState = rs.hoisted(() => ({
   stop: rs.fn(async () => undefined),
   submit: rs.fn(async () => undefined),
 }));
+
+const toastMockState = rs.hoisted(() => ({
+  error: rs.fn(),
+  warning: rs.fn(),
+}));
+
+rs.mock("sonner", () => ({ toast: toastMockState }));
 
 rs.mock("@langchain/langgraph-sdk/react", () => ({
   useStream: (options: {
@@ -165,6 +173,8 @@ beforeEach(() => {
   streamMockState.onCustomEvent = undefined;
   streamMockState.stop.mockClear();
   streamMockState.submit.mockClear();
+  toastMockState.error.mockClear();
+  toastMockState.warning.mockClear();
 });
 
 afterEach(() => {
@@ -1148,4 +1158,26 @@ test("keeps history stable when the stream errors after the human was confirmed"
     `${submittedId}__user`,
     "new-step",
   ]);
+  expect(toast.error).toHaveBeenCalledWith(enUS.conversation.streamFailed);
+  expect(toast.error).toHaveBeenCalledTimes(1);
+});
+
+test("does not show private send request details in the error toast", async () => {
+  const { result } = await renderSeededThread();
+  const privateDetail = "provider key rejected at https://internal.example";
+  streamMockState.submit.mockRejectedValueOnce(new Error(privateDetail));
+
+  await act(async () => {
+    await result.current
+      .sendMessage("thread-1", {
+        files: [],
+        text: "Continue the work",
+      })
+      .catch(() => undefined);
+  });
+
+  expect(toast.error).toHaveBeenCalledTimes(1);
+  expect(toastMockState.error.mock.calls[0]?.[0]).toBe(
+    enUS.conversation.streamFailed,
+  );
 });

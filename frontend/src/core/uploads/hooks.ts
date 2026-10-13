@@ -18,11 +18,14 @@ import {
  * Hook to load the gateway-enforced upload limits.
  * Callers intentionally degrade to server-side validation if this request fails.
  */
-export function useUploadLimits(threadId: string) {
+export function useUploadLimits(
+  threadId: string,
+  options: { enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: ["uploads", "limits", threadId],
     queryFn: () => getUploadLimits(threadId),
-    enabled: !!threadId,
+    enabled: !!threadId && options.enabled !== false,
     retry: false,
     staleTime: 60_000,
   });

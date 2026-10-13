@@ -7,7 +7,12 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app.gateway.authz import require_permission
+from app.gateway.authz import (
+    AuthContext,
+    require_iam_data_scope_for_request,
+    require_permission,
+    resolve_route_permissions_for_request,
+)
 from app.gateway.browser_capability import browser_capability
 from deerflow.config.paths import get_paths
 from deerflow.runtime.user_context import get_effective_user_id, reset_current_user, set_current_user
@@ -123,7 +128,12 @@ async def _authenticate_ws(websocket: WebSocket):
     """
     from app.gateway.auth import decode_token
     from app.gateway.auth.errors import TokenError
-    from app.gateway.auth_disabled import get_auth_disabled_user, is_auth_disabled
+    from app.gateway.auth_disabled import (
+        AUTH_SOURCE_AUTH_DISABLED,
+        AUTH_SOURCE_SESSION,
+        get_auth_disabled_user,
+        is_auth_disabled,
+    )
     from app.gateway.deps import get_local_provider
 
     access_token = websocket.cookies.get("access_token")
@@ -132,11 +142,51 @@ async def _authenticate_ws(websocket: WebSocket):
         if not isinstance(payload, TokenError):
             provider = get_local_provider()
             user = await provider.get_user(payload.sub)
-            if user is not None and user.token_version == payload.ver:
+            if user is not None and user.is_active and user.token_version == payload.ver:
+                # WebSockets bypass AuthMiddleware, so keep the verified local
+                # session lookup key available to the same Central IAM resolver
+                # used by HTTP routes. The key is request-local and contains no
+                # upstream OIDC credential itself.
+                websocket.state.user = user
+                websocket.state.auth_source = AUTH_SOURCE_SESSION
+                if payload.sid:
+                    websocket.state.iam_session_id = payload.sid
                 return user
     if is_auth_disabled():
-        return get_auth_disabled_user()
+        user = get_auth_disabled_user()
+        websocket.state.user = user
+        websocket.state.auth_source = AUTH_SOURCE_AUTH_DISABLED
+        return user
     return None
+
+
+async def _authorize_browser_stream(websocket: WebSocket, user, thread_id: str) -> None:
+    """Require the same route grants and row scopes as HTTP thread access.
+
+    The browser stream exposes page screenshots and accepts input events, so it
+    needs both read and write grants. Its retained browser session is admitted
+    only after Central IAM has also authorized both operations for this thread.
+    """
+    permissions = await resolve_route_permissions_for_request(websocket, user)
+    auth = AuthContext(user=user, permissions=permissions)
+    websocket.state.auth = auth
+    if not auth.has_permission("threads", "read") or not auth.has_permission("threads", "write"):
+        raise HTTPException(status_code=403, detail="Permission denied: browser stream requires thread read and write")
+
+    await require_iam_data_scope_for_request(
+        websocket,
+        user,
+        target="threads:read",
+        action="read",
+        resource_id=str(thread_id),
+    )
+    await require_iam_data_scope_for_request(
+        websocket,
+        user,
+        target="threads:write",
+        action="write",
+        resource_id=str(thread_id),
+    )
 
 
 def _ws_origin_allowed(websocket: WebSocket) -> bool:
@@ -220,6 +270,19 @@ async def browser_stream(websocket: WebSocket, thread_id: ThreadId) -> None:
     if not _ws_origin_allowed(websocket):
         # Cross-origin upgrade — reject before touching any session (WS-CSRF).
         await websocket.close(code=4403)
+        return
+
+    try:
+        await _authorize_browser_stream(websocket, user, str(thread_id))
+    except HTTPException as exc:
+        close_code = 4401 if exc.status_code == 401 else 4403 if exc.status_code == 403 else 1011
+        await websocket.close(code=close_code)
+        return
+    except Exception as exc:
+        # Do not include provider/network exception text; it can contain remote
+        # URLs or response details. A failed authorization service fails closed.
+        logger.warning("Browser stream authorization failed: err_type=%s", type(exc).__name__)
+        await websocket.close(code=1011)
         return
 
     thread_store = getattr(websocket.app.state, "thread_store", None)

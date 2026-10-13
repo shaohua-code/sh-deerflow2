@@ -234,6 +234,42 @@ class TestRunRepository:
         await _cleanup()
 
     @pytest.mark.anyio
+    async def test_delete_by_thread_removes_run_rows_but_keeps_delete_reservation(self, tmp_path):
+        repo = await _make_repo(tmp_path)
+        await repo.put("run-owned", thread_id="t1", user_id="alice", status="success")
+        await repo.put("run-legacy", thread_id="t1", user_id=None, status="success")
+        await repo.put(
+            "delete-operation",
+            thread_id="t1",
+            user_id="alice",
+            operation_kind=ThreadOperationKind.delete.value,
+            status="pending",
+        )
+        await repo.put("other-thread", thread_id="t2", user_id="alice", status="success")
+
+        removed = await repo.delete_by_thread("t1", user_id="alice")
+
+        assert removed == 2
+        assert await repo.get("run-owned", user_id="alice") is None
+        assert await repo.get("run-legacy", user_id="alice") is None
+        assert await repo.get("delete-operation", user_id="alice") is not None
+        assert await repo.get("other-thread", user_id="alice") is not None
+        await _cleanup()
+
+    @pytest.mark.anyio
+    async def test_delete_by_thread_fails_closed_on_conflicting_owner_rows(self, tmp_path):
+        repo = await _make_repo(tmp_path)
+        await repo.put("run-alice", thread_id="t1", user_id="alice", status="success")
+        await repo.put("run-bob", thread_id="t1", user_id="bob", status="success")
+
+        with pytest.raises(RuntimeError, match="owner"):
+            await repo.delete_by_thread("t1", user_id="alice")
+
+        assert await repo.get("run-alice", user_id="alice") is not None
+        assert await repo.get("run-bob", user_id="bob") is not None
+        await _cleanup()
+
+    @pytest.mark.anyio
     async def test_list_pending(self, tmp_path):
         repo = await _make_repo(tmp_path)
         await repo.put("r1", thread_id="t1", status="pending")
@@ -258,6 +294,31 @@ class TestRunRepository:
         inflight = await repo.list_inflight(before="2026-01-01T00:00:02+00:00")
 
         assert [row["run_id"] for row in inflight] == ["pending-old", "running-old"]
+        await _cleanup()
+
+    @pytest.mark.anyio
+    async def test_cancel_active_runs_for_user_uses_persisted_owner_and_skips_reservations(self, tmp_path):
+        """The production SQL RunStore path must preserve owner IDs for run cancellation."""
+        repo = await _make_repo(tmp_path)
+        manager = RunManager(store=repo)
+        owned = await manager.create("owned-thread", user_id="user-disabled")
+        peer = await manager.create("peer-thread", user_id="user-other")
+        await manager.set_status(owned.run_id, RunStatus.running)
+        await manager.set_status(peer.run_id, RunStatus.running)
+        await repo.put(
+            "checkpoint-reservation",
+            thread_id="owned-write-thread",
+            user_id="user-disabled",
+            status="running",
+            operation_kind=ThreadOperationKind.checkpoint_write,
+        )
+
+        outcomes = await manager.cancel_active_runs_for_user("user-disabled")
+
+        assert outcomes == {owned.run_id: CancelOutcome.cancelled}
+        assert (await repo.get(owned.run_id, user_id="user-disabled"))["status"] == "interrupted"
+        assert (await repo.get(peer.run_id, user_id="user-other"))["status"] == "running"
+        assert (await repo.get("checkpoint-reservation", user_id="user-disabled"))["status"] == "running"
         await _cleanup()
 
     @pytest.mark.anyio

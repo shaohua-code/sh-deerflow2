@@ -24,7 +24,7 @@ DingTalk) bridge into the same agent through the Gateway.
 
 A single `make dev` / Docker stack runs four cooperating services:
 
-| Service         | Port   | Role                                                                 |
+| Service         | Port   | Role                                                                |
 | --------------- | ------ | ------------------------------------------------------------------- |
 | **Nginx**       | `2026` | Unified reverse-proxy entry point — open this in the browser        |
 | **Gateway API** | `8001` | FastAPI REST API + embedded LangGraph-compatible agent runtime      |
@@ -67,8 +67,9 @@ deer-flow/
 │                                    # Integration credentials and enabled state remain per-user
 ├── contracts/                      # Cross-component JSON contracts (e.g. subagent status, skill review)
 ├── examples/deerflow-extension-example/ # Standalone package demonstrating all extension contribution kinds
+├── product/                       # Self-owned product extension source; see docs/自有项目改造指南.md
 ├── scripts/                        # Root orchestration scripts invoked by the Makefile (check, configure, doctor, support_bundle, serve, nginx, docker, deploy, setup_wizard)
-├── tests/                          # Root-level tests (currently tests/skills/ — public skill tests)
+├── tests/                          # 根级配置/发布契约测试与公共 Skill 测试（含由后端 CI 执行的 Flow Desk 扩展私有导入边界）
 └── docs/                           # Cross-cutting docs, plans, and design notes
 ```
 
@@ -76,7 +77,7 @@ Third-party extensions are loaded from a top-level `plugins:` list in `config.ya
 (operator-controlled on purpose — that list causes code to be imported, so it is deliberately
 kept out of the API-writable `extensions_config.json`). Packaged extensions can contribute
 middleware, task lifecycle, system-model observers, Gateway services, and FastAPI HTTP
-routers; the [reference extension](examples/deerflow-extension-example/) demonstrates all
+routers; the [reference extension](examples/deerflow-extension-example) demonstrates all
 five. Manage them with `deerflow extensions install/upgrade/list/enable/disable/remove` or the root
 `make extension-*` wrappers. Every mutation requires a Gateway restart, and both build
 hooks and extension code execute with Gateway privileges, so only trusted operator sources
@@ -91,6 +92,7 @@ Gateway API. Config schema and resolution order are documented in
 [backend/AGENTS.md](backend/AGENTS.md).
 
 Skill quality review note:
+
 - `skills/public/skill-reviewer/` is the built-in read-only skill quality reviewer.
   It uses the harness-layer `review_skill_package` tool and contracts in
   `contracts/skill_review/`. Model-visible review data is compact and
@@ -108,7 +110,19 @@ Skill quality review note:
   first, the skill change after, then promote the consumed hash to `file_sha256`
   in a follow-up cleanup.
 
+Project upgrade skill:
+
+- When a request includes `--升级`, read and follow [the DeerFlow upgrade Skill](docs/skills/deerflow-upgrade/SKILL.md). It checks the official stable release, preserves the self-owned `origin` and dirty worktree, and records a no-op when there is no newer release.
+- `tests/test_deerflow_upgrade_skill_contract.py` pins the upgrade Skill's safety and evidence requirements; update the test only when the documented policy changes intentionally.
+- `tests/test_flow_desk_extension_boundary.py` also keeps the Flow Desk package lower bound and `@extension(api=...)` marker aligned with the public Extension API version; when changing the contract, update its project/runtime version, the Harness exact pin, `backend/uv.lock`, and the Flow Desk package bound/marker together.
+
+Product handoff and progress tracking:
+
+- Read [改造进度与后续计划](docs/改造进度与后续计划.md) before continuing Flow Desk productization. It tracks the current implementation, verification gaps, ordered tasks, and model handoff context; the productization PRD retains requirements and detailed history.
+- Before ending each related work turn, update that document's date, task status, verification evidence, remaining work, and next task. Distinguish implemented, tested, and release-accepted work; never carry an old passing result forward to changed source without verification. Keep relevant README, module guides, PRD, and patch ledger synchronized when their scope changes.
+
 Scheduled-task note:
+
 - The scheduled-task MVP adds a workspace page at `/workspace/scheduled-tasks` plus a background scheduler service gated by `config.yaml -> scheduler.enabled`.
 - Scheduled background runs are intentionally non-interactive: the lead-agent toolset excludes `ask_clarification` when `context.non_interactive=true`. That key, `disable_clarification`, and `github_token` are honored only for internally-authenticated callers; client-supplied copies are dropped from both `body.context` and `body.config`.
 - Busy scheduled occurrences are persisted as `queued`; `launching` is a short lease-fenced claim, `running` remains the normal Gateway run lifecycle, and `scheduler.queue_timeout_seconds` bounds the durable wait. Do not reintroduce skip-on-overlap or count waiting rows against `max_concurrent_runs`.
@@ -122,6 +136,7 @@ make setup       # Interactive setup wizard (recommended for new users)
 make doctor      # Check configuration and system requirements
 make support-bundle  # Generate redacted troubleshooting summary, AI issue draft, and optional zip
 make config      # Generate local config files from the examples
+make release-manifest-check RELEASE_MANIFEST=... # 校验已填写的 Flow Desk 发布证据清单
 make check       # Check that required tools are installed
 make install     # Install all dependencies (frontend + backend + pre-commit hooks)
 make extension-install SOURCE=...  # Install and enable a trusted Python extension
@@ -154,6 +169,8 @@ Run `make help` for the full list.
 # Backend (see backend/AGENTS.md for the full set)
 cd backend && make dev        # Gateway API with reload (port 8001)
 cd backend && make test       # Default backend suite; excludes live and blocking-I/O tests
+cd backend && make test-product-extension  # Flow Desk's isolated extension API/migration tests
+cd backend && make test-product-extension-postgres  # Explicitly gated loopback PostgreSQL smoke test
 cd backend && make test-blocking-io  # Strict blocking-I/O suite
 cd backend && make lint       # ruff check
 cd backend && make format     # ruff format

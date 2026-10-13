@@ -115,7 +115,30 @@ def _install_manager(monkeypatch, manager):
     manager._drop_fact_ops()
     monkeypatch.setattr("deerflow.agents.memory.tools.get_memory_manager", lambda: manager)
     monkeypatch.setattr("deerflow.agents.memory.tools.resolve_runtime_user_id", lambda runtime: "test-user")
+    monkeypatch.setattr("deerflow.agents.memory.tools.is_memory_scope_authorized_sync", lambda *args, **kwargs: True)
     return manager
+
+
+def test_tools_do_not_touch_memory_manager_when_scope_is_denied(monkeypatch):
+    import deerflow.agents.memory.tools as tools_module
+
+    monkeypatch.setattr(tools_module, "resolve_runtime_user_id", lambda runtime: "test-user")
+    monkeypatch.setattr(tools_module, "is_memory_scope_authorized_sync", lambda *args, **kwargs: False)
+
+    def unexpected_manager_access():
+        raise AssertionError("memory storage must not be accessed after an IAM scope denial")
+
+    monkeypatch.setattr(tools_module, "get_memory_manager", unexpected_manager_access)
+    runtime = SimpleNamespace(context={"user_id": "test-user"})
+
+    results = [
+        tools_module.memory_search_tool.func(runtime, "query"),
+        tools_module.memory_add_tool.func(runtime, "fact"),
+        tools_module.memory_update_tool.func(runtime, "fact-id", content="updated"),
+        tools_module.memory_delete_tool.func(runtime, "fact-id"),
+    ]
+
+    assert all(json.loads(result) == {"error": "Memory authorization denied"} for result in results)
 
 
 class TestGetMemoryTools:

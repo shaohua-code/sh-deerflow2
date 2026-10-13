@@ -16,12 +16,13 @@ The provider is enforced at **two layers** from one policy:
    via a thin adapter (see :mod:`deerflow.authz.adapter`), catching dynamic
    resources and argument-based restrictions.
 
-See ``docs/plans/2026-07-10-pluggable-authorization-rfc.md`` (issue #4063) for
+See ``docs/plans/身份与授权设计记录.md`` (issue #4063) for
 the full design rationale.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -80,6 +81,36 @@ class AuthzDecision:
     reasons: list[AuthzReason] = field(default_factory=list)
     policy_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def is_authz_decision(value: Any) -> bool:
+    """Accept local decisions and well-formed decisions from external providers.
+
+    AuthorizationProvider is a structural protocol so an independently
+    packaged provider should not need to import DeerFlow's dataclass. Validate
+    its complete public shape here instead of rejecting equivalent decisions
+    solely because their Python class comes from another package.
+    """
+    if isinstance(value, AuthzDecision):
+        return True
+    try:
+        allow = getattr(value, "allow", None)
+        reasons = getattr(value, "reasons", None)
+        policy_id = getattr(value, "policy_id", None)
+        metadata = getattr(value, "metadata", None)
+        return (
+            isinstance(allow, bool)
+            and isinstance(reasons, list)
+            and all(
+                isinstance(getattr(reason, "code", None), str)
+                and isinstance(getattr(reason, "message", ""), str)
+                for reason in reasons
+            )
+            and (policy_id is None or isinstance(policy_id, str))
+            and isinstance(metadata, Mapping)
+        )
+    except Exception:
+        return False
 
 
 @runtime_checkable

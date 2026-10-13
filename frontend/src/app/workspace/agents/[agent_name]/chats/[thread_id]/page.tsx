@@ -1,12 +1,17 @@
 "use client";
 
-import { BotIcon, PlusSquare } from "lucide-react";
+import {
+  AlertCircleIcon,
+  BotIcon,
+  LoaderCircleIcon,
+  PlusSquare,
+  RefreshCwIcon,
+} from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { BrowserTrigger } from "@/components/workspace/browser-view";
@@ -36,8 +41,13 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { useAgent } from "@/core/agents";
+import { GatewayApiError } from "@/core/api/errors";
 import { useAuth } from "@/core/auth/AuthProvider";
-import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  getChatSubmissionBlock,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { useBrowserControlEnabled } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -63,18 +73,31 @@ import {
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
 export default function AgentChatPage() {
   const { t } = useI18n();
   const { user } = useAuth();
+  const canReadAgent = hasPermission(user, PERMISSIONS.AGENTS_READ);
+  // 智能体会话的发送、续答与重新生成都创建 Gateway run。
+  const submissionBlock = getChatSubmissionBlock(user);
+  const canSubmit = submissionBlock === null;
   const canStopStreaming = hasPermission(user, PERMISSIONS.RUNS_CANCEL);
+  // 文本运行允许 `runs:create`，附件上传另由 Gateway 的 `threads:write` 保护。
+  const canUploadFiles = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   const router = useRouter();
 
   const { agent_name } = useParams<{
     agent_name: string;
   }>();
 
-  const { agent, isLoading: agentSkillsLoading } = useAgent(agent_name);
+  const {
+    agent,
+    isLoading: agentLoading,
+    isFetching: agentFetching,
+    error: agentError,
+    refetch: refetchAgent,
+  } = useAgent(agent_name, canReadAgent);
 
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
@@ -179,6 +202,7 @@ export default function AgentChatPage() {
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
+      if (!canSubmit) return;
       const sendPromise = sendMessage(
         threadId,
         message,
@@ -188,13 +212,17 @@ export default function AgentChatPage() {
       if (message.files.length > 0) {
         return sendPromise;
       }
-      void sendPromise;
+      // Text-only submits clear the composer optimistically. The thread hook
+      // owns the localized error toast; consume the rejected promise here so
+      // a failed request does not become an unhandled browser rejection.
+      void sendPromise.catch(() => undefined);
     },
-    [sendMessage, threadId, agent_name],
+    [canSubmit, sendMessage, threadId, agent_name],
   );
 
   const handleSubmitHumanInput = useCallback(
     async (request: HumanInputRequest, response: HumanInputResponse) => {
+      if (!canSubmit) return false;
       let sent = false;
       await sendMessage(
         threadId,
@@ -215,21 +243,25 @@ export default function AgentChatPage() {
       );
       return sent;
     },
-    [agent_name, sendMessage, threadId],
+    [agent_name, canSubmit, sendMessage, threadId],
   );
 
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
   const handleRegenerate = useCallback(
-    (messageId: string, supersededMessageIds: string[]) =>
-      regenerateMessage(threadId, messageId, supersededMessageIds),
-    [regenerateMessage, threadId],
+    (messageId: string, supersededMessageIds: string[]) => {
+      if (!canSubmit) return;
+      return regenerateMessage(threadId, messageId, supersededMessageIds);
+    },
+    [canSubmit, regenerateMessage, threadId],
   );
   const handleEditAndRegenerate = useCallback(
-    (messageId: string, replacementText: string) =>
-      editAndRegenerateMessage(threadId, messageId, replacementText),
-    [editAndRegenerateMessage, threadId],
+    (messageId: string, replacementText: string) => {
+      if (!canSubmit) return;
+      return editAndRegenerateMessage(threadId, messageId, replacementText);
+    },
+    [canSubmit, editAndRegenerateMessage, threadId],
   );
 
   const tokenUsageInlineMode = tokenUsageEnabled
@@ -254,6 +286,22 @@ export default function AgentChatPage() {
     [thread.messages],
   );
 
+  // 详情读取成功前不展示可发送的输入框，避免不存在或无权限的 Agent
+  // 看起来可以对话，直到发送后才暴露一个难以理解的运行失败。
+  if (!canReadAgent || agent === null || agentError) {
+    return (
+      <AgentChatLoadState
+        agentName={agent_name}
+        error={agentError}
+        isLoading={agentLoading}
+        isFetching={agentFetching}
+        permissionDenied={!canReadAgent}
+        onRetry={() => void refetchAgent()}
+        onBack={() => router.push("/workspace/agents")}
+      />
+    );
+  }
+
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
       <SidecarProvider
@@ -271,7 +319,7 @@ export default function AgentChatPage() {
                   : "bg-background/80 z-30 shadow-xs backdrop-blur",
               )}
             >
-              <SidebarTrigger className="md:hidden" />
+              <WorkspaceSidebarTrigger className="md:hidden" />
               {/* Agent badge */}
               <div className="flex min-w-0 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1">
                 <BotIcon className="text-primary h-3.5 w-3.5" />
@@ -361,6 +409,7 @@ export default function AgentChatPage() {
                   isHistoryLoading={isHistoryLoading}
                   tokenUsageInlineMode={tokenUsageInlineMode}
                   canRegenerate={
+                    canSubmit &&
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
@@ -369,6 +418,7 @@ export default function AgentChatPage() {
                   }
                   onRegenerateMessage={handleRegenerate}
                   canEdit={
+                    canSubmit &&
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
@@ -379,7 +429,9 @@ export default function AgentChatPage() {
                   }
                   onEditAndRegenerateMessage={handleEditAndRegenerate}
                   onSubmitHumanInput={
-                    isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                    !canSubmit ||
+                    isMock ||
+                    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
                       ? undefined
                       : handleSubmitHumanInput
                   }
@@ -427,6 +479,22 @@ export default function AgentChatPage() {
                     </div>
                   )}
 
+                  {submissionBlock && (
+                    <p
+                      className="text-muted-foreground px-3 pb-2 text-center text-xs"
+                      role="status"
+                    >
+                      {t.inputBox.runPermissionRequired}
+                    </p>
+                  )}
+                  {!canUploadFiles && (
+                    <p
+                      className="text-muted-foreground px-3 pb-2 text-center text-xs"
+                      role="status"
+                    >
+                      {t.inputBox.uploadPermissionRequired}
+                    </p>
+                  )}
                   <InputBox
                     className={cn(
                       "bg-background/5 w-full",
@@ -437,7 +505,7 @@ export default function AgentChatPage() {
                     draftThreadId={isNewThread ? "new" : threadId}
                     draftAgentName={agent_name}
                     agentSkillNames={agent?.skills}
-                    agentSkillsLoading={agentSkillsLoading}
+                    agentSkillsLoading={agentLoading}
                     defaultModelName={agent?.model}
                     autoFocus={isWelcomeMode}
                     status={
@@ -468,6 +536,8 @@ export default function AgentChatPage() {
                     onGoalChange={setLocalGoal}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    canUploadFiles={canUploadFiles}
+                    canSubmit={canSubmit}
                     canStopStreaming={canStopStreaming}
                   />
                   {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
@@ -482,5 +552,96 @@ export default function AgentChatPage() {
         </ChatBox>
       </SidecarProvider>
     </ThreadContext.Provider>
+  );
+}
+
+function AgentChatLoadState({
+  agentName,
+  error,
+  isLoading,
+  isFetching,
+  permissionDenied,
+  onRetry,
+  onBack,
+}: {
+  agentName: string;
+  error: Error | null;
+  isLoading: boolean;
+  isFetching: boolean;
+  permissionDenied: boolean;
+  onRetry: () => void;
+  onBack: () => void;
+}) {
+  const { t } = useI18n();
+  const notFound = error instanceof GatewayApiError && error.status === 404;
+
+  return (
+    <div className="flex size-full min-h-0 flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-2 sm:px-4">
+        <WorkspaceSidebarTrigger className="md:hidden" />
+        <div className="flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1">
+          <BotIcon className="text-primary size-3.5 shrink-0" />
+          <span className="truncate text-xs font-medium">{agentName}</span>
+        </div>
+      </header>
+
+      <main className="flex flex-1 items-center justify-center p-6">
+        {permissionDenied ? (
+          <div
+            className="flex w-full max-w-md flex-col items-center gap-4 text-center"
+            role="alert"
+          >
+            <div className="bg-destructive/10 flex size-14 items-center justify-center rounded-full">
+              <AlertCircleIcon className="text-destructive size-7" />
+            </div>
+            <p className="text-muted-foreground text-sm">
+              {t.agents.permissionRequired(PERMISSIONS.AGENTS_READ)}
+            </p>
+            <Button variant="outline" onClick={onBack}>
+              {t.agents.backToGallery}
+            </Button>
+          </div>
+        ) : isLoading || error === null ? (
+          <div
+            className="text-muted-foreground flex flex-col items-center gap-3 text-center"
+            role="status"
+            aria-live="polite"
+          >
+            <LoaderCircleIcon className="text-primary size-8 animate-spin" />
+            <p className="text-sm">{t.agents.detailLoading}</p>
+          </div>
+        ) : (
+          <div
+            className="flex w-full max-w-md flex-col items-center gap-4 text-center"
+            role="alert"
+          >
+            <div className="bg-destructive/10 flex size-14 items-center justify-center rounded-full">
+              <AlertCircleIcon className="text-destructive size-7" />
+            </div>
+            <div className="space-y-1.5">
+              <h1 className="text-lg font-semibold">
+                {notFound ? t.agents.detailNotFound : t.agents.detailLoadFailed}
+              </h1>
+              <p className="text-muted-foreground text-sm">
+                {notFound
+                  ? t.agents.detailNotFoundHint
+                  : t.agents.detailLoadFailedHint}
+              </p>
+            </div>
+            <div className="flex w-full flex-col-reverse justify-center gap-2 sm:w-auto sm:flex-row">
+              <Button variant="outline" onClick={onBack}>
+                {t.agents.backToGallery}
+              </Button>
+              <Button disabled={isFetching} onClick={onRetry}>
+                <RefreshCwIcon
+                  className={`size-4 ${isFetching ? "animate-spin" : ""}`}
+                />
+                {isFetching ? t.agents.retrying : t.agents.retry}
+              </Button>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
   );
 }

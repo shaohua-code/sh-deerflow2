@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import AwareDatetime, BaseModel, Field
 
-from app.gateway.authz import require_permission
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import (
     get_config,
     get_optional_user_from_request,
@@ -35,6 +36,43 @@ from deerflow.utils.thread_id import ThreadId
 router = APIRouter(prefix="/api", tags=["scheduled-tasks"])
 
 _DEFAULT_ASSISTANT_ID = "lead_agent"
+
+
+async def _require_scope(
+    request: Request,
+    user: Any,
+    *,
+    target: str,
+    action: str,
+    resource_id: str | None = None,
+) -> None:
+    """Apply IAM's self data scope before a scheduled-task repo operation.
+
+    DeerFlow stores scheduled tasks under the authenticated local ``user_id``
+    and currently has no tenant/organization ownership columns. The IAM bridge
+    validates the caller's owner scope; each repository call below still uses
+    the same local owner filter as a second boundary.
+    """
+    await require_iam_data_scope_for_request(
+        request,
+        user,
+        target=target,
+        action=action,
+        resource_id=resource_id,
+    )
+
+
+def _require_request_permission(request: Request, permission: str) -> None:
+    """Enforce a conditional route permission carried by Gateway middleware.
+
+    Reusing an existing thread is optional on task create/update, so a static
+    decorator would over-restrict fresh-thread tasks. The outer permission
+    decorators have already populated ``request.state.auth`` in production.
+    Direct handler tests may omit that middleware state.
+    """
+    auth = getattr(getattr(request, "state", None), "auth", None)
+    if auth is not None and not auth.has_permission(permission):
+        raise HTTPException(status_code=403, detail=f"Permission denied: {permission}")
 
 
 def _active_occurrence_conflict_detail(status: str) -> str:
@@ -180,6 +218,7 @@ async def list_scheduled_tasks(request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         return []
+    await _require_scope(request, user, target="threads:read", action="read")
     return await repo.list_by_user(str(user.id))
 
 
@@ -188,16 +227,35 @@ async def list_scheduled_tasks(request: Request):
 @require_permission("runs", "create")
 async def create_scheduled_task(request: Request, body: ScheduledTaskCreateRequest):
     config = get_config()
-    repo = get_scheduled_task_repo(request)
-    thread_store = get_thread_store(request)
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    # A scheduled task is a durable request to create future Agent runs. Check
+    # both capabilities before reading a referenced thread or writing the task.
+    await _require_scope(request, user, target="threads:write", action="write")
+    await _require_scope(request, user, target="runs:create", action="create")
+    repo = get_scheduled_task_repo(request)
     if body.context_mode not in {"fresh_thread_per_run", "reuse_thread"}:
         raise HTTPException(status_code=422, detail="Unsupported context_mode")
     if body.context_mode == "reuse_thread":
         if not body.thread_id:
             raise HTTPException(status_code=422, detail="reuse_thread requires thread_id")
+        _require_request_permission(request, "threads:read")
+        await _require_scope(
+            request,
+            user,
+            target="threads:read",
+            action="read",
+            resource_id=str(body.thread_id),
+        )
+        await _require_scope(
+            request,
+            user,
+            target="threads:write",
+            action="write",
+            resource_id=str(body.thread_id),
+        )
+        thread_store = get_thread_store(request)
         if not await thread_store.check_access(body.thread_id, str(user.id), require_existing=True):
             raise HTTPException(status_code=404, detail="Thread not found")
     if body.schedule_type not in {"once", "cron", "interval"}:
@@ -234,7 +292,7 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
         body.assistant_id,
         user_id=str(user.id),
     )
-    return await repo.create(
+    task = await repo.create(
         task_id=f"task-{uuid.uuid4().hex}",
         user_id=str(user.id),
         thread_id=body.thread_id,
@@ -247,6 +305,13 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
         timezone=body.timezone,
         next_run_at=next_run_at,
     )
+    await notify_action_audit(
+        request,
+        action="scheduled_task.create",
+        resource_type="scheduled_task",
+        resource_id=task["id"],
+    )
+    return task
 
 
 @router.get("/scheduled-tasks/{task_id}")
@@ -256,6 +321,7 @@ async def get_scheduled_task(task_id: str, request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:read", action="read")
     task = await repo.get(task_id, user_id=str(user.id))
     if task is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
@@ -271,6 +337,7 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:write", action="write")
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
@@ -290,6 +357,21 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
     if effective_context_mode == "reuse_thread":
         if not effective_thread_id:
             raise HTTPException(status_code=422, detail="reuse_thread requires thread_id")
+        _require_request_permission(request, "threads:read")
+        await _require_scope(
+            request,
+            user,
+            target="threads:read",
+            action="read",
+            resource_id=str(effective_thread_id),
+        )
+        await _require_scope(
+            request,
+            user,
+            target="threads:write",
+            action="write",
+            resource_id=str(effective_thread_id),
+        )
         thread_store = get_thread_store(request)
         if not await thread_store.check_access(str(effective_thread_id), str(user.id), require_existing=True):
             raise HTTPException(status_code=404, detail="Thread not found")
@@ -372,6 +454,12 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
         ) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
+    await notify_action_audit(
+        request,
+        action="scheduled_task.update",
+        resource_type="scheduled_task",
+        resource_id=task_id,
+    )
     return updated
 
 
@@ -382,6 +470,7 @@ async def pause_scheduled_task(task_id: str, request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:write", action="write")
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
@@ -403,7 +492,14 @@ async def pause_scheduled_task(task_id: str, request: Request):
             status_code=409,
             detail="Scheduled task is already launching or running; retry after the active execution finishes",
         )
-    return await repo.get(task_id, user_id=str(user.id))
+    updated = await repo.get(task_id, user_id=str(user.id))
+    await notify_action_audit(
+        request,
+        action="scheduled_task.pause",
+        resource_type="scheduled_task",
+        resource_id=task_id,
+    )
+    return updated
 
 
 @router.post("/scheduled-tasks/{task_id}/resume")
@@ -414,6 +510,8 @@ async def resume_scheduled_task(task_id: str, request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:write", action="write")
+    await _require_scope(request, user, target="runs:create", action="create")
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
@@ -432,6 +530,12 @@ async def resume_scheduled_task(task_id: str, request: Request):
         ) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
+    await notify_action_audit(
+        request,
+        action="scheduled_task.resume",
+        resource_type="scheduled_task",
+        resource_id=task_id,
+    )
     return updated
 
 
@@ -444,26 +548,44 @@ async def trigger_scheduled_task(task_id: str, request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:write", action="write")
+    await _require_scope(request, user, target="runs:create", action="create")
     task = await repo.get(task_id, user_id=str(user.id))
     if task is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
     result = await service.dispatch_task(task, now=datetime.now(UTC), trigger="manual")
     if result["outcome"] == "not_found":
         raise HTTPException(status_code=404, detail=result["error"] or "Scheduled task not found")
+    if result["outcome"] == "denied":
+        # Background dispatch can lose its live IAM grant after a run was
+        # queued. Surface a safe authorization/service response to the caller;
+        # the scheduler has already paused the task and cancelled queued work.
+        status_code = result.get("status_code")
+        if status_code not in {403, 503}:
+            status_code = 403
+        detail = result.get("error") or "Scheduled task authorization is unavailable"
+        raise HTTPException(status_code=status_code, detail=detail)
     if result["outcome"] == "conflict":
         raise HTTPException(status_code=409, detail=result["error"] or "Scheduled task trigger conflicted with an active run")
     if result["outcome"] == "failed":
         raise HTTPException(status_code=502, detail=result["error"] or "Scheduled task trigger failed")
+    await notify_action_audit(
+        request,
+        action="scheduled_task.trigger",
+        resource_type="scheduled_task",
+        resource_id=task_id,
+    )
     return {"id": task_id, "triggered": True}
 
 
 @router.delete("/scheduled-tasks/{task_id}")
-@require_permission("threads", "write")
+@require_permission("threads", "delete")
 async def delete_scheduled_task(task_id: str, request: Request):
     repo = get_scheduled_task_repo(request)
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:delete", action="delete")
     result = await repo.delete_with_queue_cancellation(
         task_id,
         user_id=str(user.id),
@@ -477,10 +599,17 @@ async def delete_scheduled_task(task_id: str, request: Request):
             status_code=409,
             detail="Scheduled task is already launching or running; retry after the active execution finishes",
         )
+    await notify_action_audit(
+        request,
+        action="scheduled_task.delete",
+        resource_type="scheduled_task",
+        resource_id=task_id,
+    )
     return {"id": task_id, "deleted": True}
 
 
 @router.get("/scheduled-tasks/{task_id}/runs")
+@require_permission("runs", "read")
 @require_permission("threads", "read")
 async def list_scheduled_task_runs(
     task_id: str,
@@ -494,6 +623,8 @@ async def list_scheduled_task_runs(
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    await _require_scope(request, user, target="threads:read", action="read")
+    await _require_scope(request, user, target="runs:read", action="read")
     task = await task_repo.get(task_id, user_id=str(user.id))
     if task is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")

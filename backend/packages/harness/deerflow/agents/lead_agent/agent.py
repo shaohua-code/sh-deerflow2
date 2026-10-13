@@ -52,7 +52,7 @@ from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddlewar
 from deerflow.agents.task_continuity.tools import append_task_continuity_tools
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
 from deerflow.authz.principal import build_principal_from_context
-from deerflow.authz.provider import AuthzDecision, AuthzRequest
+from deerflow.authz.provider import AuthzRequest, is_authz_decision
 from deerflow.authz.runtime import resolve_authorization_provider
 from deerflow.authz.tool_filter import apply_tool_authorization
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
@@ -283,7 +283,7 @@ def _authorize_model_name(
     # being silently selected at runtime.
     try:
         decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=model_name))
-        if not isinstance(decision, AuthzDecision):
+        if not is_authz_decision(decision):
             raise TypeError("AuthorizationProvider.authorize must return AuthzDecision")
         if decision.allow:
             return model_name
@@ -313,7 +313,7 @@ def _authorize_model_name(
             continue  # already denied above
         try:
             cb_decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=candidate))
-            if isinstance(cb_decision, AuthzDecision) and cb_decision.allow:
+            if is_authz_decision(cb_decision) and cb_decision.allow:
                 logger.warning(
                     "Model '%s' is not authorized for the current role; fallback to '%s'.",
                     model_name,

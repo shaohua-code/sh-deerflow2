@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 from app.scheduler.service import ScheduledTaskService
 from deerflow.runtime import ConflictError, RunStatus
@@ -18,6 +19,7 @@ class DummyTaskRepo:
         self.release_calls = []
         self.cancelled_stuck_once = None
         self.reconciled_stuck_once = None
+        self.authorization_pauses = []
 
     async def cancel_stuck_once_tasks(self, *, error):
         self.cancelled_stuck_once = error
@@ -65,6 +67,15 @@ class DummyTaskRepo:
         row.update(updates)
         return dict(row)
 
+    async def pause_with_queue_cancellation(self, task_id: str, *, user_id: str, error: str, now, allow_executing=False):
+        row = next((item for item in self.rows if item["id"] == task_id and item["user_id"] == user_id), None)
+        if row is None:
+            return "not_found"
+        row["status"] = "paused"
+        row["last_error"] = error
+        self.authorization_pauses.append((task_id, error, allow_executing))
+        return "paused"
+
 
 class DummyRunRepo:
     def __init__(self, *, active=False, active_count=0):
@@ -75,6 +86,7 @@ class DummyRunRepo:
         self.stale_marked = None
         self.reconciled = None
         self.reconcile_count = 0
+        self.claimed = []
 
     async def count_active_runs(self):
         return self.active_count
@@ -99,6 +111,7 @@ class DummyRunRepo:
         }
 
     async def claim_queued_run(self, run_record_id, *, global_max_concurrent_runs, **_kwargs):
+        self.claimed.append(run_record_id)
         if self.active_count >= global_max_concurrent_runs:
             return None
         return {"id": run_record_id, "status": "launching"}
@@ -258,6 +271,143 @@ async def test_fresh_thread_per_run_creates_new_execution_thread():
 
     assert run_repo.created["thread_id"] != "thread-template"
     assert task_repo.updated[1]["last_thread_id"] == run_repo.created["thread_id"]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_dispatch_rechecks_authorization_and_passes_it_to_run():
+    authorization_context = object()
+    launched = []
+
+    async def authorize(_task):
+        return authorization_context
+
+    async def fake_launch(**kwargs):
+        launched.append(kwargs)
+        return {"run_id": "run-authorized", "thread_id": kwargs["thread_id"]}
+
+    row = _once_task_row(task_id="task-authorized", status="enabled")
+    row.update({"schedule_type": "cron", "schedule_spec": {"cron": "0 * * * *"}})
+    task_repo = DummyTaskRepo([row])
+    run_repo = DummyRunRepo()
+    service = ScheduledTaskService(
+        task_repo=task_repo,
+        task_run_repo=run_repo,
+        launch_run=fake_launch,
+        poll_interval_seconds=5,
+        lease_seconds=120,
+        max_concurrent_runs=3,
+        authorize_dispatch=authorize,
+    )
+
+    result = await service.dispatch_task(row, now=datetime.now(UTC), trigger="manual")
+
+    assert result["outcome"] == "launched"
+    assert launched[0]["authorization_context"] is authorization_context
+    assert run_repo.created["status"] == "queued"
+    assert task_repo.authorization_pauses == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_dispatch_denial_pauses_before_creating_occurrence():
+    async def authorize(_task):
+        raise HTTPException(status_code=403, detail="IAM grant revoked")
+
+    async def should_not_launch(**_kwargs):
+        pytest.fail("a denied scheduled occurrence must not launch")
+
+    row = _once_task_row(task_id="task-denied", status="enabled")
+    row.update({"schedule_type": "cron", "schedule_spec": {"cron": "0 * * * *"}})
+    task_repo = DummyTaskRepo([row])
+    run_repo = DummyRunRepo()
+    service = ScheduledTaskService(
+        task_repo=task_repo,
+        task_run_repo=run_repo,
+        launch_run=should_not_launch,
+        poll_interval_seconds=5,
+        lease_seconds=120,
+        max_concurrent_runs=3,
+        authorize_dispatch=authorize,
+    )
+
+    result = await service.dispatch_task(row, now=datetime.now(UTC), trigger="manual")
+
+    assert result["outcome"] == "denied"
+    assert result["status_code"] == 403
+    assert run_repo.created is None
+    assert task_repo.rows[0]["status"] == "paused"
+    assert task_repo.authorization_pauses[0][0] == "task-denied"
+
+
+@pytest.mark.asyncio
+async def test_queued_occurrence_rechecks_authorization_before_claim():
+    async def authorize(_task):
+        raise HTTPException(status_code=403, detail="IAM grant revoked")
+
+    async def should_not_launch(**_kwargs):
+        pytest.fail("a queued occurrence without authorization must not launch")
+
+    row = _once_task_row(task_id="task-queued-denied", status="enabled")
+    task_repo = DummyTaskRepo([row])
+    run_repo = DummyRunRepo()
+    service = ScheduledTaskService(
+        task_repo=task_repo,
+        task_run_repo=run_repo,
+        launch_run=should_not_launch,
+        poll_interval_seconds=5,
+        lease_seconds=120,
+        max_concurrent_runs=3,
+        authorize_dispatch=authorize,
+    )
+
+    result = await service._attempt_queued_run(
+        row,
+        {"id": "queued-run-1", "task_id": row["id"], "thread_id": "thread-1", "trigger": "manual"},
+        now=datetime.now(UTC),
+    )
+
+    assert result["outcome"] == "denied"
+    assert run_repo.claimed == []
+    assert task_repo.rows[0]["status"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_queue_drain_does_not_launch_after_owner_authorization_is_revoked():
+    async def authorize(_task):
+        raise HTTPException(status_code=403, detail="IAM grant revoked")
+
+    async def should_not_launch(**_kwargs):
+        pytest.fail("authorization must be revalidated after an occurrence waits in the queue")
+
+    row = _once_task_row(task_id="task-revoked-while-queued", status="enabled")
+
+    class QueuedRunRepo(DummyRunRepo):
+        async def list_queued_runs(self, *, limit):
+            return [
+                {
+                    "id": "queued-run-revoked",
+                    "task_id": row["id"],
+                    "thread_id": "thread-queued",
+                    "trigger": "manual",
+                }
+            ]
+
+    task_repo = DummyTaskRepo([row])
+    run_repo = QueuedRunRepo()
+    service = ScheduledTaskService(
+        task_repo=task_repo,
+        task_run_repo=run_repo,
+        launch_run=should_not_launch,
+        poll_interval_seconds=5,
+        lease_seconds=120,
+        max_concurrent_runs=3,
+        authorize_dispatch=authorize,
+    )
+
+    await service._drain_queue(now=datetime.now(UTC))
+
+    assert run_repo.claimed == []
+    assert task_repo.rows[0]["status"] == "paused"
+    assert task_repo.authorization_pauses[0][0] == row["id"]
 
 
 @pytest.mark.asyncio

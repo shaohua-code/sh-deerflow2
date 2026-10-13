@@ -134,6 +134,19 @@ class SqlAgentStore(AgentStore):
             rows = list(session.execute(stmt).scalars())
         return [parse_agent_config(r.config or {}, r.name) for r in rows]
 
+    def list_owned(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[str, AgentConfig, str | None]]:
+        """Read a bounded exact-owner page, including matching SOUL text."""
+        stmt = select(AgentRow).where(AgentRow.user_id == user_id).order_by(AgentRow.name.asc()).offset(offset).limit(limit)
+        with self._Session() as session:
+            rows = list(session.execute(stmt).scalars())
+        return [(row.user_id, parse_agent_config(row.config or {}, row.name), row.soul or None) for row in rows]
+
     def list_all(self) -> list[tuple[str, AgentConfig]]:
         stmt = select(AgentRow).order_by(AgentRow.user_id.asc(), AgentRow.name.asc())
         with self._Session() as session:

@@ -6,6 +6,12 @@ import pytest
 from langchain.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
+from deerflow.authz.iam_model_usage_callback import (
+    IamModelUsageCallback,
+    IamModelUsageModelCallback,
+    bind_run_iam_model_usage_callback,
+    reset_run_iam_model_usage_callback,
+)
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
@@ -114,6 +120,28 @@ def test_uses_first_model_when_name_is_none(monkeypatch):
 
     # resolve_class is called — if we reach here without ValueError, the correct model was used
     assert FakeChatModel.captured_kwargs.get("model") == "alpha"
+
+
+def test_factory_binds_trusted_profile_name_to_model_usage_callback(monkeypatch):
+    cfg = _make_app_config([_make_model("local-profile")])
+    _patch_factory(monkeypatch, cfg)
+    callback = IamModelUsageCallback(
+        client=object(),  # type: ignore[arg-type]
+        credentials={},
+        tenant_id="89b7c42d-2879-4f86-8b7f-d896972e8647",
+        application_id="bb65852c-66f1-4a1e-81d5-a23a53807754",
+        model_resource_ids={"local-profile": "71944e33-14f6-4a6c-8915-3a8f3fe9cb31"},
+        reserved_output_tokens={"local-profile": 512},
+    )
+    context_token = bind_run_iam_model_usage_callback(callback)
+    try:
+        model = factory_module.create_chat_model(name="local-profile")
+    finally:
+        reset_run_iam_model_usage_callback(context_token)
+
+    bound = [handler for handler in model.callbacks or [] if isinstance(handler, IamModelUsageModelCallback)]
+    assert len(bound) == 1
+    assert bound[0]._model_name == "local-profile"
 
 
 def test_raises_when_model_not_found(monkeypatch):

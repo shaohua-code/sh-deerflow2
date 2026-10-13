@@ -93,6 +93,9 @@ def _running_studio_server(
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(BACKEND_DIR), env.get("PYTHONPATH")]))
     env["LANGSMITH_LANGGRAPH_API_VARIANT"] = "local_dev"
+    # Some locked dependencies open UTF-8 assets without an explicit encoding;
+    # force UTF-8 mode so Windows locale defaults cannot break the child server.
+    env["PYTHONUTF8"] = "1"
     executable = shutil.which(
         "langgraph",
         path=os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
@@ -138,7 +141,9 @@ def _running_studio_server(
         else:
             process.terminate()
             process.wait(timeout=10)
-            pytest.fail(f"LangGraph dev server failed to start ({last_error!r}).\n{log_path.read_text(encoding='utf-8')}")
+            # Windows subprocess output can contain non-UTF-8 bytes; retain the server log instead of masking the startup failure.
+            startup_log = log_path.read_text(encoding="utf-8", errors="replace")
+            pytest.fail(f"LangGraph dev server failed to start ({last_error!r}).\n{startup_log}")
 
         client = httpx.Client(
             base_url=base_url,
@@ -339,7 +344,15 @@ def test_persisted_legacy_assistants_survive_cross_version_restart(
             assert response.status_code == 200, response.text
             assert response.json()["version"] == 2
 
-    assert (tmp_path / ".langgraph_api" / ".langgraph_ops.pckl").is_file()
+        persistence_path = tmp_path / ".langgraph_api" / ".langgraph_ops.pckl"
+        # LangGraph flushes its in-memory store periodically. Wait while the server
+        # is still alive before simulating a restart, especially on Windows where
+        # Popen.terminate() cannot run the application shutdown hooks.
+        deadline = time.monotonic() + 20
+        while not persistence_path.is_file() and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+    assert persistence_path.is_file()
 
     with _running_studio_server(
         tmp_path,

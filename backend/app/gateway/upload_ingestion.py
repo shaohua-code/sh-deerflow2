@@ -29,9 +29,10 @@ patches keep binding to the one pipeline both callers use.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from collections.abc import AsyncIterator
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -47,12 +48,50 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_WINDOWS_MAX_PATH_CHARS = 260
+_WINDOWS_MAX_STAGE_NAME_CHARS = len(".upload-") + 32 + len(".part")
+
 
 def _uploads() -> Any:
     """Return the uploads router module (late binding — see module docstring)."""
     from app.gateway.routers import uploads
 
     return uploads
+
+
+def _max_upload_filename_bytes(
+    uploads_dir: str | os.PathLike[str],
+    *,
+    is_windows: bool | None = None,
+    max_path_chars: int = _WINDOWS_MAX_PATH_CHARS,
+) -> int:
+    """Return a safe filename budget for the current uploads directory.
+
+    Windows limits the complete path under the default Win32 policy, even
+    though the upload manager's 255-byte component limit is satisfied. The
+    staging file and converted-Markdown staging name also consume that path
+    budget, so account for them before accepting a destination filename.
+    ``is_windows`` and ``max_path_chars`` let tests exercise this platform
+    rule without changing the host's configuration.
+    """
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows:
+        return 255
+
+    directory_text = os.fspath(uploads_dir)
+    if not PureWindowsPath(directory_text).is_absolute():
+        directory_text = str(Path(directory_text).absolute())
+    # 中文注释：Windows 普通路径按 UTF-16 字符计数；用 UTF-8 字节作为上限更保守，
+    # 并为临时 .part 文件及其最长随机名称留出空间，避免要求用户修改系统长路径设置。
+    directory_chars = len(directory_text.encode("utf-16-le")) // 2
+    max_visible_path_chars = max_path_chars - 1  # Reserve the terminating NUL.
+    staging_path_chars = directory_chars + 1 + _WINDOWS_MAX_STAGE_NAME_CHARS
+    if staging_path_chars > max_visible_path_chars:
+        return 0
+
+    available_chars = max_visible_path_chars - directory_chars - 1
+    return max(0, min(255, available_chars))
 
 
 class UnsafeFilenameError(ValueError):
@@ -92,6 +131,7 @@ class ThreadUploadIngestionService:
         self._config = app_config
         self._limits: UploadLimits | None = None
         self._uploads_dir: Path | None = None
+        self._filename_max_bytes = 255
         self._sync_to_sandbox = False
         self._sandbox_lease: SandboxRequestLease | None = None
         self._sandbox: Any = None
@@ -130,6 +170,7 @@ class ThreadUploadIngestionService:
         uploads = _uploads()
         self._limits = uploads._get_upload_limits(self._config)
         self._uploads_dir = await run_file_io(uploads.ensure_uploads_dir, self._thread_id, user_id=self._user_id)
+        self._filename_max_bytes = _max_upload_filename_bytes(self._uploads_dir)
         listing = await run_file_io(uploads.list_files_in_dir, self._uploads_dir)
         self._seen_filenames.update(entry["filename"] for entry in listing["files"])
         sandbox_provider = uploads.get_sandbox_provider()
@@ -167,7 +208,11 @@ class ThreadUploadIngestionService:
             try:
                 return name, await run_file_io(uploads._link_staged_no_overwrite, staged_path, self._uploads_dir, name)
             except FileExistsError:
-                name = uploads.claim_unique_filename(name, self._seen_filenames)
+                name = uploads.claim_unique_filename(
+                    name,
+                    self._seen_filenames,
+                    max_bytes=self._filename_max_bytes,
+                )
 
     async def ingest_chunks(self, chunks: AsyncIterator[bytes], *, display_name: str) -> dict[str, Any]:
         """Ingest one file from a chunk stream; return its wire metadata dict.
@@ -188,7 +233,16 @@ class ThreadUploadIngestionService:
             original_filename = uploads.normalize_filename(display_name)
         except ValueError as exc:
             raise UnsafeFilenameError(str(exc)) from exc
-        safe_filename = uploads.claim_unique_filename(original_filename, self._seen_filenames)
+        if self._filename_max_bytes < 1:
+            raise UnsafeFilenameError("Upload directory path is too long for a safe Windows upload")
+        try:
+            safe_filename = uploads.claim_unique_filename(
+                original_filename,
+                self._seen_filenames,
+                max_bytes=self._filename_max_bytes,
+            )
+        except ValueError as exc:
+            raise UnsafeFilenameError(str(exc)) from exc
 
         file_size = 0
         upload_temp = None
@@ -210,7 +264,11 @@ class ThreadUploadIngestionService:
                     file_path = await run_file_io(uploads._commit_upload_temp_no_overwrite, upload_temp, self._uploads_dir, safe_filename)
                     break
                 except FileExistsError:
-                    safe_filename = uploads.claim_unique_filename(safe_filename, self._seen_filenames)
+                    safe_filename = uploads.claim_unique_filename(
+                        safe_filename,
+                        self._seen_filenames,
+                        max_bytes=self._filename_max_bytes,
+                    )
             upload_temp = None
         except uploads.UnsafeUploadPathError as exc:
             if upload_temp is not None:
@@ -244,7 +302,11 @@ class ThreadUploadIngestionService:
             # another uploaded or derived file, in this session or a
             # concurrent one.
             provisional_md_name = Path(safe_filename).with_suffix(".md").name
-            unique_md_name = uploads.claim_unique_filename(provisional_md_name, self._seen_filenames)
+            unique_md_name = uploads.claim_unique_filename(
+                provisional_md_name,
+                self._seen_filenames,
+                max_bytes=self._filename_max_bytes,
+            )
             md_staging = self._uploads_dir / f"{uploads.UPLOAD_STAGING_PREFIX}{uuid.uuid4().hex}{uploads.UPLOAD_STAGING_SUFFIX}"
             try:
                 md_staged = await uploads.convert_file_to_markdown(file_path, output_path=md_staging)

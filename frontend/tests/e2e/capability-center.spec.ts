@@ -167,9 +167,7 @@ test("the skills catalog fits a mobile viewport", async ({ page }) => {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await page
-    .getByRole("button", { name: "Toggle Sidebar", exact: true })
-    .click();
+  await page.locator("[data-sidebar='trigger']:visible").first().click();
   await expect(
     page.getByRole("link", { name: "Capability Center" }),
   ).toBeVisible();
@@ -184,7 +182,9 @@ test("MCP access errors preserve the independently available Lark integration", 
   );
   await page.goto("/workspace/capabilities");
   await expect(
-    page.getByRole("alert").filter({ hasText: "Admin privileges" }),
+    page.getByText("Admin privileges are required to manage MCP tools.", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
     page.locator("article").filter({ hasText: "Lark / Feishu" }),

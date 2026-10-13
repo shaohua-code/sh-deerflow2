@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { MCPConfigRequestError } from "@/core/mcp/api";
 import {
@@ -52,7 +54,7 @@ export function MCPPluginManager(props: MCPPluginManagerProps) {
           <p role="alert" className="text-muted-foreground text-sm">
             {error instanceof MCPConfigRequestError && error.isAdminRequired
               ? t.settings.tools.adminRequired
-              : `${t.common.error} ${error?.message}`}
+              : t.settings.tools.loadFailed}
           </p>
         )}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -73,6 +75,7 @@ function MCPServerList({
   servers?: Record<string, MCPServerConfig>;
 }) {
   const { t } = useI18n();
+  const { user } = useAuth();
   const { isPending, mutate: enableMCPServer } = useEnableMCPServer();
   const { isPending: isWriting, mutate: mutateServer } = useMCPServerMutation();
   const [editor, setEditor] = useState<
@@ -82,7 +85,11 @@ function MCPServerList({
   const [definitionError, setDefinitionError] = useState<string | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
 
-  const readOnly = env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true";
+  // MCP 配置和状态写入共用 Gateway 的 mcp:admin 守卫；拒绝时保留只读卡片。
+  const permissionDenied =
+    getPermissionState(user, PERMISSIONS.MCP_ADMIN) === "denied";
+  const readOnly =
+    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" || permissionDenied;
   const current = servers ?? {};
   const entries = Object.entries(current).filter(([name, config]) =>
     `${name} ${config.description ?? ""}`
@@ -104,19 +111,21 @@ function MCPServerList({
   }
 
   function openAddEditor() {
+    if (readOnly) return;
     setDefinition("");
     setDefinitionError(null);
     setEditor({ mode: "add" });
   }
 
   function openEditEditor(name: string, config: MCPServerConfig) {
+    if (readOnly) return;
     setDefinition(formatMCPServerDefinition(name, config));
     setDefinitionError(null);
     setEditor({ mode: "edit", name });
   }
 
   function handleSaveDefinition() {
-    if (editor === null) {
+    if (editor === null || readOnly) {
       return;
     }
 
@@ -187,6 +196,7 @@ function MCPServerList({
   }
 
   function handleRemove(name: string) {
+    if (readOnly) return;
     mutateServer(
       { operation: "delete", serverName: name },
       { onSuccess: () => setPendingRemoval(null) },
@@ -195,6 +205,11 @@ function MCPServerList({
 
   return (
     <div className="flex w-full flex-col gap-4">
+      {permissionDenied && (
+        <p role="status" className="text-muted-foreground text-sm">
+          {t.settings.tools.adminRequired}
+        </p>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {toolbar ?? <span />}
         <Button
@@ -222,9 +237,10 @@ function MCPServerList({
                   checked={config.enabled}
                   aria-label={`${t.capabilities.enabled} ${displayName}`}
                   disabled={readOnly || isMutating}
-                  onCheckedChange={(checked) =>
-                    enableMCPServer({ serverName: name, enabled: checked })
-                  }
+                  onCheckedChange={(checked) => {
+                    if (readOnly) return;
+                    enableMCPServer({ serverName: name, enabled: checked });
+                  }}
                 />
                 <Button
                   size="icon"
@@ -283,11 +299,22 @@ function MCPServerList({
         </div>
       )}
 
+      {/* Gateway 写请求不能由关闭本地弹窗撤销；提交后锁定当前定义直到结果返回。 */}
       <Dialog
         open={editor !== null}
         onOpenChange={(open) => !open && !isWriting && closeEditor()}
       >
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogContent
+          className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl"
+          showCloseButton={!isWriting}
+          aria-busy={isWriting}
+          onEscapeKeyDown={(event) => {
+            if (isWriting) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (isWriting) event.preventDefault();
+          }}
+        >
           <DialogHeader className="shrink-0 pr-6 break-words">
             <DialogTitle>
               {editor?.mode === "edit"
@@ -309,6 +336,7 @@ function MCPServerList({
               aria-label={t.settings.tools.serverDefinitionLabel}
               spellCheck={false}
               value={definition}
+              disabled={isWriting || readOnly}
               placeholder={t.settings.tools.addServerPlaceholder}
               onChange={(event) => setDefinition(event.target.value)}
             />
@@ -329,18 +357,31 @@ function MCPServerList({
             >
               {t.common.cancel}
             </Button>
-            <Button disabled={isWriting} onClick={handleSaveDefinition}>
+            <Button
+              disabled={isWriting || readOnly}
+              onClick={handleSaveDefinition}
+            >
               {isWriting ? t.common.loading : t.common.save}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* 删除已经提交后保持目标可见，避免用户把关闭确认框理解成取消删除。 */}
       <Dialog
         open={pendingRemoval !== null}
-        onOpenChange={(open) => !open && setPendingRemoval(null)}
+        onOpenChange={(open) => !open && !isWriting && setPendingRemoval(null)}
       >
-        <DialogContent>
+        <DialogContent
+          showCloseButton={!isWriting}
+          aria-busy={isWriting}
+          onEscapeKeyDown={(event) => {
+            if (isWriting) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (isWriting) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{t.settings.tools.removeServer}</DialogTitle>
             <DialogDescription>
@@ -360,7 +401,7 @@ function MCPServerList({
             </Button>
             <Button
               variant="destructive"
-              disabled={isWriting}
+              disabled={isWriting || readOnly}
               onClick={() =>
                 pendingRemoval !== null && handleRemove(pendingRemoval)
               }

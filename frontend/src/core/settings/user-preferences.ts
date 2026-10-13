@@ -11,6 +11,11 @@ import { activatePreferences } from "./store";
 
 const PREFIX = "deerflow.preferences.";
 
+export type UserPreferencesAccess = {
+  canRead: boolean;
+  canWrite: boolean;
+};
+
 function readJSON(read: () => string | null): Preferences {
   try {
     return parsePreferences(JSON.parse(read() ?? "{}"));
@@ -29,7 +34,10 @@ export function preferencesFromSettings(settings: LocalSettings): Preferences {
 }
 
 /** Network lifecycle is attached to the authenticated workspace, never render. */
-export function startUserPreferences(userId: string) {
+export function startUserPreferences(
+  userId: string,
+  access: UserPreferencesAccess = { canRead: true, canWrite: true },
+) {
   const key = `${PREFIX}${userId}`;
   // sessionStorage is tab-local; a sibling tab cannot overwrite our outbox.
   const outbox = `${key}.pending`;
@@ -66,8 +74,15 @@ export function startUserPreferences(userId: string) {
   const pending = readJSON(() => window.sessionStorage.getItem(outbox));
   const sync = new PreferencesSync(
     {
-      read: async () => parsePreferences(await (await request("GET")).json()),
+      read: async () => {
+        // IAM permissions are independent: a write-only user may submit local
+        // edits without probing a read endpoint they are not allowed to use.
+        if (!access.canRead) return cached;
+        return parsePreferences(await (await request("GET")).json());
+      },
       patch: async (value) => {
+        // A denied write remains a user-scoped local preference; never retry 403.
+        if (!access.canWrite) return;
         await request("PATCH", value);
       },
       saveConfirmed: (value) => {

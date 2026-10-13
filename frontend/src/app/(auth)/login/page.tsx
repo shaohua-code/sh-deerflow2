@@ -1,13 +1,13 @@
 "use client";
 
+import { Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
+import { AuthShell } from "@/components/auth/auth-shell";
 import { RememberSessionOption } from "@/components/auth/remember-session-option";
 import { Button } from "@/components/ui/button";
-import { FlickeringGrid } from "@/components/ui/flickering-grid";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { resolveAuthNextPath } from "@/core/auth/next-path";
@@ -22,16 +22,19 @@ import {
 } from "@/core/auth/setup";
 import { parseAuthError } from "@/core/auth/types";
 import { useI18n } from "@/core/i18n/hooks";
+import { BrandMark } from "@/product/brand-mark";
+import { usePublicProductBrandName } from "@/product/public-brand";
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isAuthenticated } = useAuth();
-  const { theme, resolvedTheme } = useTheme();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const brandName = usePublicProductBrandName(locale);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLogin, setIsLogin] = useState(true);
   const [ssoProviders, setSsoProviders] = useState<
@@ -81,6 +84,7 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, redirectPath, router]);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- 浏览器偏好只能在 SSR 水合后读取，以保持首屏服务端标记一致。 */
   useEffect(() => {
     const preference = loadRememberLoginPreference();
     setRememberMe(preference.rememberMe);
@@ -88,13 +92,14 @@ export default function LoginPage() {
       setEmail(preference.email);
     }
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Fetch setup state independently so retrying a slow Gateway does not also
   // refetch unrelated auth-provider configuration.
   useEffect(() => {
     let cancelled = false;
-    setSetupStatusPhase("checking");
 
+    // 首次状态已是 checking；重试事件会在递增请求序号前切回该状态。
     void fetchSetupStatus()
       .then((data) => {
         if (cancelled) return;
@@ -199,24 +204,22 @@ export default function LoginPage() {
     }
   };
 
-  const actualTheme = theme === "system" ? resolvedTheme : theme;
-
   return (
-    <div className="bg-background relative flex min-h-screen items-center justify-center overflow-x-hidden overflow-y-auto">
-      <FlickeringGrid
-        className="absolute inset-0 z-0 mask-[url(/images/deer.svg)] mask-size-[100vw] mask-center mask-no-repeat md:mask-size-[72vh]"
-        squareSize={4}
-        gridGap={4}
-        color={actualTheme === "dark" ? "white" : "black"}
-        maxOpacity={0.3}
-        flickerChance={0.25}
-      />
-      <div className="border-border/20 bg-background/5 w-full max-w-md space-y-6 rounded-3xl border p-8 backdrop-blur-sm">
-        <div className="text-center">
-          <h1 className="text-foreground font-serif text-3xl">DeerFlow</h1>
-          <p className="text-muted-foreground mt-2">
+    <AuthShell>
+      <div className="space-y-7">
+        <div>
+          <div className="mb-8 flex items-center gap-3">
+            <BrandMark className="size-12 rounded-2xl" />
+            <span
+              className="max-w-[16rem] truncate text-sm font-semibold tracking-tight"
+              title={brandName}
+            >
+              {brandName}
+            </span>
+          </div>
+          <h1 className="text-foreground text-3xl font-semibold tracking-[-0.035em]">
             {isLogin ? t.login.signInTitle : t.login.createAccountTitle}
-          </p>
+          </h1>
         </div>
 
         {showSetupStatusUnavailable && (
@@ -262,33 +265,56 @@ export default function LoginPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-2">
-          <div className="flex flex-col space-y-1">
+        <form onSubmit={handleSubmit} className="space-y-5" aria-busy={loading}>
+          <div className="flex flex-col gap-2">
             <label htmlFor="email" className="text-sm font-medium">
               {t.login.email}
             </label>
             <Input
               id="email"
               type="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder={t.login.emailPlaceholder}
+              className="bg-background/70 h-11 rounded-xl"
               required
             />
           </div>
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-2">
             <label htmlFor="password" className="text-sm font-medium">
               {t.login.password}
             </label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t.login.passwordPlaceholder}
-              required
-              minLength={isLogin ? 6 : 8}
-            />
+            <div className="relative">
+              {/* 只切换显示方式，不更改密码值或认证请求；占位文案也不伪装成已填凭据。 */}
+              <Input
+                id="password"
+                type={passwordVisible ? "text" : "password"}
+                autoComplete={isLogin ? "current-password" : "new-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t.login.passwordPlaceholder}
+                className="bg-background/70 h-11 rounded-xl pr-12"
+                required
+                minLength={isLogin ? 6 : 8}
+              />
+              <button
+                type="button"
+                aria-label={
+                  passwordVisible ? t.login.hidePassword : t.login.showPassword
+                }
+                aria-controls="password"
+                aria-pressed={passwordVisible}
+                onClick={() => setPasswordVisible((visible) => !visible)}
+                className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring absolute top-1 right-1 flex size-9 items-center justify-center rounded-lg transition-colors focus-visible:ring-2 focus-visible:outline-none"
+              >
+                {passwordVisible ? (
+                  <EyeOff className="size-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="size-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
           </div>
 
           <RememberSessionOption
@@ -296,9 +322,21 @@ export default function LoginPage() {
             onCheckedChange={setRememberMe}
           />
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="text-sm text-red-500"
+            >
+              {error}
+            </p>
+          )}
 
-          <Button type="submit" className="w-full" disabled={loading}>
+          <Button
+            type="submit"
+            className="shadow-primary/15 h-11 w-full rounded-xl text-sm font-semibold shadow-md"
+            disabled={loading}
+          >
             {loading
               ? t.login.pleaseWait
               : isLogin
@@ -334,6 +372,8 @@ export default function LoginPage() {
                 className="w-full"
                 disabled={loading}
                 onClick={() => {
+                  // OAuth 启动接口会响应外部身份提供方跳转，整页导航用于接收回调 Cookie。
+                  // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- 此处是 OAuth API 入口而非 Next 页面。
                   window.location.href = `/api/v1/auth/oauth/${provider.id}?next=${encodeURIComponent(redirectPath)}&remember_me=${String(rememberMe)}`;
                 }}
               >
@@ -343,8 +383,9 @@ export default function LoginPage() {
           </div>
         )}
 
-        {regularSignupAllowed && (
-          <div className="text-center text-sm">
+        {/* 预留一行高度，避免 Gateway 返回注册策略后登录表单上下跳动。 */}
+        <div className="min-h-5 text-center text-sm">
+          {regularSignupAllowed && (
             <button
               type="button"
               onClick={() => {
@@ -356,8 +397,8 @@ export default function LoginPage() {
             >
               {isLogin ? t.login.noAccountSignUp : t.login.haveAccountSignIn}
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="text-muted-foreground text-center text-xs">
           <Link href="/" className="hover:underline">
@@ -365,6 +406,6 @@ export default function LoginPage() {
           </Link>
         </div>
       </div>
-    </div>
+    </AuthShell>
   );
 }

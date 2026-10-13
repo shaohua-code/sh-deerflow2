@@ -21,7 +21,7 @@ export const enUS: Translations = {
     integrationSkills: "From plugins",
     sharedSkills: "Shared skills",
     title: "Capability Center",
-    description: "Add tools and skills that help DeerFlow work your way.",
+    description: "Add tools and skills that fit the way your team works.",
     plugins: "Plugins",
     skills: "Skills",
     searchPlugins: "Search plugins by name or purpose",
@@ -48,6 +48,8 @@ export const enUS: Translations = {
     larkDescription:
       "Work with documents, messages, calendars, and multidimensional tables in your conversations.",
     larkTag: "Collaboration",
+    larkStatusUnavailable: "Integration status is temporarily unavailable.",
+    retryIntegrationStatus: "Retry",
     connect: "Connect",
     notInstalled: "Not installed",
     mcpDescription: "Let your agent use the tools provided by this plugin.",
@@ -99,6 +101,7 @@ export const enUS: Translations = {
     exportFailed: "Failed to export conversation.",
     regenerate: "Regenerate",
     editAndRerun: "Edit and rerun",
+    editMessageContent: "Message text to edit",
     updateAndRerun: "Update and rerun",
     editRerunWarning:
       "Rerunning restores conversation state only. Files, memory, and external actions are not undone.",
@@ -106,6 +109,27 @@ export const enUS: Translations = {
     showArtifacts: "Show artifacts of this conversation",
     browser: "Browser",
     showBrowser: "Open browser panel",
+  },
+
+  browserView: {
+    browser: "Browser",
+    back: "Back",
+    forward: "Forward",
+    urlLabel: "Browser URL",
+    urlPlaceholder: "Enter a URL and press Enter",
+    stopLiveControl: "Stop live control",
+    takeLiveControl: "Take live control",
+    live: "Live",
+    connecting: "Connecting…",
+    close: "Close browser panel",
+    screenshotAlt: "Browser view",
+    connectingTitle: "Connecting to live browser…",
+    noActivityTitle: "No browser activity yet",
+    waitingFirstFrame: "Waiting for the first live frame.",
+    emptyDescription:
+      "Enter a URL above or let the agent browse — the live view will appear here.",
+    cannotOpen: (url) => (url ? `Cannot open ${url}` : "Cannot open that URL"),
+    navigationNoScreenshot: "Navigated, but no screenshot could be captured.",
   },
 
   runDuration: {
@@ -129,13 +153,14 @@ export const enUS: Translations = {
 
   // Welcome
   welcome: {
-    greeting: "Hello, again!",
+    workspaceLabel: "AI workspace",
+    greeting: "What would you like to work on today?",
     description:
-      "Welcome to 🦌 DeerFlow, an open source super agent. With built-in and custom skills, DeerFlow helps you search on the web, analyze data, and generate artifacts like slides, web pages and do almost anything.",
+      "Bring a question, a complex task, or a rough idea. Your workspace can research, analyze, and turn it into something useful.",
 
     createYourOwnSkill: "Create Your Own Skill",
     createYourOwnSkillDescription:
-      "Create your own skill to release the power of DeerFlow. With customized skills,\nDeerFlow can help you search on the web, analyze data, and generate\n artifacts like slides, web pages and do almost anything.",
+      "Create reusable skills that give your workspace the tools and context to handle your team's work.",
   },
 
   // Clipboard
@@ -170,6 +195,7 @@ export const enUS: Translations = {
     previewFailed:
       "This file could not be previewed. You can still download it.",
     viewSource: "View source",
+    selectFileLabel: "Select an artifact file",
     missingTarget: "This link does not say which artifact to display.",
   },
 
@@ -205,6 +231,13 @@ export const enUS: Translations = {
     currentVersionNotice:
       "The file list comes from this response. Contents are the current versions and may have changed.",
     downloadFailed: "Failed to download artifact archive.",
+    runUnavailable:
+      "These artifacts are no longer available. Refresh the conversation and try again.",
+    runNotReady:
+      "The artifacts are not ready or have changed. Wait for the run to finish, then try again.",
+    archiveTooLarge:
+      "The archive exceeds the file count or size limit. Choose fewer or smaller files.",
+    archiveBusy: "Artifact archives are busy right now. Try again shortly.",
   },
 
   modelPicker: {
@@ -250,7 +283,7 @@ export const enUS: Translations = {
   // Input Box
   inputBox: {
     placeholder: "How can I assist you today?",
-    disclaimer: "DeerFlow is AI and can make mistakes",
+    disclaimer: "AI can make mistakes",
     createSkillPrompt:
       "We're going to build a new skill step by step with `skill-creator`. To start, what do you want this skill to do?",
     addAttachments: "Add attachments",
@@ -266,13 +299,14 @@ export const enUS: Translations = {
     inputPolish: "Polish input",
     inputPolishing: "Polishing input...",
     inputPolishNoChanges: "This input is already clear.",
-    inputPolishFailed: "Failed to polish input.",
+    inputPolishFailed:
+      "Could not polish the draft. Your original text is unchanged; please retry.",
     inputPolishUndo: "Undo polish",
     inputPolishCancel: "Cancel polishing",
     voiceInputStartLabel: "Dictate with voice",
     voiceInputStopLabel: "Stop voice input",
     voiceInputStart:
-      "Dictate with voice. DeerFlow receives only transcribed text; audio is handled by your browser or system speech service.",
+      "Dictate with voice. This app receives only transcribed text; audio is handled by your browser or system speech service.",
     voiceInputStop: "Stop voice input",
     voiceInputListening: "Listening... Click to stop voice input.",
     voiceInputUnsupported:
@@ -331,13 +365,17 @@ export const enUS: Translations = {
     goalCleared: "Goal cleared.",
     goalNone: "No active goal.",
     goalActive: "Active goal: {goal}",
-    goalFailed: "Goal command failed.",
+    goalFailed: "Could not update the conversation goal. Please try again.",
+    goalConflict:
+      "A run is active in this conversation. Wait until it finishes before changing the goal.",
     goalTooLong: "Goal is too long. Keep it under {max} characters.",
     goalLengthCounter: "Goal length: {length}/{max} characters",
     compactSuccess:
       "Earlier context compacted. The full chat remains visible; future model calls will use the summary and recent messages.",
     compactSkipped: "The current context does not need compaction yet.",
-    compactFailed: "Context compaction failed.",
+    compactConflict:
+      "Context cannot be compacted right now. Wait for active work to finish, or ask your administrator whether compaction is enabled.",
+    compactFailed: "Could not compact context. Please try again.",
     suggestions: [
       {
         suggestion: "Write",
@@ -387,21 +425,34 @@ export const enUS: Translations = {
         icon: SparklesIcon,
       },
     ],
+    sendMessage: "Send message",
+    sendingMessage: "Sending message",
+    stopStreaming: "Stop generating",
     pleaseWaitStreaming: "Please wait for the current response to finish.",
     stopStreamingUnavailable:
       "Stopping the running turn is not permitted for your role.",
+    runPermissionRequired:
+      "You do not have permission to start an Agent run. Ask your administrator for runs:create.",
+    threadPermissionRequired:
+      "You do not have permission to add this conversation to a project. Ask your administrator for threads:write.",
+    uploadPermissionRequired:
+      "You do not have permission to upload files to this conversation. Ask your administrator for threads:write.",
   },
 
   // Sidebar
   sidebar: {
     newChat: "New chat",
     chats: "Chats",
+    expandSidebar: "Expand sidebar",
+    collapseSidebar: "Collapse sidebar",
     channels: "Channels",
     recentChats: "Recent chats",
     demoChats: "Demo chats",
     agents: "Agents",
     scheduledTasks: "Scheduled tasks",
-    agentsDisabledTooltip: "Feature not enabled",
+    files: "Files",
+    agentsDisabledTooltip:
+      "The Gateway has not exposed the custom-agent management API. Ask an administrator to check agents_api.enabled.",
   },
   // Sidebar projects section
   projects: {
@@ -432,7 +483,19 @@ export const enUS: Translations = {
     threadsLoadFailed: "Couldn't load project chats",
     untitled: "Untitled",
     settings: "Settings",
+    settingsSummary: "Manage this project's name and availability.",
+    projectDetailsTitle: "Project details",
+    projectDetailsDescription:
+      "Choose a name that makes this project easy to find.",
+    lifecycleTitle: "Project availability",
+    lifecycleDescription:
+      "Archive a project to hide it from active lists. You can restore it whenever you need it again.",
     notFound: "Project not found or deleted.",
+    loadFailed: "Project could not be loaded.",
+    refreshFailed:
+      "Refresh failed. Showing the last successfully loaded project.",
+    retry: "Retry loading",
+    retrying: "Retrying…",
     projectUnavailable:
       "Couldn't link the chat to the project. Your message was not sent — try again.",
     documents: "Documents",
@@ -440,6 +503,7 @@ export const enUS: Translations = {
     documentsEmptyHint:
       "Upload files or save conversation files to build this project's shelf.",
     instructions: "Instructions",
+    renameFailed: "Failed to rename project",
     instructionsPlaceholder:
       "Background, goals, and conventions the agent should always know for this project…",
     instructionsByteCount: (used, max) => `${used} / ${max} bytes`,
@@ -538,12 +602,12 @@ export const enUS: Translations = {
     cancelling: "Cancelling…",
     cancelFailed: "Failed to cancel task",
     cancellationRetrying: (attempt) =>
-      `Cancellation attempt ${attempt} failed; DeerFlow will keep retrying.`,
+      `Cancellation attempt ${attempt} failed; the app will keep retrying.`,
     notificationRetrying: (attempt) =>
-      `Chat notification attempt ${attempt} failed; DeerFlow will retry with backoff.`,
+      `Chat notification attempt ${attempt} failed; the app will retry with backoff.`,
     notificationStopped:
       "Chat notification delivery stopped after repeated or permanent failures.",
-    trackingDegraded: "Status checks are delayed; DeerFlow is still retrying.",
+    trackingDegraded: "Status checks are delayed; the app is still retrying.",
     viewDetails: "View details",
     hideDetails: "Hide details",
     detailsFailed: "Couldn't load task details",
@@ -584,6 +648,8 @@ export const enUS: Translations = {
     viewItems: "View items",
     hideItems: "Hide items",
     itemsFailed: "Couldn't load batch items",
+    controlFailed: "Failed to update subagent batch",
+    retryFailed: "Failed to retry batch item",
     progress: (completed, total) => `${completed} of ${total} terminal`,
     limits: (live, running) => `Live ${live} · running ${running}`,
     status: {
@@ -621,6 +687,7 @@ export const enUS: Translations = {
       runAt: "Run at",
       timezone: "Timezone",
       intervalAmount: "Every",
+      intervalUnit: "Interval unit",
       intervalUnitSeconds: "seconds",
       intervalUnitMinutes: "minutes",
       intervalUnitHours: "hours",
@@ -644,6 +711,7 @@ export const enUS: Translations = {
       agent: "Agent",
       leadAgent: "Default agent (lead_agent)",
       submit: "Create",
+      success: "Scheduled task created",
       fillRequired: "Fill all required fields",
     },
     context: {
@@ -652,18 +720,21 @@ export const enUS: Translations = {
       threadIdPlaceholder: "Thread ID",
       reuseNoticeTitle: "Uses this thread's conversation history",
       reuseNoticeDescription:
-        "If this thread has an active run at the scheduled time, DeerFlow queues this occurrence and starts it when the thread is available. It fails if the configured queue wait limit is exceeded.",
+        "If this thread has an active run at the scheduled time, the scheduler queues this occurrence and starts it when the thread is available. It fails if the configured queue wait limit is exceeded.",
     },
     filters: {
+      statusLabel: "Status",
       allStatuses: "All statuses",
       enabled: "Enabled",
       paused: "Paused",
       completed: "Completed",
       failed: "Failed",
+      typeLabel: "Type",
       allTypes: "All types",
       cron: "Cron",
       once: "Once",
       interval: "Interval",
+      clearFilters: "Clear filters",
     },
     detail: {
       contextMode: "Context mode",
@@ -680,7 +751,14 @@ export const enUS: Translations = {
       noRuns: "No runs yet",
       noSelection: "No scheduled task selected",
       filteredByThread: "Filtered by thread: {id}",
-      loadFailed: "Failed to load scheduled tasks",
+      loadFailed: "Could not load scheduled tasks.",
+      refreshFailed:
+        "Refresh failed. Showing the last successfully loaded tasks.",
+      retry: "Try again",
+      retrying: "Retrying…",
+      loading: "Loading scheduled tasks…",
+      empty: "No scheduled tasks yet. Create one to see it here.",
+      noFilterResults: "No scheduled tasks match these filters.",
     },
     actions: {
       edit: "Edit",
@@ -767,14 +845,36 @@ export const enUS: Translations = {
     emptyTitle: "No custom agents yet",
     emptyDescription:
       "Create your first custom agent with a specialized system prompt.",
+    loadFailed: "Could not load custom agents.",
+    loadFailedHint:
+      "Check the Gateway connection, then retry. This does not mean your agents were deleted.",
+    detailLoading: "Loading agent…",
+    detailNotFound: "Agent not found",
+    detailNotFoundHint:
+      "It may have been deleted, or your account may not have access. Check the agent gallery, then try again.",
+    detailLoadFailed: "Could not open this agent",
+    detailLoadFailedHint:
+      "Check the Gateway connection or your account access, then retry.",
+    retry: "Retry",
+    retrying: "Retrying...",
     featureDisabledTitle: "Agents feature is not enabled",
     featureDisabledDescription:
       "This feature is not enabled on this server. Please contact your administrator.",
+    featureCheckFailed: "Could not check agent availability",
+    featureCheckFailedHint:
+      "The workspace could not reach the Gateway. Check the connection and retry; this does not mean agents are disabled.",
+    permissionRequired: (permission) =>
+      `Your account needs this permission: ${permission}`,
+    permissionActionsLimited: (permissions) =>
+      `Some agent actions are unavailable because these permissions are missing: ${permissions}`,
     chat: "Chat",
+    chatWith: (agentName) => `Chat with ${agentName}`,
     delete: "Delete",
-    deleteConfirm:
-      "Are you sure you want to delete this agent? This action cannot be undone.",
+    deleteFor: (agentName) => `Delete agent ${agentName}`,
+    deleteConfirm: (agentName) =>
+      `Are you sure you want to delete “${agentName}”? This cannot be undone and will also remove its configuration, SOUL.md, and associated memory files.`,
     deleteSuccess: "Agent deleted",
+    deleteFailed: "Failed to delete agent",
     newChat: "New chat",
     createPageTitle: "Design your Agent",
     createPageSubtitle:
@@ -790,26 +890,37 @@ export const enUS: Translations = {
     nameStepNetworkError:
       "Network request failed — check your network or backend connection",
     nameStepCheckError: "Could not verify name availability — please try again",
-    nameStepCheckErrorWithDetail: "Name check failed: {detail}",
     nameStepApiDisabledError:
       "Custom agent management is not enabled on this server. Please contact your administrator.",
     nameStepBootstrapMessage:
       "The new custom agent name is {name}. Help me design its purpose, behavior, and SOUL.md before saving it.",
+    nameStepBootstrapError:
+      "Could not start agent setup. Check the backend or model connection and retry. Your name is preserved.",
     save: "Save agent",
     saving: "Saving agent...",
     saveRequested:
-      "Save requested. DeerFlow is generating and saving an initial version now.",
+      "Save requested. The workspace is generating and saving an initial version now.",
+    saveFailed: "Failed to save agent. Please try again.",
+    saveNotCompleted:
+      "The agent was not saved because this run did not perform the save action. Please try again.",
     saveHint:
       "You can save this agent at any time from the top-right menu, even if this is only a first draft.",
     saveCommandMessage:
       "Please save this custom agent now based on everything we have discussed so far. Treat this as my explicit confirmation to save. If some details are still missing, make reasonable assumptions, generate a concise first SOUL.md in English, and call setup_agent immediately without asking me for more confirmation.",
     agentCreatedPendingRefresh:
-      "The agent was created, but DeerFlow could not load it yet. Please refresh this page in a moment.",
+      "The agent was saved, but its details are temporarily unavailable. Retry here or check the agent gallery.",
+    loadingCreatedAgent: "Loading the saved agent…",
     more: "More actions",
     agentCreated: "Agent created!",
     startChatting: "Start chatting",
     backToGallery: "Back to Gallery",
+    leaveCreationTitle: "Discard this agent design?",
+    leaveCreationDescription:
+      "The current name or design conversation has not been saved. This temporary work cannot be recovered after you leave.",
+    keepDesigning: "Keep designing",
+    leaveCreation: "Discard and leave",
     settings: "Agent settings",
+    settingsFor: (agentName) => `Agent settings for ${agentName}`,
     settingsTitle: "Agent settings",
     settingsDisplayName: "Display name",
     settingsDisplayNameTooLong:
@@ -818,8 +929,14 @@ export const enUS: Translations = {
       "Supports Unicode. Leave blank to use the agent identifier",
     settingsDescription:
       "Choose a display name and model defaults for this agent. Model changes take effect on the next message.",
+    settingsUnsaved: "The agent settings have unsaved changes.",
     settingsModel: "Default model",
     settingsModelDefault: "Use global default",
+    settingsCurrentModel: (name) => `Currently saved: ${name}`,
+    settingsModelLoadFailed:
+      "The model catalog is temporarily unavailable. The saved model will be preserved, or you can switch to the global default.",
+    settingsModelRetry: "Retry model catalog",
+    settingsModelRetrying: "Retrying…",
     settingsTemperature: "Temperature",
     settingsTemperatureHint: "0 = deterministic, higher = more creative (0–2).",
     settingsMaxTokens: "Max output tokens",
@@ -830,6 +947,7 @@ export const enUS: Translations = {
     settingsReasoningEffort: "Reasoning effort",
     settingsInherit: "Inherit",
     settingsSaved: "Agent settings saved",
+    settingsSaveFailed: "Failed to save agent settings",
     settingsInvalidTemperature: "Temperature must be between 0 and 2",
     settingsInvalidMaxTokens:
       "Max output tokens must be a positive integer up to 200,000",
@@ -843,13 +961,13 @@ export const enUS: Translations = {
 
   // Workspace
   workspace: {
-    officialWebsite: "DeerFlow's official website",
-    githubTooltip: "DeerFlow on GitHub",
+    officialWebsite: "Product website",
+    githubTooltip: "Project repository",
     settingsAndMore: "Settings and more",
-    visitGithub: "DeerFlow on GitHub",
+    visitGithub: "Project repository",
     reportIssue: "Report an issue",
     contactUs: "Contact us",
-    about: "About DeerFlow",
+    about: "About this product",
     logout: "Log out",
     gatewayUnavailable: "Gateway is temporarily unavailable.",
     gatewayUnavailableRetrying: "Retrying in the background…",
@@ -865,6 +983,8 @@ export const enUS: Translations = {
     startConversation: "Start a conversation to see messages here",
     branchCreated: "Conversation branch created",
     branchFailed: "Failed to branch conversation.",
+    streamFailed: "The conversation could not be completed. Please try again.",
+    streamRetrying: "The service is temporarily busy. Retrying…",
     streamReplayGap:
       "Some live updates expired. The conversation was restored from saved state.",
     outlineLabel: "Conversation outline",
@@ -944,28 +1064,42 @@ export const enUS: Translations = {
     unconfigured: "Not configured",
     unavailable: "Channel connections are unavailable right now.",
     unavailableShort: "Unavailable",
+    readPermissionRequired:
+      "You do not have permission to view channel connections. Ask your administrator for channels:read.",
+    writePermissionRequired:
+      "You do not have permission to connect a channel. Ask your administrator for channels:write.",
+    adminPermissionRequired:
+      "A system administrator with channels:admin permission is required to manage runtime credentials.",
+    runtimeConfigSaved:
+      "Channel settings were saved. You do not have permission to start the connection.",
+    connectFailed:
+      "Could not start the channel connection. Check its setup and try again.",
+    configureFailed:
+      "Could not save channel settings. Check the values and try again.",
+    disconnectFailed: "Could not disconnect the channel. Please try again.",
     setupTitle: (name: string) => `Connect ${name}`,
     setupEditTitle: (name: string) => `Modify ${name}`,
     setupDescription:
       "Enter the values needed by this server process. They are not written to config.yaml.",
     saveAndConnect: "Save and connect",
     saveChanges: "Save changes",
+    unsavedRuntimeConfig: "The channel credentials have unsaved changes.",
     descriptions: {
-      buzz: "Buzz channels and direct messages through your DeerFlow agent.",
-      telegram: "Telegram direct messages through your DeerFlow bot.",
+      buzz: "Buzz channels and direct messages through your configured agent.",
+      telegram: "Telegram direct messages through your configured bot.",
       slack: "Slack workspace messages and mentions.",
-      discord: "Discord server messages through your DeerFlow bot.",
-      feishu: "Feishu and Lark messages through your DeerFlow app.",
-      dingtalk: "DingTalk Stream Push messages through your DeerFlow bot.",
-      wechat: "WeChat iLink messages through your DeerFlow bot.",
-      wecom: "WeCom messages through your DeerFlow AI bot.",
+      discord: "Discord server messages through your configured bot.",
+      feishu: "Feishu and Lark messages through your configured app.",
+      dingtalk: "DingTalk Stream Push messages through your configured bot.",
+      wechat: "WeChat iLink messages through your configured bot.",
+      wecom: "WeCom messages through your configured AI bot.",
     },
     connectedAs: (name: string) => `Connected as ${name}.`,
   },
 
   // Page titles (document title)
   pages: {
-    appName: "DeerFlow",
+    appName: "Flow Desk",
     chats: "Chats",
     newChat: "New chat",
     untitled: "Untitled",
@@ -1001,7 +1135,8 @@ export const enUS: Translations = {
     writeFile: "Write file",
     clickToViewContent: "Click to view file content",
     writeTodos: "Update to-do list",
-    skillInstallTooltip: "Install skill and make it available to DeerFlow",
+    skillInstallTooltip:
+      "Install a skill and make it available in this workspace",
     browserNavigate: (url: string) => `Open ${url} in browser`,
     browserNavigateGeneric: "Open page in browser",
     browserClick: "Click element in browser",
@@ -1020,6 +1155,7 @@ export const enUS: Translations = {
     otherLabel: "Other answer",
     otherPlaceholder: "Type another answer...",
     submit: "Submit",
+    submitFailed: "Your answer could not be submitted. Please try again.",
     emptyError: "Enter an answer before submitting.",
     requiredError: "Fill in all required fields before submitting.",
     requiredA11yLabel: "required",
@@ -1031,6 +1167,7 @@ export const enUS: Translations = {
   uploads: {
     uploading: "Uploading...",
     uploadingFiles: "Uploading files, please wait...",
+    uploadFailed: "Files could not be uploaded. Please try again.",
     limitsHint: (maxFiles: number, maxFileSize: string, maxTotalSize: string) =>
       `Add attachments (up to ${maxFiles} files, ${maxFileSize} each, ${maxTotalSize} total). Most regular file types are supported; compress macOS .app bundles first.`,
     filesTooLarge: (files: string, maxFileSize: string) =>
@@ -1100,7 +1237,7 @@ export const enUS: Translations = {
     actions: "Actions",
     keyboardShortcuts: "Keyboard Shortcuts",
     keyboardShortcutsDescription:
-      "Navigate DeerFlow faster with keyboard shortcuts.",
+      "Navigate the workspace faster with keyboard shortcuts.",
     openCommandPalette: "Open Command Palette",
     toggleSidebar: "Toggle Sidebar",
   },
@@ -1108,25 +1245,457 @@ export const enUS: Translations = {
   // Settings
   settings: {
     title: "Settings",
-    description: "Adjust how DeerFlow looks and behaves for you.",
+    description: "Adjust how the workspace looks and behaves for you.",
+    loading: "Loading settings…",
+    unsavedChangesTitle: "Discard unsaved changes?",
+    unsavedChangesDescription:
+      "These settings have not been saved. Continuing will discard them.",
+    keepEditing: "Keep editing",
+    discardChanges: "Discard changes",
     sections: {
       account: "Account",
       appearance: "Appearance",
+      product: "Workspace preferences",
+      administration: "Product administration",
       channels: "Channels",
       memory: "Memory",
       subagents: "Subagents",
       notification: "Notification",
       about: "About",
     },
+    productPreferences: {
+      title: "Workspace display",
+      description:
+        "These preferences are saved to your account and sync across devices.",
+      loading: "Loading personal preferences…",
+      loadError:
+        "Could not load preferences. Check the product settings API and retry.",
+      extensionMissing:
+        "The Flow Desk product extension is not installed in this Gateway. Ask the deployment administrator to install and enable it to use workspace preferences.",
+      densityLabel: "Content density",
+      comfortable: "Comfortable",
+      compact: "Compact",
+      save: "Save preferences",
+      saving: "Saving…",
+      unsaved: "Unsaved changes",
+      saved: "Saved",
+      saveError: "Could not save preferences. Try again later.",
+      dataTitle: "Personal data tasks",
+      dataDescription:
+        "Export individual data categories in the background or create a ZIP bundle of the categories currently supported. The combined bundle still does not contain all account data. Preference removal is a separate, narrowly scoped action. You can leave this page while a task runs.",
+      dataScopeNote:
+        "Choose one export category or combine currently supported categories into a ZIP. Every export includes coverage notes, and unavailable data is listed. Host data exports are partial, not backups or full account exports.",
+      dataScopeDetails: "Review export coverage by category",
+      dataExportActionsTitle: "Export data",
+      dataDeletionActionsTitle: "Clear personal data",
+      dataDeletionActionsDescription:
+        "Review the scope before continuing. Each action requires the exact confirmation phrase, and some deletions cannot be undone.",
+      capabilityLoading: "Checking which data can be cleared…",
+      capabilityError:
+        "Could not confirm which data can be cleared. Please retry. Exports remain available.",
+      capabilityRetry: "Check clearing availability again",
+      capabilityUnsupported:
+        "This service does not currently support clearing this category.",
+      capabilityChanged:
+        "This category cannot currently be cleared. Confirmation is paused.",
+      capabilityStaticMode: "Personal data cannot be cleared in demo mode.",
+      capabilitySignedOut: "Sign in to see which personal data can be cleared.",
+      dataAccountScopeNote:
+        "The bundle contains one JSON file per supported category plus a coverage manifest. It remains a partial export: unavailable categories include a reason, and credentials, deployment settings, and LangGraph checkpoints are excluded.",
+      dataThreadsScopeNote:
+        "Conversation exports include thread summaries, Gateway-visible messages, and owner-checked run status, timing, Agent IDs, and token usage. They omit raw requests and error text; changes during paging may be missed. They exclude checkpoints, files, Agents, Projects, memories, credentials, and Flow Desk preferences.",
+      dataProjectsScopeNote:
+        "Project metadata exports include names, instructions, presentation settings, status, and timestamps only. They exclude project documents, conversation history, uploads, generated files, memories, credentials, and checkpoints.",
+      dataScheduledTasksScopeNote:
+        "Scheduled task exports contain task definitions and cadence only. They exclude run history, run IDs, error details, leases, credentials, and checkpoints; changes during paging may be omitted.",
+      dataAgentsScopeNote:
+        "Agent exports contain settings and SOUL text for Agents created by this account. They exclude deployment-shared Agents, GitHub repository bindings, credentials, skill contents, memory contents, and checkpoints; changes during paging may be omitted.",
+      dataMemoryScopeNote:
+        "Memory exports use the configured backend's owner-scoped memory view. Local DeerMem includes shared summaries and the default-Agent bucket; other backends may expose a different owner-scoped view. Credentials, provider-private fields, and checkpoints are excluded; changes during the read may be omitted.",
+      dataFilesScopeNote:
+        "File exports include Gateway-readable thread uploads, generated thread outputs, bounded workspace files, and original files on the Project shelf. Workspace scans stop after 200 directories per thread and 20,000 total. Sensitive-looking workspace paths, generated directories, links, and junctions are excluded. File contents are not scanned for secrets, so review the partial export before sharing it. Deleted documents, converted previews, and other host files are excluded; each package is limited to 5,000 files, 7 MiB of source bytes, and 10 MiB of JSON.",
+      dataNotEnabled:
+        "If this feature is intentionally disabled, ask an administrator to enable product data jobs in the trusted Gateway extension configuration.",
+      dataLoading: "Loading personal data tasks…",
+      dataLoadError: "Could not load personal data tasks.",
+      dataActiveCheckFailed:
+        "The latest task status could not be checked, so new tasks are paused for now.",
+      dataRetry: "Retry",
+      dataPendingExport: "Unconfirmed export request",
+      dataPendingDeletion: "Unconfirmed deletion request",
+      dataSubmissionUnconfirmed:
+        "This request may have reached the server, but its response was not confirmed. Retry the same request to recover its task result.",
+      dataCheckSubmission: "Retry the same request",
+      dataRecoveryUnavailable:
+        "Browser session storage is unavailable, so data tasks are paused to protect request recovery. Restore browser storage and reload this page.",
+      dataJobsLabel: "Recent personal data tasks",
+      dataJobsPagination: "Personal data task pages",
+      dataJobsPrevious: "Previous page",
+      dataJobsNext: "Next page",
+      dataJobsPage: "Page {page}",
+      dataEmpty: "No personal data tasks yet.",
+      dataPageEmpty: "There are no personal data tasks on this page.",
+      dataExport: "Export preferences",
+      dataAccountExport: "Export supported data bundle (partial ZIP)",
+      dataThreadsExport: "Export conversation history (partial)",
+      dataProjectsExport: "Export project metadata (partial)",
+      dataScheduledTasksExport: "Export scheduled tasks (partial)",
+      dataAgentsExport: "Export my Agents (partial)",
+      dataMemoryExport: "Export personal memory (partial)",
+      dataFilesExport: "Export my files (partial)",
+      dataDelete: "Delete saved preferences",
+      dataDeleteThreads: "Clear my conversation history",
+      dataDeleteScheduledTasks: "Delete scheduled task definitions",
+      dataDeleteAgents: "Delete custom Agents",
+      dataDeleteMemory: "Clear personal memory",
+      dataDeleteProjects: "Remove my project spaces",
+      dataDeleteFiles: "Delete my uploads and Project documents",
+      dataSubmitting: "Submitting…",
+      dataOperationError:
+        "The operation could not be completed. Check that no other task is running, then retry.",
+      dataDownload: "Download JSON",
+      dataDownloadZip: "Download ZIP",
+      dataDownloading: "Preparing download…",
+      dataDownloadError:
+        "The export could not be downloaded. It may have expired; create a new export and try again.",
+      dataExpired:
+        "This export has expired. Create a new export to download it.",
+      dataCancelJob: "Cancel task",
+      dataRetryExport: "Submit export again",
+      dataCancelling: "Cancelling…",
+      dataTaskFailureReasons: {
+        temporary:
+          "The background task stopped repeatedly. Check the Gateway and storage services, then submit a new task.",
+        authorizationUnavailable:
+          "The authorization service is temporarily unavailable. The background task will retry; submit it again later if it ultimately fails.",
+        authorizationDenied:
+          "Permission was revoked while the task was running. Deletions already completed cannot be automatically restored.",
+        scopeUnavailable:
+          "This deployment does not support the selected data scope. Check the Gateway extension and capability configuration, then try again.",
+        sizeLimit:
+          "The export exceeds the current size limit. Choose a smaller scope and try again.",
+        unsupported:
+          "The installed version does not support this operation or data scope. Upgrade the extension, then try again.",
+        invalidData:
+          "The Gateway returned data that could not be processed. Check version compatibility or contact an administrator.",
+        integrity:
+          "The export failed its integrity check and was discarded. Retry the export; contact an administrator if it happens again.",
+        unknown:
+          "The task failed. Check the service status, then submit a new task.",
+      },
+      dataDeleteDialogTitle: "Delete saved preferences?",
+      dataDeleteDialogDescription:
+        "This permanently deletes your Flow Desk preference settings only. It does not affect conversations, files, projects, memories, credentials, or checkpoints. Type the exact phrase below to queue the deletion.",
+      dataDeleteThreadsDialogTitle: "Clear my conversation history?",
+      dataDeleteThreadsDialogDescription:
+        "This clears conversations you own, their uploaded files, generated outputs, workspace data, checkpoints, message events, and run usage. Active or failed deletions are retained and reported as partial; you can retry later. This cannot be undone and is not a full account erasure. Type the exact phrase to continue.",
+      dataDeleteThreadsPhraseLabel: 'Type "DELETE THREAD HISTORY" to confirm',
+      dataDeleteThreadsConfirm: "Clear conversation history",
+      dataDeleteThreadsCancel: "Keep conversations",
+      dataDeletePhraseLabel: 'Type "DELETE PREFERENCES" to confirm',
+      dataDeleteConfirm: "Delete preferences",
+      dataDeleteCancel: "Keep preferences",
+      dataDeleteScheduledTasksDialogTitle: "Delete scheduled task definitions?",
+      dataDeleteScheduledTasksDialogDescription:
+        "This deletes scheduled task definitions owned by you and cancels queued occurrences that have not started. Tasks that are launching or running are retained and can be retried after they finish. Run history and session content created by tasks are retained. Cancelling this background job cannot restore definitions already deleted. This is not a full account erasure.",
+      dataDeleteScheduledTasksPhraseLabel:
+        'Type "DELETE SCHEDULED TASKS" to confirm',
+      dataDeleteScheduledTasksConfirm: "Delete task definitions",
+      dataDeleteScheduledTasksCancel: "Keep scheduled tasks",
+      dataDeleteAgentsDialogTitle: "Delete custom Agents?",
+      dataDeleteAgentsDialogDescription:
+        "This deletes Agent definitions you created, their SOUL files, and memory files stored with those definitions. Deployment-shared Agents and standalone memory directories without a custom definition are retained. Cancelling the job cannot restore content already deleted. This is not a full account erasure. Type the exact phrase to continue.",
+      dataDeleteAgentsPhraseLabel: 'Type "DELETE CUSTOM AGENTS" to confirm',
+      dataDeleteAgentsConfirm: "Delete custom Agents",
+      dataDeleteAgentsCancel: "Keep Agents",
+      dataDeleteProjectsDialogTitle: "Remove my project spaces?",
+      dataDeleteProjectsDialogDescription:
+        "This removes the project spaces you own, detaches their conversations (which remain), and moves active project documents to Trash. Documents in Trash are retained until separately purged; project names, instructions, and presentation settings are removed. This is not a full account erasure. Type the exact phrase to continue.",
+      dataDeleteProjectsPhraseLabel: 'Type "DELETE MY PROJECTS" to confirm',
+      dataDeleteProjectsConfirm: "Remove project spaces",
+      dataDeleteProjectsCancel: "Keep projects",
+      dataDeleteMemoryDialogTitle: "Clear this account's personal memory?",
+      dataDeleteMemoryDialogDescription:
+        "This clears the memory summaries and facts managed for your account by the configured memory backend; each backend defines its exact scope. It does not delete Agent definitions or SOUL files, conversations, projects, files, or credentials, and is not a full account erasure. Clearing cannot be undone once it starts; a cancellation request at that point may still finish as completed. Type the exact phrase to continue.",
+      dataDeleteMemoryPhraseLabel: 'Type "DELETE MY MEMORY" to confirm',
+      dataDeleteMemoryConfirm: "Clear personal memory",
+      dataDeleteMemoryCancel: "Keep personal memory",
+      dataDeleteFilesDialogTitle: "Delete my files?",
+      dataDeleteFilesDialogDescription:
+        "This permanently deletes thread uploads you own and moves Project shelf documents to recoverable Trash. Generated outputs and thread workspace files remain because Gateway has no safe bulk-deletion capability for them yet. The task reports partial completion whenever files remain or catalog coverage is incomplete. This is not a full account erasure. Type the exact phrase to continue.",
+      dataDeleteFilesPhraseLabel: 'Type "DELETE MY FILES" to confirm',
+      dataDeleteFilesConfirm: "Delete supported files",
+      dataDeleteFilesCancel: "Keep files",
+      dataProgressLabel: "Data task progress",
+      dataExportJob: "Preference export",
+      dataAccountExportJob: "Combined data bundle export (partial)",
+      dataThreadsExportJob: "Conversation history export (partial)",
+      dataProjectsExportJob: "Project metadata export (partial)",
+      dataScheduledTasksExportJob: "Scheduled task definition export (partial)",
+      dataAgentsExportJob: "Custom Agent export (partial)",
+      dataMemoryExportJob: "Personal memory export (partial)",
+      dataFilesExportJob: "Personal file export (partial)",
+      dataPartialBadge: "Partial export",
+      dataPartialResultNote:
+        "This package contains only the listed visible conversation history. It may not include concurrent changes and cannot restore checkpoints or other account data.",
+      dataAccountExportPartialResultNote:
+        "This ZIP combines the categories listed in its coverage manifest. Each category retains its own limits; credentials, deployment settings, LangGraph checkpoints, and runtime continuation state are excluded, so this is not a full account backup.",
+      dataProjectsPartialResultNote:
+        "This package contains project metadata only. It does not contain project documents or conversations and cannot restore checkpoints or other account data.",
+      dataScheduledTasksPartialResultNote:
+        "This package contains scheduled task definitions only. It excludes run history, run results, and runtime state, and cannot restore checkpoints or other account data.",
+      dataAgentsPartialResultNote:
+        "This package contains portable settings and SOUL text for Agents created by this account. It excludes deployment-shared definitions, GitHub bindings, credentials, skill contents, memory contents, and checkpoints.",
+      dataMemoryPartialResultNote:
+        "This package contains the current owner's memory view returned by the configured backend. Coverage may vary by backend; credentials, provider-private fields, and checkpoints are excluded, so this is not a complete backup.",
+      dataFilesPartialResultNote:
+        "This partial package contains Gateway-readable thread uploads, thread outputs, eligible thread workspace files, and active original Project shelf documents. Workspace scans stop after 200 directories per thread and 20,000 total. It skips sensitive-looking workspace paths, generated directories, links, and junctions, but does not scan file contents for secrets. Review it before sharing; deleted documents, converted previews, checkpoints, and other host data are excluded.",
+      dataPartialDeletionBadge: "Partial deletion",
+      dataDeleteJob: "Preference deletion",
+      dataDeleteThreadsJob: "Conversation history deletion",
+      dataDeleteScheduledTasksJob: "Scheduled task definition deletion",
+      dataDeleteAgentsJob: "Custom Agent deletion",
+      dataDeleteMemoryJob: "Personal memory clearing",
+      dataDeleteFilesJob: "Personal file deletion",
+      dataDeleteProjectsJob: "Project space removal",
+      dataDeletedCount: "Removed {count} preference item(s).",
+      dataDeletedThreadsCount:
+        "{count} conversation(s) were deleted or no longer exist.",
+      dataDeleteThreadsPartialCount:
+        "{count} conversation(s) remain; {failed} deletion operation(s) could not be confirmed. Submit a new task to retry later.",
+      dataDeletedScheduledTasksCount:
+        "{count} scheduled task definition(s) were deleted or no longer exist.",
+      dataDeleteScheduledTasksPartialCount:
+        "{count} scheduled task definition(s) remain (for example, tasks that are running); {failed} more could not be confirmed. Retry after they finish.",
+      dataDeletedAgentsCount:
+        "{count} custom Agent definition(s) were deleted or no longer exist.",
+      dataDeletedProjectsCount:
+        "{count} project space(s) were removed or no longer exist.",
+      dataDeleteProjectsCompleted:
+        "Project documents remain in Trash; conversations remain available, detached from the removed projects.",
+      dataDeleteMemoryCompleted:
+        "Personal memory for this account was cleared through the configured memory backend.",
+      dataDeletedFilesCount:
+        "Deleted {count} upload(s) or moved Project document(s) to recoverable Trash.",
+      dataDeleteFilesPartialCount:
+        "{count} file(s) remain in the catalog; {failed} deletion operation(s) could not be confirmed. Generated outputs and thread workspace files are retained. Retry if the supported scope changes.",
+      dataDeleteAgentsPartialCount:
+        "{count} custom Agent(s) remain; {failed} deletion operation(s) could not be confirmed (this may include entries outside the definition list). Submit a new task to retry.",
+      status: {
+        queued: "Queued",
+        running: "Running",
+        retry_wait: "Retry scheduled",
+        completed: "Completed",
+        failed: "Failed",
+        cancelled: "Cancelled",
+      },
+      stage: {
+        queued: "Waiting for a worker",
+        inventory: "Collecting data",
+        deleting: "Removing selected data",
+        history: "Reading conversation history",
+        packaging: "Preparing the export package",
+        finalizing: "Finishing the deletion",
+        other: "Processing",
+      },
+    },
+    productAdmin: {
+      accountsTitle: "Account access",
+      accountsDescription:
+        "Review deployment accounts and control sign-in access. Disabling revokes sessions and personal access tokens and requests cancellation of the account’s running Agent tasks; keep at least one active administrator.",
+      accountsLoading: "Loading accounts…",
+      accountsLoadError:
+        "Could not load accounts. Check Gateway availability and administrator access.",
+      refreshFailed:
+        "Refresh failed. Showing the last successfully loaded data.",
+      accountsEmpty: "There are no accounts yet.",
+      accountEmail: "Email",
+      accountRole: "Role",
+      accountStatus: "Status",
+      accountCreated: "Created",
+      accountSetup: "Setup",
+      accountActions: "Actions",
+      accountAdmin: "Administrator",
+      accountMember: "Member",
+      accountActive: "Can sign in",
+      accountDisabled: "Disabled",
+      accountReady: "Setup complete",
+      accountNeedsSetup: "Setup required",
+      disableAccount: "Disable account",
+      enableAccount: "Enable account",
+      disableAccountFor: (email) => `Disable account ${email}`,
+      enableAccountFor: (email) => `Enable account ${email}`,
+      confirmAccountStatus: "Change this account’s status?",
+      confirmDisableDescription:
+        "This account will lose sign-in and personal access token access. The Gateway will also stop running tasks and report any task it could not confirm as stopped.",
+      confirmEnableDescription:
+        "This account can sign in again. Existing sessions and tokens from before deactivation will stay revoked.",
+      cancel: "Cancel",
+      confirm: "Confirm change",
+      updatingAccount: "Updating…",
+      accountUpdateError:
+        "Could not update the account. Check its status and your administrator access, then try again.",
+      accountStatusConflict:
+        "This change would disable your own account or the last active administrator.",
+      accountRunStopSummary:
+        "Account disabled: {stopped} task(s) stopped, {pending} cancellation request(s) pending across Gateway workers, and {failed} task(s) could not be confirmed stopped.",
+      accountsNewer: "Previous",
+      accountsOlder: "Next",
+      accountCount: "{count} accounts",
+      configTitle: "Product configuration",
+      configDescription:
+        "Update product names and workspace entry flags online. Changes apply immediately with version conflict protection.",
+      configLoadError:
+        "Could not load product settings. Check that the extension is installed and your account is an administrator.",
+      englishName: "English product name",
+      chineseName: "Chinese product name",
+      featureTitle: "Workspace entries",
+      features: {
+        overview: "Workspace overview",
+        chats: "Chats",
+        agents: "Agents",
+        scheduled_tasks: "Scheduled tasks",
+        capabilities: "Capability center",
+        files: "File center",
+        data_privacy: "Data and privacy",
+        administration: "Product administration",
+      },
+      featureUnavailable: "Unavailable",
+      privacyNote:
+        "These switches only control frontend entry visibility. Backend APIs continue to enforce data permissions.",
+      unimplementedFeaturesNote:
+        "The file center supports current Gateway thread and project files. A complete cross-storage index and account-wide export/deletion are still pending, so the data/privacy entry remains disabled.",
+      save: "Save product settings",
+      saving: "Saving…",
+      unsaved: "Unsaved changes",
+      saved: "Saved",
+      saveError: "Could not save settings. Try again later.",
+      version: "Configuration version {version}",
+      versionConflict:
+        "Another administrator changed these settings. Reload the latest version first.",
+      reload: "Reload",
+      title: "Activity audit",
+      description:
+        "Administrators only. Events contain operation metadata, never preference values, message text, or credentials.",
+      loading: "Loading audit events…",
+      loadError:
+        "Could not load events. Check that product administration is enabled and your account is an administrator.",
+      retry: "Retry",
+      empty: "No product activity yet.",
+      time: "Time",
+      actor: "Actor",
+      action: "Action",
+      resource: "Resource",
+      result: "Result",
+      auditActions: {
+        preferenceSaved: "Saved a personal preference",
+        preferenceDeleted: "Deleted a personal preference",
+        productDisplayUpdated: "Updated product display settings",
+        accountEnabled: "Enabled an account",
+        accountDisabled: "Disabled an account",
+        dataExportRequested: "Requested a personal data export",
+        dataDeletionRequested: "Requested deletion of personal preferences",
+        dataExportCompleted: "Completed a personal data export",
+        dataDeletionCompleted: "Deleted personal preferences",
+        dataJobCancelRequested: "Requested cancellation of a personal data job",
+        dataJobCancelled: "Cancelled a personal data job",
+        dataJobFailed: "A personal data job failed",
+        dataExportDownloadRequested:
+          "Requested a personal data export download",
+        threadCreated: "Created a conversation",
+        threadBranched: "Created a conversation branch",
+        threadUpdated: "Updated conversation details",
+        threadMoved: "Changed a conversation's project",
+        threadDeleted: "Deleted a conversation",
+        uploadCreated: "Uploaded a conversation file",
+        uploadDeleted: "Deleted a conversation file",
+        projectDocumentTrashed: "Moved a project document to trash",
+        projectDocumentRestored: "Restored a project document",
+        projectDocumentPurged: "Permanently deleted a project document",
+        projectTrashEmptied: "Emptied the project trash",
+        projectCreated: "Created a project",
+        projectUpdated: "Updated a project",
+        projectArchived: "Archived a project",
+        projectRestored: "Restored a project",
+        projectDeleted: "Deleted a project",
+        scheduledTaskCreated: "Created a scheduled task",
+        scheduledTaskUpdated: "Updated a scheduled task",
+        scheduledTaskPaused: "Paused a scheduled task",
+        scheduledTaskResumed: "Resumed a scheduled task",
+        scheduledTaskTriggered: "Manually triggered a scheduled task",
+        scheduledTaskDeleted: "Deleted a scheduled task",
+        memoryCleared: "Cleared memory",
+        memoryExported: "Exported memory",
+        memoryImported: "Imported memory",
+        memoryFactCreated: "Added a memory fact",
+        memoryFactUpdated: "Updated a memory fact",
+        memoryFactDeleted: "Deleted a memory fact",
+        customAgentCreated: "Created a custom agent",
+        customAgentUpdated: "Updated a custom agent",
+        customAgentDeleted: "Deleted a custom agent",
+        skillInstalled: "Installed a Skill package",
+        skillUpdated: "Edited custom Skill content",
+        skillDeleted: "Deleted a custom Skill",
+        skillRolledBack: "Rolled back custom Skill content",
+        skillEnabled: "Enabled a Skill",
+        skillDisabled: "Disabled a Skill",
+        skillsReloaded: "Reloaded Skill cache",
+        userProfileUpdated: "Updated the user profile",
+        patCreated: "Created a personal access token",
+        patRevoked: "Revoked a personal access token",
+        passwordChanged: "Changed the account password",
+        accountRegistered: "Registered an account",
+        adminInitialized: "Initialized the first administrator",
+        oidcAccountProvisioned: "Provisioned an account through OIDC",
+        oidcLoginSucceeded: "Signed in through OIDC",
+        other: "Other activity",
+      },
+      auditResources: {
+        userSetting: "Personal preference",
+        productConfiguration: "Product display settings",
+        account: "Account",
+        dataJob: "Personal data job",
+        thread: "Conversation",
+        threadUpload: "Conversation file",
+        projectDocument: "Project document",
+        projectTrash: "Project trash",
+        project: "Project",
+        scheduledTask: "Scheduled task",
+        memory: "Memory",
+        memoryFact: "Memory fact",
+        customAgent: "Custom agent",
+        skill: "Skill",
+        userProfile: "User profile",
+        personalAccessToken: "Personal access token",
+        other: "Other resource",
+      },
+      auditOutcomes: {
+        success: "Success",
+        notFound: "Not found",
+        failure: "Failed",
+        cancelled: "Cancelled",
+        other: "Other result",
+      },
+      requestId: "Request ID",
+      newer: "Newer",
+      older: "Older",
+    },
     memory: {
       title: "Memory",
       description:
-        "DeerFlow automatically learns from your conversations in the background. These memories help DeerFlow understand you better and deliver a more personalized experience.",
+        "The app can learn from your conversations in the background. These memories help it understand your preferences and deliver a more personal experience.",
+      loadFailed: "Memory could not be loaded.",
+      refreshFailed:
+        "Refresh failed. Showing the last successfully loaded memory.",
+      retry: "Retry loading",
+      retrying: "Retrying…",
       empty: "No memory data to display.",
       rawJson: "Raw JSON",
       exportButton: "Export memory",
+      exportFailed: "Could not export memory. Please try again.",
       exportSuccess: "Memory exported",
       importButton: "Import memory",
+      importFailed: "Could not import memory. Check the file and try again.",
       importConfirmTitle: "Import memory?",
       importConfirmDescription:
         "This will overwrite your current memory with the selected JSON backup.",
@@ -1141,6 +1710,7 @@ export const enUS: Translations = {
       addFactSuccess: "Fact created",
       editFactSuccess: "Fact updated",
       clearAll: "Clear all memory",
+      clearAllFailed: "Could not clear memory. Please try again.",
       clearAllConfirmTitle: "Clear all memory?",
       clearAllConfirmDescription:
         "This will remove all saved summaries and facts. This action cannot be undone.",
@@ -1149,6 +1719,7 @@ export const enUS: Translations = {
       factDeleteConfirmDescription:
         "This fact will be removed from memory immediately. This action cannot be undone.",
       factDeleteSuccess: "Fact deleted",
+      factDeleteFailed: "Could not delete this fact. Please try again.",
       factContentLabel: "Content",
       factCategoryLabel: "Category",
       factConfidenceLabel: "Confidence",
@@ -1156,6 +1727,7 @@ export const enUS: Translations = {
       factCategoryPlaceholder: "context",
       factConfidenceHint: "Use a number between 0 and 1.",
       factSave: "Save fact",
+      factSaveFailed: "Could not save this fact. Please try again.",
       factValidationContent: "Fact content cannot be empty.",
       factValidationConfidence: "Confidence must be a number between 0 and 1.",
       noFacts: "No saved facts yet.",
@@ -1212,6 +1784,7 @@ export const enUS: Translations = {
     },
     tools: {
       adminRequired: "Admin privileges are required to manage MCP tools.",
+      loadFailed: "MCP tools could not be loaded.",
       empty: "No MCP tools configured.",
       addServer: "Add server",
       addServerDescription:
@@ -1244,6 +1817,10 @@ export const enUS: Translations = {
       removeServerDescription:
         'Remove "{name}" from the MCP configuration? Its tools stop being available to agents.',
       unnamedServer: "(empty name)",
+      enableFailed: "Could not update the MCP server. Please try again.",
+      addFailed: "Could not add the MCP server. Please try again.",
+      updateFailed: "Could not save the MCP server. Please try again.",
+      deleteFailed: "Could not remove the MCP server. Please try again.",
     },
     subagents: {
       title: "Subagents",
@@ -1254,6 +1831,12 @@ export const enUS: Translations = {
       adminNote:
         "You can view the catalog. Only administrators can add, edit, enable, or delete subagents.",
       create: "Add subagent",
+      createFailed: "Failed to create subagent",
+      loadFailed: "Could not load subagents.",
+      refreshFailed:
+        "Refresh failed. Showing the last successfully loaded subagents.",
+      retry: "Try again",
+      retrying: "Retrying…",
       empty: "No subagents are available.",
       sourceBuiltin: "Built-in",
       sourceConfig: "config.yaml",
@@ -1279,7 +1862,11 @@ export const enUS: Translations = {
       timeout: "Timeout (seconds)",
       created: "Subagent created",
       saved: "Subagent saved",
+      unsaved: "The subagent configuration has unsaved changes.",
+      updateFailed: "Failed to save subagent changes",
       deleted: "Subagent deleted",
+      deleteFailed: "Failed to delete subagent",
+      deleteTitle: "Delete subagent",
       deleteConfirm:
         "Delete this managed subagent? Custom Agents may keep referencing its name, and recreating the same name will reconnect those bindings. This cannot be undone.",
       bindingTitle: "Subagent access",
@@ -1293,9 +1880,14 @@ export const enUS: Translations = {
     channels: {
       title: "Channels",
       description:
-        "Connect IM accounts that can send messages to DeerFlow from outside the browser.",
+        "Connect messaging accounts that can send messages to your agent from outside the browser.",
       disabled:
         "Channel connections are not enabled on this server. Ask an administrator to enable channel_connections.",
+      loadFailed: "Channel status could not be loaded.",
+      refreshFailed:
+        "Refresh failed. Showing the last successfully loaded channel status.",
+      retry: "Reload status",
+      retrying: "Retrying…",
     },
     integrations: {
       title: "Integrations",
@@ -1312,6 +1904,8 @@ export const enUS: Translations = {
       connected: "Connected",
       loadFailed: "Failed to load integration status",
       adminRequired: "Admin privileges are required to install integrations.",
+      permissionRequired:
+        "You do not have permission to manage this integration.",
       lark: {
         title: "Lark / Feishu CLI",
         description:
@@ -1337,6 +1931,19 @@ export const enUS: Translations = {
         authConfigured: "Credentials configured (not live-verified)",
         authConfiguredFor: (user) =>
           `${user} · credentials configured (not live-verified)`,
+        statusLoadFailed:
+          "Couldn't load Lark integration status. Refresh and try again.",
+        installFailed:
+          "Couldn't install the Lark integration. Refresh its status and try again.",
+        connectionFailed:
+          "Lark connection setup did not finish. Refresh its status and try again.",
+        authorizationFailed:
+          "Lark authorization did not finish. Complete the browser step and try again.",
+        authorizationSuperseded:
+          "A newer connection replaced this authorization. Start the connection again.",
+        authorizationCheckEnded:
+          "Automatic authorization checks ended without confirming completion. Start the connection again to continue.",
+        restartConnection: "Start connection again",
         connect: "Connect Lark",
         authStarting: "Opening connection link...",
         checkingConnection: "Checking connection...",
@@ -1347,7 +1954,7 @@ export const enUS: Translations = {
         changeAppButton: "Change Lark app",
         changeAppTitle: "Switch to a different Lark app",
         changeAppDescription:
-          "Point your DeerFlow account at a different Lark/Feishu app. This only affects your account; other users are not changed.",
+          "Use a different Lark/Feishu app for this account. This only affects your account; other users are not changed.",
         changeAppIdLabel: "App ID",
         changeAppSecretLabel: "App Secret",
         changeAppAuthResetNote:
@@ -1356,17 +1963,19 @@ export const enUS: Translations = {
         changeAppReRegister: "Re-register in browser",
         changeAppSwitched:
           "Lark app switched. Reconnect to authorize the new app.",
+        changeAppFailed:
+          "Couldn't switch Lark apps. Check the details and try again.",
         brandFeishu: "Feishu",
         brandLark: "Lark",
         connectionStarted: "Connection link opened",
         connectionReady: "Connection is ready. Opening authorization...",
         authStarted:
-          "Authorization page opened. DeerFlow will detect completion automatically.",
+          "Authorization page opened. The app will detect completion automatically.",
         authorizationStillPending:
-          'Authorization is not complete yet. Finish it in the browser; DeerFlow keeps checking automatically. You can click "I completed authorization" if the page does not update.',
+          'Authorization is not complete yet. Finish it in the browser; the app keeps checking automatically. You can click "I completed authorization" if the page does not update.',
         permissionTitle: "Authorization scope",
         permissionDescription:
-          "By default, DeerFlow only completes the base sign-in and does not request any business permissions. Select the domains you need here; connected users can re-authorize to add more (scopes accumulate).",
+          "By default, sign-in does not request any business permissions. Select the domains you need here; connected users can re-authorize to add more (scopes accumulate).",
         authDomains: {
           calendar: {
             label: "Calendar",
@@ -1477,10 +2086,10 @@ export const enUS: Translations = {
           "The first connection needs one browser confirmation from Lark. Open the link below and finish the prompt, then return here to continue authorization.",
         openAuthLinkTitle: "Authorize Lark in your browser",
         openAuthLinkDescription:
-          "Open the link below to authorize. DeerFlow keeps checking automatically and will save the connection after approval.",
+          "Open the link below to authorize. The app keeps checking automatically and will save the connection after approval.",
         waitingAuthTitle: "Waiting for Lark authorization",
         waitingAuthDescription:
-          "Finish authorization in the browser page that just opened. DeerFlow will update this panel automatically; the button below is only a fallback.",
+          "Finish authorization in the browser page that just opened. This panel will update automatically; the button below is only a fallback.",
         openAuthLink: "Open link",
         copyAuthLink: "Copy link",
         completeAuth: "I completed authorization",
@@ -1506,7 +2115,7 @@ export const enUS: Translations = {
           "The current user's authorization was verified with Lark during this connection flow. Reconnect whenever you need to refresh it or add permissions.",
         authNextTitle: "Complete browser authorization next",
         authNextDescription:
-          "Click “Connect Lark”; DeerFlow checks the current status first and opens browser authorization only when disconnected or expired.",
+          "Click “Connect Lark”; the app checks the current status first and opens browser authorization only when disconnected or expired.",
       },
     },
     skills: {
@@ -1571,26 +2180,34 @@ export const enUS: Translations = {
       createSkill: "Create skill",
       emptyTitle: "No agent skill yet",
       emptyDescription:
-        "Put your agent skill folders under the `/skills/custom` folder under the root folder of DeerFlow.",
+        "Put your agent skill folders in the configured custom skills directory, usually `/skills/custom`.",
       emptyButton: "Create Your First Skill",
       adminRequired: "Admin privileges are required to manage agent skills.",
       installAdminRequired:
         "Admin privileges are required to install agent skills.",
+      loadFailed: "Skills could not be loaded.",
+      refreshFailed:
+        "Refresh failed. Showing the skills from the last successful load.",
+      retry: "Try again",
+      retrying: "Retrying…",
+      enableFailed: "Could not update the skill. Please try again.",
       installFromFile: "Install .skill",
       installingArchive: "Installing...",
       invalidArchive: "Choose a file with the .skill extension.",
       archiveTooLarge: "The skill archive must be 100 MiB or smaller.",
       installFailed: "Failed to install the skill archive.",
+      installBlocked:
+        "Security checks did not pass. The skill was not installed.",
     },
     notification: {
       title: "Notification",
       description:
-        "DeerFlow only sends a completion notification when the window is not active. This is especially useful for long-running tasks so you can switch to other work and get notified when done.",
+        "The app only sends a completion notification when the window is not active. This is especially useful for long-running tasks so you can switch to other work and get notified when done.",
       requestPermission: "Request notification permission",
       deniedHint:
         "Notification permission was denied. You can enable it in your browser's site settings to receive completion alerts.",
       testButton: "Send test notification",
-      testTitle: "DeerFlow",
+      testTitle: "Flow Desk",
       testBody: "This is a test notification.",
       notSupported: "Your browser does not support notifications.",
       disableNotification: "Disable notification",
@@ -1604,7 +2221,7 @@ export const enUS: Translations = {
       changePasswordDescription: "Update your account password.",
       ssoPasswordDescription: "Password is managed by your SSO provider.",
       ssoPasswordMessage:
-        "This account signs in with {provider}, so DeerFlow cannot manage or change its password here. Use your SSO provider's account settings instead.",
+        "This account signs in with {provider}, so the app cannot manage or change its password here. Use your SSO provider's account settings instead.",
       currentPassword: "Current password",
       newPassword: "New password",
       confirmNewPassword: "Confirm new password",
@@ -1614,6 +2231,22 @@ export const enUS: Translations = {
       networkError: "Network error. Please try again.",
       updating: "Updating...",
       updatePassword: "Update Password",
+      unsavedPasswordChanges: "The password form has unsaved changes.",
+      exportDataTitle: "Export my data",
+      exportDataDescription:
+        "Create a partial JSON package from data this account can read through the Gateway. Eligible conversation workspace files are included; credential-looking names and unsafe paths are skipped, but file contents are not scanned for secrets, so review the package before sharing it. Attachments are capped at 100 MiB; deployment credential stores and resumable execution checkpoints are not read. You can cancel; current reads may finish before the remaining steps stop.",
+      exportDataButton: "Generate and download",
+      exportingData: "Preparing your data…",
+      cancelDataExport: "Cancel export",
+      cancellingDataExport: "Stopping…",
+      exportDataCancelled: "Data export cancelled. No package was created.",
+      exportStageInventory: "Collecting account data",
+      exportStageHistory: "Preparing conversation history",
+      exportStageFiles: "Reading file contents",
+      exportStagePackage: "Building your data package",
+      exportDataPartial:
+        "The partial package is ready; failed resources are listed inside it. Eligible workspace files are included, but their contents were not scanned for secrets, so review the package before sharing it. Deployment credential stores and resumable execution checkpoints are not read. This is not a complete account export or a restorable backup.",
+      exportDataError: "Unable to create the package. Please try again.",
       signOut: "Sign Out",
     },
     acknowledge: {
@@ -1622,22 +2255,34 @@ export const enUS: Translations = {
     },
   },
   login: {
+    heroKicker: "SELF-HOSTED AI WORKSPACE",
+    heroTitle: "Move complex work\nforward, one step at a time.",
+    heroDescription:
+      "Bring conversations, Agents, and project context together in workflows your team can follow.",
+    heroFeatures: [
+      "Deploy in your own environment",
+      "Coordinate Agents on multi-step work",
+      "Keep conversations, tasks, and projects together",
+    ],
+    heroFooter: "Built for your team, running under your control.",
     signInTitle: "Sign in to your account",
     createAccountTitle: "Create a new account",
     email: "Email",
     emailPlaceholder: "you@example.com",
     password: "Password",
-    passwordPlaceholder: "•••••••",
+    passwordPlaceholder: "Enter your password",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
     rememberMe: "Keep me signed in",
     rememberMeDescription:
-      "Keep this browser session when possible. DeerFlow stores only your email, never your password.",
+      "Keep this browser session when possible. The app stores only your email, never your password.",
     pleaseWait: "Please wait...",
     signIn: "Sign In",
     createAccount: "Create Account",
     createAdminAccount: "Create admin account",
     adminSetupRequiredTitle: "Administrator setup is required",
     adminSetupRequiredDescription:
-      "DeerFlow needs an administrator account before new regular accounts can be created.",
+      "An administrator account is required before new regular accounts can be created.",
     orContinueWith: "Or continue with",
     ssoHint:
       "If your account uses single sign-on, sign in with the option below instead.",
@@ -1648,7 +2293,7 @@ export const enUS: Translations = {
     networkError: "Network error. Please try again.",
     serviceUnavailableTitle: "Service temporarily unavailable",
     serviceUnavailableDescription:
-      "The Gateway is taking too long to respond. Check that it is running, then try again.",
+      "The Gateway is unavailable right now. Check that the service is running, then try again.",
     retry: "Try again",
     authFailed: "Authentication failed.",
     errors: {
@@ -1659,5 +2304,26 @@ export const enUS: Translations = {
       sso_not_allowed:
         "SSO login is not allowed for your account. Contact your administrator.",
     },
+  },
+  setup: {
+    loading: "Checking setup status…",
+    adminTitle: "Create the first administrator",
+    adminDescription:
+      "Set up the first admin account to start using your workspace.",
+    emailPlaceholder: "you@example.com",
+    adminPasswordPlaceholder: "At least 8 characters",
+    confirmPassword: "Confirm password",
+    confirmPasswordPlaceholder: "Enter the password again",
+    setupTitle: "Finish administrator setup",
+    setupDescription: "Set your email address and a new password to continue.",
+    currentPassword: "Current password",
+    currentPasswordPlaceholder: "Enter your current password",
+    newPassword: "New password",
+    newPasswordPlaceholder: "At least 8 characters",
+    confirmNewPassword: "Confirm new password",
+    confirmNewPasswordPlaceholder: "Enter your new password again",
+    creatingAdmin: "Creating account…",
+    savingPassword: "Saving password…",
+    completeSetup: "Complete setup",
   },
 };

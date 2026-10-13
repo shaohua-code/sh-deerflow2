@@ -450,6 +450,8 @@ export type PromptInputProps = Omit<
 > & {
   accept?: string; // e.g., "image/*" or leave undefined for any
   disabled?: boolean;
+  /** Controls file selection, paste, and drop independently from text submission. */
+  fileUploadsEnabled?: boolean;
   multiple?: boolean;
   // When true, accepts drops anywhere on document. Default false (opt-in).
   globalDrop?: boolean;
@@ -472,6 +474,7 @@ export const PromptInput = ({
   className,
   accept,
   disabled,
+  fileUploadsEnabled = true,
   multiple,
   globalDrop,
   syncHiddenInput,
@@ -505,8 +508,8 @@ export const PromptInput = ({
   }
 
   const openFileDialogLocal = useCallback(() => {
-    inputRef.current?.click();
-  }, []);
+    if (fileUploadsEnabled) inputRef.current?.click();
+  }, [fileUploadsEnabled]);
 
   const matchesAccept = useCallback(
     (f: File) => {
@@ -616,6 +619,7 @@ export const PromptInput = ({
 
   const sanitizeIncomingFiles = useCallback(
     (fileList: File[] | FileList) => {
+      if (!fileUploadsEnabled) return [];
       const { accepted, message } = splitUnsupportedUploadFiles(fileList);
       if (message) {
         onError?.({
@@ -628,14 +632,16 @@ export const PromptInput = ({
       }
       return accepted;
     },
-    [onError],
+    [fileUploadsEnabled, onError],
   );
 
   // Let provider know about our hidden file input so external menus can call openFileDialog()
   useEffect(() => {
     if (!usingProvider) return;
-    controller.__registerFileInput(inputRef, () => inputRef.current?.click());
-  }, [usingProvider, controller]);
+    controller.__registerFileInput(inputRef, () => {
+      if (fileUploadsEnabled) inputRef.current?.click();
+    });
+  }, [fileUploadsEnabled, usingProvider, controller]);
 
   // Note: File input cannot be programmatically set for security reasons
   // The syncHiddenInput prop is no longer functional
@@ -661,6 +667,7 @@ export const PromptInput = ({
         e.preventDefault();
       }
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        if (!fileUploadsEnabled) return;
         const accepted = sanitizeIncomingFiles(e.dataTransfer.files);
         if (accepted.length > 0) {
           add(accepted);
@@ -673,7 +680,7 @@ export const PromptInput = ({
       form.removeEventListener("dragover", onDragOver);
       form.removeEventListener("drop", onDrop);
     };
-  }, [add, globalDrop, sanitizeIncomingFiles]);
+  }, [add, fileUploadsEnabled, globalDrop, sanitizeIncomingFiles]);
 
   useEffect(() => {
     if (!globalDrop) return;
@@ -688,6 +695,7 @@ export const PromptInput = ({
         e.preventDefault();
       }
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        if (!fileUploadsEnabled) return;
         const accepted = sanitizeIncomingFiles(e.dataTransfer.files);
         if (accepted.length > 0) {
           add(accepted);
@@ -700,7 +708,7 @@ export const PromptInput = ({
       document.removeEventListener("dragover", onDragOver);
       document.removeEventListener("drop", onDrop);
     };
-  }, [add, globalDrop, sanitizeIncomingFiles]);
+  }, [add, fileUploadsEnabled, globalDrop, sanitizeIncomingFiles]);
 
   useEffect(
     () => () => {
@@ -715,7 +723,7 @@ export const PromptInput = ({
   );
 
   const handleChange: ChangeEventHandler<HTMLInputElement> = (event) => {
-    if (event.currentTarget.files) {
+    if (fileUploadsEnabled && event.currentTarget.files) {
       const accepted = sanitizeIncomingFiles(event.currentTarget.files);
       if (accepted.length > 0) {
         add(accepted);
@@ -809,6 +817,7 @@ export const PromptInput = ({
     )
       .then((convertedFiles: PromptInputFilePart[]) => {
         try {
+          // UI 门禁只负责阻止新选文件；提交前仍由 InputBox/Gateway 复核权限，避免撤权竞态。
           const result = onSubmit({ text, files: convertedFiles }, event);
 
           // Handle both sync and async onSubmit
@@ -840,6 +849,7 @@ export const PromptInput = ({
         accept={accept}
         aria-label="Upload files"
         className="hidden"
+        disabled={!fileUploadsEnabled}
         multiple={multiple}
         onChange={handleChange}
         ref={inputRef}

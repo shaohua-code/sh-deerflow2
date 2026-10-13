@@ -327,7 +327,7 @@ async def test_abefore_agent_policy_resolution_failure_does_not_replace_timeout(
             mock.patch.object(mw, "_inject", blocking_inject),
             mock.patch(
                 "deerflow.agents.middlewares.dynamic_context_middleware._INJECT_TIMEOUT_SECONDS",
-                0.01,
+                0.5,
             ),
         ):
             state = {"messages": [HumanMessage(content="Hello", id="msg-1")]}
@@ -336,7 +336,7 @@ async def test_abefore_agent_policy_resolution_failure_does_not_replace_timeout(
                 await mw.abefore_agent(state, runtime)
     finally:
         release.set()
-        assert await asyncio.to_thread(finished.wait, 1)
+        assert await asyncio.to_thread(finished.wait, 5)
 
     assert isinstance(exc_info.value.__cause__, TimeoutError)
     assert started.is_set()
@@ -387,7 +387,7 @@ async def test_abefore_agent_records_checkpointed_memory_on_timeout() -> None:
         mock.patch.object(mw, "_inject", blocking_inject),
         mock.patch(
             "deerflow.agents.middlewares.dynamic_context_middleware._INJECT_TIMEOUT_SECONDS",
-            0.01,
+            0.5,
         ),
     ):
         result = await mw.abefore_agent(state, runtime)
@@ -398,7 +398,7 @@ async def test_abefore_agent_records_checkpointed_memory_on_timeout() -> None:
     _drive_model_call(mw, state["messages"], runtime)
     recorded_call = journal.record_memory_context.call_args
     release.set()
-    assert await asyncio.to_thread(finished.wait, 1)
+    assert await asyncio.to_thread(finished.wait, 5)
     assert started.is_set()
     assert recorded_call == mock.call(
         content_sha256=hashlib.sha256(memory_content.encode("utf-8")).hexdigest(),

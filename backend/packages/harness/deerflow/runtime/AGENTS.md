@@ -1,5 +1,11 @@
 ### Stream Bridge Heartbeats
 
+The Gateway run worker also binds the server-owned Central IAM model
+authorization context before assembling the Agent and resets it in `finally`.
+The context may carry only ephemeral credentials in memory; it must never be
+copied into checkpoint state or events. Keep the model callback's event-loop
+bridge fail-closed when identity, vault, or authorization is unavailable.
+
 Memory and Redis bridges take their default idle heartbeat cadence from the startup-only `stream_bridge.heartbeat_interval_seconds` setting. Keep the default on the bridge instance so SSE, `/wait`, and internal subscribers stay aligned; an explicit `subscribe(..., heartbeat_interval=...)` remains a per-subscription override.
 
 ### Checkpoint Channel Modes (`full` / `delta`)
@@ -195,6 +201,18 @@ may replay a run but cannot move an unseen run behind the committed cursor.
 Deletes produce no tombstone and therefore do not advance the cursor; consumers
 that require deletion reconciliation must poll authoritative status for known
 runs and treat a missing result as absent.
+
+Thread deletion calls `RunManager.delete_thread_runs()` only while the durable
+`delete` operation reservation is held. The default `RunStore.delete_by_thread()`
+keeps external stores compatible by paging through `list_by_thread()` and calling
+the existing single-row delete; bulk overrides must delete only `operation_kind`
+`run`, preserve the active reservation, enforce the explicit owner scope, and
+fail closed if another non-null owner is present. Owner-scoped deletion may also
+remove legacy null-owner rows after Gateway has authorized the thread. SQL does
+the owner check and purge in one transaction. The run change feed has no delete
+tombstones, so its existing authoritative-missing reconciliation rule still
+applies.
+
 The extension-facing cursor is versioned, opaque, and bound to the reader's
 fixed user scope. `RunEventStore.list_events()` accepts the same explicit
 `user_id` override as `list_messages()`; evidence readers must propagate their

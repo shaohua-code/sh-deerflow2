@@ -131,6 +131,19 @@ def test_importer_copies_all_definitions_into_db(file_home, monkeypatch):
     assert managed.enabled is False
 
 
+def test_file_agent_owned_page_excludes_legacy_deployment_agents(file_home):
+    """A personal export must not treat shared deployment config as user data."""
+    from deerflow.config import paths as paths_module
+
+    shared = paths_module.get_paths().agent_dir("deployment-reviewer")
+    shared.mkdir(parents=True)
+    (shared / "config.yaml").write_text(yaml.safe_dump({"description": "shared"}), encoding="utf-8")
+
+    rows = FileAgentStore().list_owned(user_id="u1", limit=10, offset=0)
+
+    assert [(owner, config.name, soul) for owner, config, soul in rows] == [("u1", "reviewer", "review soul")]
+
+
 def test_importer_is_idempotent(file_home, monkeypatch):
     cfg = _cfg("db", "sqlite", str(file_home / "db"))
     importer = _patch_importer(monkeypatch, cfg)

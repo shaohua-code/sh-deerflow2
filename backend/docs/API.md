@@ -34,6 +34,19 @@ PATs require a configured database backend (SQLite/PostgreSQL) — on the
 memory-only backend, Bearer credentials are rejected and PAT management routes
 return `503`.
 
+### Live Browser Stream
+
+`/api/threads/{thread_id}/browser/stream` is a cookie-authenticated WebSocket.
+Because upgrades bypass HTTP middleware, the Gateway validates the local
+session and Origin itself. Before reading the thread or opening its retained
+browser session, the connection requires both `threads:read` and
+`threads:write`, plus the matching thread's owner/self read and write data
+scopes. Local thread ownership remains mandatory. A permission or scope denial
+closes the socket with `4403`; an unavailable authorization service fails
+closed with `1011`. The signed local session ID is used only server-side to
+resolve the encrypted IAM token-vault session; upstream tokens are never sent
+over the browser socket.
+
 ### Account Preferences
 
 `GET /api/v1/auth/preferences` returns the signed-in browser user's four
@@ -42,6 +55,15 @@ Both require `X-Expected-User-Id` matching the session user; PATCH also requires
 the normal `X-CSRF-Token` header. The expected ID is a stale-tab guard, not an
 authorization credential. PAT, internal, and auth-disabled callers receive
 `403`; a different session user receives `409`.
+
+When Central IAM is enabled, GET additionally requires `preferences:read` and
+the verified subject's owner/self data scope; PATCH requires
+`preferences:write` and the matching write scope. Both Central IAM checks run
+before opening the user-preference repository. The config example maps these
+route permissions to `deerflow.preference.read` and
+`deerflow.preference.write`; the IAM catalog migration only registers those
+codes and does not grant them to any role. These routes remain browser-session
+only and do not accept PATs.
 
 ```json
 {
@@ -131,28 +153,31 @@ Revocation is immediate.
   stay at `runs:read`), and `multitask_strategy=interrupt|rollback` on run
   creation (the default `reject` stays at `runs:create`). Joining a run's
   stream is pure observation — an observer disconnecting never cancels the run.
-- **Route-level default-deny:** PAT requests are admitted only to the
-  thread/run lifecycle routes the v1 scopes govern — `POST /api/threads`
-  (create), `POST /api/threads/search` (list), `GET/PATCH/DELETE
-  /api/threads/{thread_id}`, the thread `goal`/`state`/`compact`/`history`/
-  `branches` subroutes, and exactly the implemented `/runs` subroutes
-  (`GET|POST /api/threads/{thread_id}/runs`, the POST-only `stream`, `wait`,
-  `regenerate/prepare`, and `edit-regenerate/prepare` collection endpoints,
-  `GET /api/threads/{thread_id}/runs/{run_id}` plus its `cancel` (POST),
-  `join`/`messages`/`events`/`workspace-changes` (GET), and
-  `GET|POST .../runs/{run_id}/stream`), plus `POST /api/runs/stream|wait` and
-  `GET /api/runs/{run_id}/messages|feedback`. A route added under `/runs` is
-  denied until explicitly added to the policy.
-  Every other authenticated route — memory, agents, models, MCP/skills
-  config, integrations, channels, uploads — answers `403` to PAT callers
-  regardless of scopes. Scope enforcement alone only constrains
-  permission-decorated routes, so the allowlist is the outer boundary;
-  session-cookie callers are unaffected.
+- **Route-level default-deny:** PAT requests are admitted only to explicitly listed
+  path/method pairs. The v1 allowlist covers selected thread/run lifecycle
+  routes, project/document/trash routes, personal custom-Agent definitions,
+  and personal-memory endpoints. Consult `is_pat_allowed_route()` for the
+  exact live list; adding a route or method requires an explicit security review.
+  Every other authenticated route — models, preferences, MCP/skills
+  configuration, integrations, channels, uploads, and deployment-wide profile
+  operations — answers `403` regardless of scopes. Scope enforcement alone only
+  constrains permission-decorated routes, so the path/method allowlist is the
+  outer boundary; session-cookie callers are unaffected.
 - PAT credentials never carry admin capability, even when the owning user is
   an admin. This includes extension-contributed admin routes: the extension
   principal projection suppresses every admin signal for PAT callers.
 - Revoking or deleting the owning user invalidates their PATs on the next
   request.
+
+### Personal Memory
+
+Browser clients may send `X-Expected-User-Id` on `/api/memory` reads (including
+`/status`), exports, imports, and edits. The Gateway compares it with the current authenticated
+user and returns `409` before Central IAM data-scope checks or memory storage
+access when a shared browser session changed accounts. The header is optional
+for compatibility with older API clients and trusted internal callers; it is
+only a stale-session fence and never grants access. Existing route permissions,
+owner isolation, and Central IAM data-scope checks remain required.
 
 ## LangGraph-compatible API
 

@@ -1,4 +1,123 @@
-# Changelog
+## 2026-10-13 Central IAM B04 context/Gateway service focused verification
+
+- `test_context_compaction.py` and `test_gateway_services.py` passed **212 tests** in an isolated offline run. No source/test changes and no target DB/IAM/provider access.
+- Temporary `DEER_FLOW_HOME` and pytest basetemp were removed. The full suite remains at its previous 17,004/186/349/3/5 snapshot because no full rerun was made.
+## 2026-10-13 Central IAM B04 extension runtime test-fixture follow-up
+
+- The focused extension task runtime module exposed one stale fake FastAPI Request without `state`; the test now supplies it. No Gateway runtime change. **15 passed**; Ruff check/format passed and temporary roots were removed.
+- The full suite was not rerun; last complete result remains the earlier 17,004/186/349/3/5 snapshot. `uv`, `WinError 10106`, and remaining failures remain open.
+## 2026-10-13 Central IAM B04 DNS and PAT scope triage
+
+- FastCRW offline fetch tests now use a deterministic public resolver answer; production SSRF checks are unchanged. FastCRW + thread-route focused tests: **142 passed, 1 warning**.
+- Replaced an obsolete PAT test that equated the curated PAT scope allowlist with every Gateway permission. The exact 16-scope subset is now pinned, and API/Gateway docs correctly describe explicit personal-Agent and personal-memory route admission. PAT runtime logic changed only in its explanatory docstring. PAT auth/repository/vault tests: **63 passed, 1 warning**.
+- Full suite not rerun; its last complete result remains the earlier 17,004/186/349/3/5 snapshot. Missing `uv`, `WinError 10106`, and other failures remain open. Ruff check/format passed; temporary test/cache roots were removed. No migration, live IAM/provider, or quota enforcement ran.
+## 2026-10-13 Central IAM B04 Windows Gateway test-fixture triage
+
+- Fixed seven failures reproduced in three focused test files: explicit UTF-8 replacement decoding for deploy subprocess output avoids Windows GBK locale failures; Gateway checkpoint/run-wait fake requests now include `state`. No production DeerFlow code changed.
+- `test_gateway_startup.py`, `test_gateway_checkpoint_mode.py`, and `test_thread_regenerate_prepare.py`: **45 passed, 1 warning**. Ruff check/format passed; isolated test/cache roots were removed.
+- The full suite was not rerun; its latest result remains the earlier 17,004/186/349/3/5 snapshot. Missing `uv`, live-policy `WinError 10106`, and other failures remain open. No IAM migration, live IAM/Provider, or quota enforcement ran.
+## 2026-10-13 Central IAM B04 Windows Studio test follow-up
+
+- Diagnosed the five Studio setup errors: the child Python inherited GBK as its default locale encoding while a locked dependency opened a UTF-8 OpenAPI asset. The test process now sets `PYTHONUTF8=1`; startup diagnostics decode with replacement so log bytes cannot mask the actual startup failure.
+- The persistence restart regression now waits for the in-memory runtime periodic disk flush while the legacy server remains alive before starting the repaired server.
+- Studio route module: **6 passed**; Ruff check/format passed; the temporary root was removed. No full rerun after these test changes. Missing `uv`, `WinError 10106`, and remaining full-suite failures are still open.
+
+## 2026-10-13 Central IAM B04 full offline backend rerun
+
+- Latest Windows Python 3.12 run took 35:00: **17,004 passed, 186 failed, 349 skipped, 3 deselected, 5 errors, 99 warnings**; failures plus errors total 191. The full suite is not green.
+- Three POSIX launcher tests are now skipped conditionally on Windows. Known environment/diagnostic blockers are missing `uv`, subprocess `WinError 10106`, and five LangGraph Studio setup errors where UTF-8 log decoding hides the server startup root cause. Remaining failures are not fully classified.
+- The isolated pytest temp root was removed. No migration, live IAM/provider, or quota-enforcement validation ran.
+
+## 2026-10-13 Central IAM owner-scoped skill cleanup and Lark Windows regressions
+
+- Implemented owner-scoped custom-skill cleanup in `UserScopedSkillStorage` and `GatewayOwnerDataDeleter`. It removes only a user's custom packages/history/private states, preserves global legacy/integration skills and their user preferences, rebuilds the owner's skill projection, and refreshes only that owner's prompt cache. The capability is not exposed by the public extension API or product data-job/API/UI.
+- The latest full offline snapshot remains **17,007 passed, 191 failed, 346 skipped, 3 deselected**, from before these fixes. Browser modules passed **87/1 skipped**; Lark broker, user-scoped storage, and owner deleter passed **76 tests, 6 skipped**; pnpm/checkpointer/store focused regressions passed **3/3**. Three POSIX `/bin/sh` launcher runtime tests were conditionally skipped on Windows and were not run on Linux in this turn.
+- Windows fake-CLI tests now emulate the stub process and bypass inherited proxies for localhost failure cases. Ruff check/format passed; pytest temporary roots were removed. Missing `uv` and live-policy subprocess `WinError 10106` remain blockers; no migration/live IAM/provider/quota test ran.
+
+## 2026-10-13 Central IAM B04 full-suite triage and Windows test stability
+
+- Latest complete offline backend snapshot: **17,007 passed, 191 failed, 346 skipped, 3 deselected** (39:06). After that run, deterministic public DNS fixtures brought the browser automation/browserless modules to **87 passed, 1 skipped**. The Windows pnpm-path and concurrent singleton regressions passed **3/3** after fixing the `.cmd` case assumption and raising synchronization timeouts from 3 to 10 seconds; production singleton code did not change.
+- Confirmed environment blockers: extension-manager installation tests cannot find `uv`; the live-policy subprocess fails with Windows `WinError 10106`. The checkpointer concurrency test passed on isolated rerun. The complete suite has not been rerun after the later test changes, and remaining failures need individual classification.
+- Ruff check/format passed and pytest temporary directories were removed. No database migration, live IAM/provider call, or quota enforcement was run.
+
+## 2026-10-13 Central IAM test-fixture sync and B04 triage
+
+- Updated test doubles in six DeerFlow failure-triage modules to match the current trusted auth context, permission set, OIDC identity, request state, shared agent-deletion helper, and scheduled-run callback contract. Production behavior was not changed in this turn.
+- Verification: the six-module gate passed **301 tests, 3 skipped, 0 failed**; Ruff check/format passed on all six changed test files. The previous complete offline backend run was **16,896 passed, 302 failed, 346 skipped, 3 deselected** and predates these fixture changes; the complete suite was not rerun. The guidance budget check passed 1/1 and MCP config secrets passed 195 tests. Temporary test directories were verified removed.
+- No IAM migration, database write, live IAM/provider call, or quota enforcement was run. B04 full-suite triage and target-environment acceptance remain open.
+
+## 2026-10-13 Central IAM Windows document-path regression repair
+
+- DeerFlow now maps over-budget Windows document paths to a stable project-scoped documents/.short/<digest> physical alias while retaining the logical stored_relpath and legacy-path compatibility; no database schema changed.
+- Focused regressions passed 65 tests with 2 skips; the full Windows blocking-I/O suite passed 140 tests with 3 skips and no failures. Ruff check/format passed on 9 changed Python files. Temporary test artifacts were removed.
+- The post-fix full offline result and the later test-fixture follow-up are recorded in the newer 2026-10-13 B04 entry. Full-suite failure triage and live IAM/provider acceptance remain open; no migration/live call ran and quota enforcement stays disabled.
+## 2026-10-12 Central IAM uncertain model outcomes
+
+- Model-call errors and callback shutdown without a terminal usage result now leave the IAM reservation unresolved for administrator reconciliation after the 10-minute expiry; they are no longer settled as zero. Reservations are released only when the provider is confirmed not to have been called.
+- Focused usage/outbox/memory/boundary checks passed 33/33 and Ruff check/format passed. Offline backend suite: 16,775 passed, 419 failed, 346 skipped, 3 deselected; blocking-I/O suite: 114 passed, 28 failed, 1 skipped. Failure triage and live IAM/provider acceptance remain outstanding; quota enforcement stays disabled.
+
+## 2026-10-12 Central IAM Provider-path audit
+
+- Static review of the in-repository built-in production sources found shared-factory models, Gateway one-shot model calls, and DeerMem's direct `init_chat_model()` covered by LangChain usage callback scopes. The custom Codex Responses provider is a `BaseChatModel`, constructed through the shared factory, and returns usage metadata; third-party extension providers loaded dynamically were not exhaustively enumerated.
+- The IAM idempotency `request_id` is generated per LangChain invocation. Codex internal HTTP retries remain within one reservation/settlement; provider billing for failed or retried attempts is unverified.
+- Read-only source audit only; no tests, build, provider calls, migrations, or live IAM checks ran. Quota enforcement remains disabled pending target validation.
+
+## 2026-10-12 Central IAM DeerMem background model usage
+
+- Added a Gateway-injected one-call usage callback for DeerMem's direct `init_chat_model()` timer path. It reloads the active local user and matching OIDC vault session on the Gateway loop, pins the server-configured profile, and attaches the callback only to that invocation.
+- The Harness removes the callback from invocation metadata and closes it after the terminal result before extension observers run; no IAM credential/capability is put in the debounce queue. Enabled metering fails closed when admission is unavailable; disabled metering keeps the prior no-metering behavior.
+- Existing memory commit and IAM usage callback tests passed **20/20**, and the Harness boundary check passed **1/1**, in isolated Windows Python 3.12 backend runs. The short random test directory was removed; Ruff check/format passed on the six changed Python files. Full suite, migration, live IAM/Provider, and runtime image checks were not run.
+
+
+
+## 2026-10-12 Windows-safe project document filenames
+
+- Keep long upload display names in the project shelf while storing the original under a compact private name on Windows when the full path exceeds the conservative path budget. Existing `original/{name}` layouts remain readable, conversion suffixes remain intact, and content MIME is derived from the display name.
+- Added a regression assertion that downloads bytes after accepting the maximum 255-byte filename.
+
+## 2026-10-12 Central IAM model-call authorization
+
+- Attach an exact-profile `model:use` callback at the shared model factory so every model dispatch in a Gateway Agent run is authorized, including title, summary, evaluator, and subagent calls.
+- Reauthorize DeerMem's separate background model path against the active local user/vault session, `memory:read` and `memory:write` owner scopes, and the exact model profile before provider dispatch. Inject callbacks from Gateway startup so Harness does not import `app.*`.
+- Focused authorization regression passed 28/28 and the Harness boundary regression passed 1/1. The Python readabilipy fallback now preserves safe article links and image destinations; the existing web-fetch suite passes 50/50 and Ruff passes. A Windows isolated full backend snapshot before this fix had 16,750 passed, 442 failed, 345 skipped, and 3 deselected; blocking-I/O had 116 passed, 26 failed, and 1 skipped. The full suite has not been rerun after the fix; remaining failures are not fully triaged. Temporary tests and pytest artifacts were removed. No IAM migration or live IAM/Provider E2E was run.
+
+## 2026-10-11 GitHub webhook production signature guard
+
+- Disable `DEER_FLOW_ALLOW_UNVERIFIED_GITHUB_WEBHOOKS` whenever the explicit environment is production. Without `GITHUB_WEBHOOK_SECRET`, startup does not mount the route and the handler fails closed for unsigned deliveries.
+- Added a production-mode regression. Full focused browser and webhook tests pass 76/76, including data-scope denial and authorization-service failure close cases; the public URL SSRF case uses deterministic DNS results. Ruff check/format passed.
+
+## 2026-10-11 Central IAM browser live stream authorization
+
+- Require `threads:read/write` route grants and matching thread owner/self read/write data scopes before the Gateway looks up a thread or opens its retained browser session. Carry the verified local JWT `sid` into the request-scoped Central IAM resolver.
+- Preserve local owner and Origin checks; authorization denial or provider failure closes the socket before browser runtime access. No migration, role grant, UI change, or upstream logout revocation was added.
+- Browser and webhook route tests pass 76/76; the public URL SSRF test uses deterministic DNS results. Ruff check and format passed. Live IAM/WebSocket E2E remains open.
+
+## 2026-10-11 Central IAM personal preference permissions
+
+- Added Central IAM `preferences:read/write` route checks to the browser-only account-preferences API and required the matching verified owner/self data scope before repository access.
+- Added IAM catalog migration `0030_deerflow_preference_permissions`; it registers `deerflow.preference.read/write` without granting roles. Added matching commented `permission_map` examples.
+- Added authorization and no-storage-on-denial regressions. `tests/test_user_preferences.py`: 19 passed; Ruff check and format check passed for both changed Python files.
+- No UI behavior, service configuration, or database changed. Live IAM grants, migration and browser E2E remain open.
+
+## 2026-10-11 Default runtime image verification
+
+- The dev image exists and a disposable container imported deerflow.authz.iam_deerflow through its uv environment.
+- The default runtime image was not produced: Docker Hub Python manifest and GHCR uv anonymous-token requests returned EOF, including with pull disabled. A uv locked dry-run passes and backend/uv.lock remains unchanged.
+- Retry after registry access or a configured mirror; no app service or database was started.
+
+## 2026-10-11 Docker build-context security and image check
+
+- Excluded runtime config.yaml, extensions_config.json, their backup copies, and all .env* variants from the build context; these local files may contain provider/MCP credentials.
+- The Docker daemon completed image iam-deerflow-package-check:20261011 (sha256:f2203cacf14d7a324dadcaa4d803145fcd9fd48129a9e9f15751e4beb4947456) after the CLI clients exited; a one-off uv-environment container import of deerflow.authz.iam_deerflow passed. Full service startup and live IAM acceptance remain open.
+- No service or database was started or changed. Retry after base images are available from a registry, local cache, or configured mirror.
+
+#
+## 2026-10-11 Central IAM model usage settlement outbox
+
+- Add the durable SQLAlchemy outbox and fd_0028 migration. Terminal usage is persisted before delivery, then retried with an idempotent request ID, 120-second lease, 2–600 second backoff, and configurable delivered-row retention (30 days by default).
+- Focused regression: 118 passed, 1 existing warning. Ruff check/format passed; isolated SQLite migrations upgraded through fd_0028. No live IAM, Provider, or development database was contacted.
+- Restart recovery covers events committed to the outbox. A crash between Provider completion and local commit remains possible; custom Provider paths and live acceptance remain open. Keep quota enforcement disabled.
+ Changelog
 
 All notable changes to DeerFlow are documented in this file.
 
@@ -7,8 +126,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Add the server-side Harness `IamModelUsageClient` and opt-in `IamModelUsageCallback`. A run-scoped context carries it to `create_chat_model()`, which binds the trusted DeerFlow profile name to each LangChain model instance so Provider deployment aliases cannot alter IAM model attribution. The callback reserves each call before Provider dispatch, then settles the same request ID or reports usage; reserve denial fails closed. It resolves IAM's canonical user UUID through `/auth/me` using the verified vault token. Callback tests pass 8/8, including async callback-manager propagation, alias binding, and run-close cleanup; client+callback+vault regressions pass 15/15; the combined model-factory/usage selection passes 110/110; Ruff/format pass. `model_usage.enabled` remains false by default; explicit per-model output caps and an API-only gateway key are required. Durable settlement recovery, custom Provider paths, and live IAM/Provider acceptance remain open, so quota enforcement stays disabled.
+- Authorize console aggregates against every resource they expose: stats requires runs, threads, and agents read permissions/scopes; cross-thread run history requires runs and threads; usage requires runs. Scope checks run before SQL access, and local user filters remain. Console router regressions passed 25/25; Ruff passed for the two changed Python files. No migration or IAM role grant was added.
+- Add optional RFC 8414 revocation-endpoint parsing and an RFC 7009 OIDC token-revocation client. It requires HTTPS, supports the three OAuth client-auth methods, and keeps token/provider response content out of errors. The Gateway logout route remains local-only pending explicit approval to send stored bearer credentials to the issuer. Mocked OIDC and vault tests pass 41/41; no live IAM request was made.
+- Reauthorize passive memory writes immediately before every storage commit, including revision retries. The Gateway host callback reloads the active owner and matching encrypted OIDC vault session on the serving loop, then checks current exact owner/self `memory:read` and `memory:write` scopes. The process-local queue contains no IAM capability; missing/revoked authorization or a 30-second timeout skips persistence. Updater/data-scope/commit callback regressions passed 109/109; Ruff check/format passed for the 6 changed Python files.
+- Check Central IAM self data scopes before scheduled-task API reads and mutations; require `threads:delete` for task deletion and `runs:read` for task-run history. The scheduler revalidates the active owner, current route grants/data scopes, and a matching encrypted OIDC vault session before admission and queue launch. Revoked/unavailable authorization pauses the task and cancels queued work; the short-lived capability is never persisted. Combined scheduler/vault/router/authz regressions passed 126/126.
+
 This section accumulates work toward the **2.1.0** milestone
 ([milestone 2](https://github.com/bytedance/deer-flow/milestone/2)).
+
+### Added
+
+- **gateway:** Added `memory:read`, `memory:write`, `memory:delete`, and
+  `memory:admin` permissions to every personal memory route. Responses that
+  include the full memory document (including mutation responses) now require
+  the IAM `memory:read` data scope before storage access; memory configuration
+  inspection requires the separate admin permission. PAT access is explicitly
+  allowlisted by method and path.
+- **gateway:** Extended `require_permission` to bind legacy handlers that call
+  their FastAPI `Request` parameter `http_request`; this lets the memory router
+  use the same server-side permission boundary as other Gateway routes.
+- **tests:** Memory/authz/PAT regression selection passed 118/118. Document,
+  promotion, and trash routing passed 72 with 2 skipped on a short Windows temp
+  root; one 255-byte filename stress case remains blocked by Windows `WinError 3`.
+
+- **gateway:** Wired the IAM OIDC vault into request-scoped authorization when
+  the configured provider declares `requires_iam_identity` (or uses the
+  `central-iam` provider name). The resolver accepts only the signed local
+  session `sid`, validates it against the active local OIDC identity and vault
+  row, refreshes/rotates tokens under the row lock when needed, and passes the
+  access token inside a redacted in-memory Mapping. Route permissions, model
+  catalog checks, and sandbox-sync checks can consume it without copying the
+  token into LangGraph config or checkpoints. An authenticated Gateway run
+  now carries the opaque Mapping on its non-serializable `RunContext`; the
+  Principal builder attaches it only for the matching OIDC subject, enabling
+  online Agent model selection and tool filtering/execution checks without
+  putting credentials in graph context or checkpoints. The new Principal
+  regression suite passes 27/27; the latest selected auth/vault/Principal/model regressions pass 91/91, including direct Agent admission/revalidation and fail-closed worker tests; IAM Python Adapter tests pass 13/13. The earlier focused request auth/vault/model
+  suite passed 62/62; an earlier combined rerun hung in the Windows route test
+  runner and did not complete. Long-running Agent session revalidation and token refresh are implemented; data-scope
+  filtering, remote revocation, package distribution, live IAM interoperability,
+  and target migration remain open.
+
+- **gateway:** Added a typed OIDC refresh-token grant client and an encrypted
+  token-vault refresh helper that holds the session row lock while IAM rotates
+  credentials, then persists replacement ciphertext atomically. Refresh errors
+  omit provider response bodies, and token reprs are redacted. Focused DeerFlow
+  auth/vault regressions passed 31/31 before the request resolver was wired;
+  the current request authorization path now calls it when the stored access
+  token is close to expiry. Agent runs use the request-resolved access token
+  but did not yet refresh it during long-running tasks at that stage; a later run-scoped capability increment added and verified in-run session revalidation and near-expiry refresh.
+
+- **gateway:** Added an opt-in IAM OIDC token vault. Providers must request
+  `offline_access` and enable `iam_token_vault_enabled`; token pairs are AES-256-GCM
+  encrypted and stored per local session, and local logout removes the matching row.
+  The Gateway API reads `DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY` as standard Base64 of
+  exactly 32 random bytes. Migration `0026_iam_oidc_token_vault` creates the table.
+  Request-level route/model-catalog/sandbox-sync checks now use the vault and
+  refresh rotation; long-running Agent token refresh is now implemented; upstream revocation
+  remains pending.
 
 ### ⚠ Breaking changes
 
@@ -109,6 +287,7 @@ This section accumulates work toward the **2.1.0** milestone
   most 30 days.
 
 #### Authentication
+- **auth:** New OIDC-provisioned accounts always start as ordinary users. The legacy `admin_emails` setting remains parseable but is ignored; existing accounts are not automatically changed. Gateway-side IAM token/tenant storage and online checks remains pending.
 - **auth:** Personal access tokens (PAT) for programmatic API access:
   `POST/GET/DELETE /api/v1/auth/pats` manage tokens (shown once, stored as
   SHA-256 digests); a default-deny route policy admits only the thread/run
@@ -581,6 +760,10 @@ This section accumulates work toward the **2.1.0** milestone
   or context isolation clearly pays off. ([#4384])
 
 ### Fixed
+
+- **Docker:** Exclude Python pytest/ruff/mypy/hypothesis caches from the root build context so Docker no longer reads container-generated cache directories with restricted ACLs; the DeerFlow gateway dev image now builds successfully in this Windows Docker Desktop workspace.
+- **gateway:** Project/document/trash mutations check matching `projects:*` and `threads:read/write` scopes before side effects; owner-checked thread `write/delete` and run `create/cancel` operations now check IAM data scope after local ownership and before handlers. Cancellation binds the existing run ID; creation does not invent one. The combined project/thread/run/feedback/file/browser/MCP route selection passed 532 tests; auth decorator tests passed 101/101; Ruff passed. One public-DNS test was deselected in the offline container.
+
 
 - **middleware:** Stop loop detection from cutting off an agent that pages
   through a file. `read_file` calls were keyed by 200-line buckets, so every
@@ -2909,4 +3092,13 @@ with **180 merged pull requests** since the first 2.0 milestone tag.
 [#5431]: https://github.com/bytedance/deer-flow/pull/5431
 [#5447]: https://github.com/bytedance/deer-flow/pull/5447
 [#5469]: https://github.com/bytedance/deer-flow/pull/5469
+## 2026-10-11 Central IAM model usage reconciliation
+
+- IAM now stores every DeerFlow model-call reservation before Provider dispatch, including when quota blocking is disabled. Expiry after 10 minutes queues the reservation for review; no automatic maximum charge or release occurs, and pending tokens continue to hold conservative TPM.
+- The IAM admin UI records actual/estimated usage from Provider evidence or releases only after confirming the Provider was never called. The action and reason are audited. The DeerFlow outbox retries committed terminal events; the IAM reservation covers the outbox-commit crash gap for manual review.
+- IAM migration `0031_model_usage_reconciliation` is not applied to the development database. Keep quota enforcement disabled until migration, isolated backend/frontend verification, and live IAM/Provider acceptance pass.
+## 2026-10-13 Central IAM B04 migration/bootstrap fixture follow-up
+
+- Legacy SQLite fixtures in `test_persistence_bootstrap.py` and `test_persistence_bootstrap_regression.py` now create only `_BASELINE_TABLE_NAMES`, so later Alembic revisions remain responsible for post-baseline tables such as `iam_model_usage_outbox`. Production bootstrap/runtime was not changed.
+- Five focused migration/bootstrap modules passed **62 tests**; Ruff check and format-check passed for both test files. The first attempt had 22 setup errors because the isolated basetemp parent was absent; after creating it, the full focused command passed. Temporary DB/test/cache directories were removed. Full suite and target DB migration remain unverified.
 

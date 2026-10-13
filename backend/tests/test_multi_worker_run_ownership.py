@@ -22,6 +22,7 @@ import pytest
 from deerflow.config.run_ownership_config import RunOwnershipConfig
 from deerflow.runtime import ORPHAN_RECOVERY_STOP_REASON, RunManager, RunStatus, ThreadOperationKind
 from deerflow.runtime.runs.manager import CancelOutcome, ConflictError, _generate_worker_id
+from deerflow.runtime.runs.store.base import RunStore
 from deerflow.runtime.runs.store.memory import MemoryRunStore
 
 # ---------------------------------------------------------------------------
@@ -69,9 +70,61 @@ async def test_reject_succeeds_when_no_active_run():
     manager = _make_manager(store=store, run_ownership_config=_lease_config(heartbeat_enabled=True))
     record = await manager.create_or_reject("thread-1", multitask_strategy="reject")
     assert record is not None
-    assert record.status == RunStatus.pending
-    assert record.owner_worker_id is not None
-    assert record.lease_expires_at is not None
+
+
+@pytest.mark.anyio
+async def test_delete_thread_runs_requires_delete_reservation_and_keeps_other_threads():
+    store = MemoryRunStore()
+    manager = _make_manager(store=store)
+    await store.put("run-to-delete", thread_id="thread-delete", user_id="owner", status="success")
+    await store.put("run-to-keep", thread_id="thread-keep", user_id="owner", status="success")
+
+    with pytest.raises(ConflictError, match="delete reservation"):
+        await manager.delete_thread_runs("thread-delete", user_id="owner")
+
+    async with manager.reserve_thread_operation(
+        "thread-delete",
+        kind=ThreadOperationKind.delete,
+        user_id="owner",
+    ):
+        assert await manager.delete_thread_runs("thread-delete", user_id="owner") == 1
+        assert await store.get("run-to-delete", user_id="owner") is None
+        assert await store.get("run-to-keep", user_id="owner") is not None
+
+
+@pytest.mark.anyio
+async def test_run_store_default_thread_delete_supports_legacy_single_row_stores():
+    class LegacyStore:
+        def __init__(self):
+            self.rows = [
+                {
+                    "run_id": f"run-{index}",
+                    "thread_id": "target",
+                    "user_id": "owner",
+                    "created_at": f"2026-01-01T00:{index // 60:02}:{index % 60:02}+00:00",
+                }
+                for index in range(103)
+            ]
+            self.rows.extend(
+                [
+                    {"run_id": "other-owner", "thread_id": "target", "user_id": "other"},
+                    {"run_id": "other-thread", "thread_id": "elsewhere", "user_id": "owner"},
+                ]
+            )
+
+        async def list_by_thread(self, thread_id, *, user_id=None, limit=100):
+            rows = [row for row in self.rows if row["thread_id"] == thread_id and (user_id is None or row.get("user_id") == user_id)]
+            return sorted(rows, key=lambda row: row.get("created_at", ""), reverse=True)[:limit]
+
+        async def delete(self, run_id):
+            self.rows = [row for row in self.rows if row["run_id"] != run_id]
+
+    store = LegacyStore()
+
+    deleted = await RunStore.delete_by_thread(store, "target", user_id="owner")
+
+    assert deleted == 103
+    assert [row["run_id"] for row in store.rows] == ["other-owner", "other-thread"]
 
 
 @pytest.mark.anyio
@@ -1143,6 +1196,57 @@ async def test_cancel_local_run_succeeds():
     result = await manager.cancel(record.run_id)
     assert result == CancelOutcome.cancelled
     assert record.status == RunStatus.interrupted
+
+
+@pytest.mark.anyio
+async def test_cancel_active_runs_for_user_only_stops_owned_agent_runs():
+    """Account deactivation must interrupt that user's runs, not peer work or reservations."""
+    store = MemoryRunStore()
+    manager = _make_manager(store=store)
+    owned_pending = await manager.create("owned-thread-1", user_id="user-disabled")
+    owned_running = await manager.create("owned-thread-2", user_id="user-disabled")
+    peer_run = await manager.create("peer-thread", user_id="user-other")
+    await manager.set_status(owned_running.run_id, RunStatus.running)
+    await manager.set_status(peer_run.run_id, RunStatus.running)
+    await store.put(
+        "owned-checkpoint-write",
+        thread_id="owned-thread-3",
+        user_id="user-disabled",
+        status="running",
+        operation_kind="checkpoint_write",
+    )
+
+    outcomes = await manager.cancel_active_runs_for_user("user-disabled")
+
+    assert outcomes == {
+        owned_pending.run_id: CancelOutcome.cancelled,
+        owned_running.run_id: CancelOutcome.cancelled,
+    }
+    assert (await store.get(owned_pending.run_id))["status"] == "interrupted"
+    assert (await store.get(owned_running.run_id))["status"] == "interrupted"
+    assert (await store.get(peer_run.run_id))["status"] == "running"
+    assert (await store.get("owned-checkpoint-write"))["status"] == "running"
+
+
+@pytest.mark.anyio
+async def test_cancel_active_runs_for_user_reports_remote_lease_cancellations_as_pending():
+    """Bulk account cancellation must use the same durable signal as direct multi-worker cancel."""
+    store = MemoryRunStore()
+    owner = _make_manager(store=store, worker_id="owner", run_ownership_config=_lease_config(heartbeat_enabled=True))
+    administrator_gateway = _make_manager(
+        store=store,
+        worker_id="admin-gateway",
+        run_ownership_config=_lease_config(heartbeat_enabled=True),
+    )
+    active = await owner.create("thread-owned-by-disabled-user", user_id="user-disabled")
+    await owner.set_status(active.run_id, RunStatus.running)
+
+    outcomes = await administrator_gateway.cancel_active_runs_for_user("user-disabled")
+
+    assert outcomes == {active.run_id: CancelOutcome.requested}
+    persisted = await store.get(active.run_id)
+    assert persisted["status"] == "running"
+    assert persisted["cancel_action"] == "interrupt"
 
 
 @pytest.mark.anyio

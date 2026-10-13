@@ -11,6 +11,7 @@ rs.mock("@/core/config", () => ({
 import { fetch as fetcher } from "@/core/api/fetcher";
 import {
   formatSkillSecurityFindings,
+  loadSkills,
   SkillRequestError,
   uploadSkillArchive,
 } from "@/core/skills/api";
@@ -30,6 +31,17 @@ beforeEach(() => {
 });
 
 describe("skills api", () => {
+  test("forwards the query abort signal when loading skills", async () => {
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, { skills: [] }));
+    const controller = new AbortController();
+
+    await loadSkills({ signal: controller.signal });
+
+    expect(mockedFetch).toHaveBeenCalledWith("/backend/api/skills", {
+      signal: controller.signal,
+    });
+  });
+
   test("uploads a local .skill archive as multipart form data", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(200, {

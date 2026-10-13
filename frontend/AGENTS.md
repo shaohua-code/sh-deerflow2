@@ -42,7 +42,7 @@ Webpack is the default development bundler. Use `DEER_FLOW_DEV_BUNDLER=turbo` wi
 
 Rstest runs them as two projects (`rstest.config.ts`). `*.test.ts` / `*.test.tsx` run in a plain **node** environment — that is nearly the whole suite, and it is the default for anything that is pure logic. `*.dom.test.ts` / `*.dom.test.tsx` run in **happy-dom**, for tests that need a document: hooks driven through `renderHook` from `@testing-library/react`, and components. Keep the split — a DOM environment costs roughly 3x the runtime of the node suite, so tests that do not render should not opt into it. A hook whose behavior only exists under real React (effect ordering, cleanup on unmount, re-render on store change) belongs in a `.dom.test.*` file rather than a node test that mocks `react` itself.
 
-E2E tests live under `tests/e2e/` and use Playwright with Chromium. They mock all backend APIs via `page.route()` network interception and test real page interactions (navigation, chat input, streaming responses). Config: `playwright.config.ts`. The real-backend auth contract in `tests/e2e-real-backend/auth-disabled-contract.spec.ts` and `backend/tests/test_auth_me_permissions.py` pin the complete route-permission list; update both when adding registered permissions (including `projects:read/write/delete`).
+E2E tests use Playwright/Chromium, mock APIs through page.route, and cover real interactions. Configuration is playwright.config.ts; Windows server startup gets five minutes. Set PLAYWRIGHT_SKIP_WEB_SERVER=1 only for an existing server. Update tests/e2e-real-backend/auth-disabled-contract.spec.ts and backend/tests/test_auth_me_permissions.py whenever route permissions change.
 
 The dedicated `run-history.ts` hook replaces the unpaged runs hook. Show counts
 only after a successful history read, never during initial loading or errors.
@@ -69,12 +69,14 @@ The frontend is a stateful chat application. Users create **threads** (conversat
   - `ui/` — Shadcn UI primitives (auto-generated, ESLint-ignored)
   - `ai-elements/` — Vercel AI SDK elements (auto-generated, ESLint-ignored)
   - `workspace/` — Chat page components (messages, artifacts, settings)
+  - `auth/` — Product-owned responsive authentication shell. Keep visual branding here while login, registration, SSO, and first-admin setup continue to call the existing Gateway auth APIs.
   - `landing/` — Landing page sections
   - `docs/` — Docs / MDX rendering components
 - **`core/`** — Business logic, the heart of the app. Domains include `threads/` (creation, streaming, state), `api/` (LangGraph client singleton), `agents/` (custom agents), `subagents/` (runtime worker catalog and administrator mutations), `auth/` (authentication), `artifacts/`, `channels/` (IM connections), `integrations/` (managed third-party integration status/install clients such as Lark CLI), `i18n/` (en-US, zh-CN), `settings/`, `memory/`, `skills/`, `messages/`, `mcp/`, `models/`, `input-polish/` (pre-send draft rewrite API), `voice-input/` (browser speech-recognition helpers), `suggestions/`, `tasks/`, `todos/`, `tools/`, `workspace-changes/` (run-scoped changed-file summaries and diff fetching), `config/`, `notification/`, `blog/`, plus rendering helpers (`rehype/`, `streamdown/`) and `utils/`.
 - **`hooks/`** — Shared React hooks
 - **`lib/`** — Utilities (`cn()` from clsx + tailwind-merge)
 - **`content/`** — MDX content (blog posts, docs) rendered by the app
+- **`product/`** — this checkout's self-owned brand, copy, feature display flags, and page compositions; see [`src/product/README.md`](src/product/README.md)
 - **`styles/`** — Global CSS with Tailwind v4 `@import` syntax and CSS variables for theming
 - **`typings/`** — Ambient TypeScript declarations
 - Root files: `env.js` (env validation), `mdx-components.ts` (MDX component map)
@@ -94,6 +96,13 @@ do not use HTML `maxLength`, which counts UTF-16 code units instead.
 - **Class names**: Use `cn()` from `@/lib/utils` for conditional Tailwind classes.
 - **Path alias**: `@/*` maps to `src/*`.
 - **Components**: `ui/` and `ai-elements/` are generated from registries (Shadcn, MagicUI, React Bits, Vercel AI SDK) — don't manually edit these.
+- **ESLint + PNPM**: Next.js 16 uses native Flat Config from `eslint-config-next/core-web-vitals`; keep `eslint-config-next` aligned with the installed Next.js major/minor line and combine the exported config array directly. Do not reintroduce `FlatCompat`, resolve private plugin files manually, pin a `.pnpm` virtual-store path, or add a hoisting requirement. If the local dependency tree does not match the lockfile, avoid repairing it by deleting/recreating `node_modules`; report that runtime lint validation needs a safe dependency sync.
+- **Product boundary**: keep brand/product pages in src/product and compose core flows. Feature flags never authorize. Admin account status uses the session-aware Gateway API; disabled accounts invalidate cached browser credentials. Keep the status DTO, validator, locales and alerts aligned with stopped, cross-Gateway-pending and unconfirmed-run states.
+- **Theme ownership**: `src/components/theme-provider.tsx` owns the product theme context, `theme` localStorage preference, system preference listener, and the root `dark` class. `src/app/layout.tsx` runs the small `next/script` `beforeInteractive` bootstrap from the Server Component so the initial paint is correct; do not reintroduce `next-themes`' client-rendered script. Theme consumers import `useTheme` from the local provider. The public homepage remains forced dark while the saved preference is preserved for other routes.
+
+- **工作台查询缓存隔离**：`product/workspace-query-boundary.tsx` 按当前认证用户 ID 重挂载工作台 QueryClient；`components/query-client-provider.tsx` 每个 Provider 实例单独创建缓存。新增 owner 数据查询仍应把用户 ID 放入 key；切换账号时旧缓存、在途页面和未提交草稿必须先卸载，不能依赖只清空可见列表。公开预览与独立文件查看器保持各自的 Provider 实例。
+- **产物面板浏览器状态**：`components/workspace/artifacts/context.tsx` 的 v2 sessionStorage 键包含用户 ID 和路径。旧 v1 键没有账号归属，不自动迁移或读取；切换账号/路径时须避免旧一帧状态写入新键。文件正文和编辑草稿仍不得写入浏览器持久存储。
+- **项目资料附加暂存**：`core/projects/composer-attach.ts` 的 v2 sessionStorage 键包含用户 ID 与 thread ID。项目资料附加成功时用当前已认证 owner 暂存，输入框只读取同一 owner 的键；旧版仅含 thread ID 的键保留但不读取或迁移。账号/会话切换期间不得把旧附件显示或写入新作用域。
 
 ## Environment
 
@@ -117,13 +126,16 @@ Leave these unset for the standard `make dev` / Docker flow, where nginx serves 
 and `public` into the output. In static mode, `core/api/static-response.ts`
 resolves Gateway REST reads with empty capability/catalog responses or existing
 same-origin `/mock/api` fixtures; writes and unknown API routes fail locally.
-The homepage client counter calls `/github-stars`, outside the Gateway proxy.
-That dynamic route reads the server-only `GITHUB_OAUTH_TOKEN` at runtime, caches
+The `/github-stars` dynamic route is kept for the standalone demo even though
+the legacy landing star counter that called it was removed with the old landing
+blocks. It reads the server-only `GITHUB_OAUTH_TOKEN` at runtime, caches
 GitHub data for one hour, and returns 204 when the count is unavailable. Start
 the standalone server from `frontend/` with `node --env-file=.env
 .next/standalone/server.js` to load the current credentials.
 
 To reach a dev server on anything other than localhost — a LAN address, or a proxied hostname — list the host in `DEER_FLOW_DEV_ALLOWED_ORIGINS` (comma-separated; a full URL is reduced to its host). It feeds Next's `allowedDevOrigins`, which gates `/_next/*`, fonts, and HMR. Without it those requests get a 403 and the page renders server-side but never hydrates, so nothing on it — including the login form — responds. Development only; production builds ignore it.
+
+For an isolated Next or Playwright run, set `DEER_FLOW_NEXT_DIST_DIR` to a new repo-local build directory named `.next-codex-*` and set `PORT` / `PLAYWRIGHT_BASE_URL` to a free loopback port when the Playwright config owns the server. These generated directories are excluded from Git, TypeScript, Tailwind source scanning, and ESLint so build output cannot be committed or treated as application code. The Playwright config passes the directory and port to its server process and adds loopback hosts to `NO_PROXY` / `no_proxy` in the test process only. The Next config defaults to `.next`; do not point two Next processes at the same build directory.
 
 ## Resources
 
@@ -182,11 +194,14 @@ with a localized fallback, and log the rejection for debugging. The shared
 delete helper accepts remote 404 (not 403) before retrying local cleanup, and
 `onDeleted` runs only after both deletion steps succeed.
 
-## Capability Center
+产品文件中心、管理审计动作映射及能力中心的详细约束见 [产品数据与能力界面边界](docs/产品数据与能力界面边界.md)。调整这些页面时，先核对 Gateway owner 校验、部分结果提示、双语错误文案和运行时 Skill ID；前端展示不能替代服务端授权。
 
-`/workspace/capabilities` owns Plugins and Skills navigation. Plugins composes the
-MCP manager and a lazily loaded Lark configuration dialog; installation, OAuth,
-mutation permissions, and cache ownership remain in the existing hooks. Skill display names/summaries are presentation
-metadata; runtime names and full descriptions remain unchanged. Public, custom,
-integration, and legacy sources must stay distinct. Community currently offers
-archive import, not a remote marketplace. Screenshot E2E fixtures are demo data.
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

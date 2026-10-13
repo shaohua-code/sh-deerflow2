@@ -37,6 +37,7 @@ from pydantic import BaseModel, BeforeValidator
 from deerflow.config.agents_config import load_agent_config, preserve_non_managed_fields, validate_agent_name
 from deerflow.config.app_config import get_app_config
 from deerflow.config.paths import get_paths
+from deerflow.authz.route_permissions import missing_runtime_route_permissions
 from deerflow.persistence.agents import get_agent_store
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.tools.types import Runtime
@@ -114,6 +115,10 @@ def update_agent(
 
     def _err(message: str) -> Command:
         return Command(update={"messages": [ToolMessage(content=f"Error: {message}", tool_call_id=tool_call_id, status="error")]})
+
+    missing_permissions = missing_runtime_route_permissions(runtime, ("agents:read", "agents:write"))
+    if missing_permissions:
+        return _err(f"This operation requires {', '.join(missing_permissions)}.")
 
     # Defence in depth — the lead-agent factory already withholds this
     # tool from webhook-channel runs (see ``_WEBHOOK_CHANNELS`` in

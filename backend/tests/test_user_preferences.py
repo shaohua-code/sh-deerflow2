@@ -4,10 +4,11 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.gateway.authz import AuthContext
 from deerflow.persistence.base import Base
 from deerflow.persistence.user.model import UserRow
 from deerflow.persistence.user.preferences import UserPreferencesRepository
@@ -57,13 +58,20 @@ async def api(preference_repo, monkeypatch):
 
     app = FastAPI()
     app.include_router(user_preferences.router)
-    identity = SimpleNamespace(id="alice", source="session")
+    identity = SimpleNamespace(
+        id="alice",
+        source="session",
+        permissions=["preferences:read", "preferences:write"],
+    )
 
     @app.middleware("http")
     async def authenticated_session(request, call_next):
         if identity.id:
             request.state.user = SimpleNamespace(id=identity.id)
             request.state.auth_source = identity.source
+            request.state.auth = AuthContext(user=request.state.user, permissions=identity.permissions)
+        else:
+            request.state.auth = AuthContext()
         return await call_next(request)
 
     monkeypatch.setattr(user_preferences, "_repository", lambda: preference_repo)
@@ -116,6 +124,63 @@ async def test_preferences_requires_authentication_and_expected_identity(api):
     client.headers["X-Expected-User-Id"] = "alice"
     identity.id = None
     assert (await client.get("/api/v1/auth/preferences")).status_code == 401
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("permissions", "method", "body"),
+    [
+        (["preferences:write"], "get", None),
+        (["preferences:read"], "patch", {"mode": "pro"}),
+    ],
+)
+async def test_preferences_require_operation_specific_permission(api, monkeypatch, permissions, method, body):
+    from app.gateway.routers import user_preferences
+
+    client, identity = api
+    identity.permissions = permissions
+
+    def repository_must_not_be_opened():
+        pytest.fail("permission denial must happen before preference storage is accessed")
+
+    monkeypatch.setattr(user_preferences, "_repository", repository_must_not_be_opened)
+    if method == "get":
+        response = await client.get("/api/v1/auth/preferences")
+    else:
+        response = await client.patch("/api/v1/auth/preferences", json=body)
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "body", "target"),
+    [
+        ("get", None, "preferences:read"),
+        ("patch", {"mode": "pro"}, "preferences:write"),
+    ],
+)
+async def test_preferences_require_iam_self_scope_before_storage(api, monkeypatch, method, body, target):
+    from app.gateway.routers import user_preferences
+
+    client, _ = api
+    scope_checks = []
+
+    async def deny_scope(request, user, *, target: str, action: str = "read", resource_id: str | None = None):
+        scope_checks.append((target, action, resource_id))
+        raise HTTPException(403, "denied by IAM data scope")
+
+    def repository_must_not_be_opened():
+        pytest.fail("IAM data-scope denial must happen before preference storage is accessed")
+
+    monkeypatch.setattr(user_preferences, "require_iam_data_scope_for_request", deny_scope)
+    monkeypatch.setattr(user_preferences, "_repository", repository_must_not_be_opened)
+    if method == "get":
+        response = await client.get("/api/v1/auth/preferences")
+    else:
+        response = await client.patch("/api/v1/auth/preferences", json=body)
+    assert response.status_code == 403
+    expected_action = "write" if target.endswith(":write") else "read"
+    assert scope_checks == [(target, expected_action, None)]
 
 
 @pytest.mark.anyio

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -23,12 +24,16 @@ const mocks = rs.hoisted(() => {
     documentsTotal: 0,
     documentsHasNextPage: false,
     documentsLoading: false,
+    toastError: rs.fn(),
+    toastSuccess: rs.fn(),
+    routerPush: rs.fn(),
     projectsConfig: {
       instructions_max_bytes: 8192,
       trash_retention_days: 30,
     } as
       | { instructions_max_bytes: number; trash_retention_days: number }
       | undefined,
+    userPermissions: undefined as string[] | null | undefined,
     fetchNextDocumentsPage: rs.fn(),
     threadFileGroups: [] as ProjectThreadFileGroup[],
     threadFilesParams: undefined as unknown,
@@ -38,8 +43,11 @@ const mocks = rs.hoisted(() => {
       throw new Error("not implemented");
     }),
     deleteMutate: rs.fn(),
+    deletePending: false,
     attachMutate: rs.fn(),
+    attachPending: false,
     promoteMutate: rs.fn(),
+    promotePending: false,
     fetchPreview:
       rs.fn<
         (
@@ -55,6 +63,10 @@ const mocks = rs.hoisted(() => {
     MockContentMissingError,
   };
 });
+
+rs.mock("sonner", () => ({
+  toast: { error: mocks.toastError, success: mocks.toastSuccess },
+}));
 
 rs.mock("@/core/projects", () => {
   // Stable identities across renders: the section's accumulate-pages effect
@@ -119,15 +131,15 @@ rs.mock("@/core/projects", () => {
     }),
     useDeleteProjectDocument: () => ({
       mutate: mocks.deleteMutate,
-      isPending: false,
+      isPending: mocks.deletePending,
     }),
     useAttachProjectDocument: () => ({
       mutate: mocks.attachMutate,
-      isPending: false,
+      isPending: mocks.attachPending,
     }),
     usePromoteThreadFile: () => ({
       mutate: mocks.promoteMutate,
-      isPending: false,
+      isPending: mocks.promotePending,
     }),
     fetchProjectDocumentPreview: mocks.fetchPreview,
     ProjectDocumentContentMissingError: mocks.MockContentMissingError,
@@ -158,7 +170,13 @@ rs.mock("@/env", () => ({
 }));
 
 rs.mock("next/navigation", () => ({
-  useRouter: () => ({ push: rs.fn() }),
+  useRouter: () => ({ push: mocks.routerPush }),
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: { id: "user-1", permissions: mocks.userPermissions },
+  }),
 }));
 
 // The real preview pulls Streamdown/KaTeX into the worker bundle (several GB
@@ -188,7 +206,9 @@ rs.mock("next/link", () => {
 import { ProjectDocumentsSection } from "@/components/workspace/projects/project-documents-section";
 import { I18nProvider } from "@/core/i18n/context";
 import type { ProjectDocumentPreview } from "@/core/projects/api";
+import { readProjectAttachments } from "@/core/projects/composer-attach";
 import type {
+  AttachProjectDocumentResult,
   Project,
   ProjectDocument,
   ProjectThread,
@@ -252,6 +272,7 @@ function makeAgentThread(overrides: Record<string, unknown> = {}): AgentThread {
 }
 
 beforeEach(() => {
+  mocks.toastError.mockReset();
   mocks.documents = [];
   mocks.documentsTotal = 0;
   mocks.documentsHasNextPage = false;
@@ -259,19 +280,211 @@ beforeEach(() => {
     instructions_max_bytes: 8192,
     trash_retention_days: 30,
   };
+  mocks.userPermissions = undefined;
   mocks.threadFileGroups = [];
   mocks.threadFilesHasNextPage = false;
   mocks.threadsPages = [];
   mocks.threadsHasNextPage = false;
   mocks.threadsLoading = false;
+  mocks.deletePending = false;
+  mocks.attachPending = false;
+  mocks.promotePending = false;
 });
 
 afterEach(() => {
   cleanup();
   rs.clearAllMocks();
+  window.sessionStorage.clear();
 });
 
 describe("ProjectDocumentsSection", () => {
+  it("uses localized copy for upload failures instead of raw API details", async () => {
+    mocks.uploadMutateAsync.mockRejectedValueOnce(
+      new Error("private upload detail"),
+    );
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    const input = screen.getByTestId("project-documents-upload-input");
+    fireEvent.change(input, {
+      target: { files: [new File(["content"], "notes.txt")] },
+    });
+
+    await waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to upload document",
+      );
+    });
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private upload detail");
+  });
+
+  it("uses localized copy for moving a document to trash failures", async () => {
+    mocks.documents = [makeDocument()];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Move to trash/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Move to trash/ }),
+    );
+
+    const [, callbacks] = mocks.deleteMutate.mock.calls[0] as [
+      string,
+      { onError: (error: Error) => void },
+    ];
+    callbacks.onError(new Error("private delete detail"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to move document to trash",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private delete detail");
+  });
+
+  it("locks the move-to-trash dialog while the request is pending", () => {
+    mocks.documents = [makeDocument()];
+    const view = render(
+      <ProjectDocumentsSection project={makeProject()} threads={[]} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Move to trash/ }));
+
+    mocks.deletePending = true;
+    view.rerender(
+      <ProjectDocumentsSection project={makeProject()} threads={[]} />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+
+  it("uses localized copy for attach failures instead of raw API details", async () => {
+    mocks.documents = [makeDocument()];
+    mocks.threadsPages = [
+      [makeAgentThread({ values: { title: "Active chat" } })],
+    ];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Active chat" }),
+    );
+
+    const [, callbacks] = mocks.attachMutate.mock.calls[0] as [
+      { documentId: string; threadId: string },
+      { onError: (error: Error) => void },
+    ];
+    callbacks.onError(new Error("private attach detail"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith("Failed to attach document");
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private attach detail");
+  });
+
+  it("locks the attach dialog while the request is pending", () => {
+    mocks.documents = [makeDocument()];
+    mocks.threadsPages = [
+      [makeAgentThread({ values: { title: "Active chat" } })],
+    ];
+    const view = render(
+      <ProjectDocumentsSection project={makeProject()} threads={[]} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+
+    mocks.attachPending = true;
+    view.rerender(
+      <ProjectDocumentsSection project={makeProject()} threads={[]} />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("stages an attached document only for the authenticated account", async () => {
+    mocks.documents = [makeDocument()];
+    mocks.threadsPages = [
+      [makeAgentThread({ values: { title: "Active chat" } })],
+    ];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Active chat" }),
+    );
+
+    const [, callbacks] = mocks.attachMutate.mock.calls[0] as [
+      { documentId: string; threadId: string },
+      { onSuccess: (result: AttachProjectDocumentResult) => void },
+    ];
+    const attached: AttachProjectDocumentResult = {
+      filename: "roadmap.md",
+      size_bytes: 2048,
+      virtual_path: "/mnt/user-data/uploads/roadmap.md",
+      artifact_url:
+        "/api/threads/thread-a/artifacts/mnt/user-data/uploads/roadmap.md",
+    };
+    act(() => callbacks.onSuccess(attached));
+
+    expect(readProjectAttachments("user-1", "thread-a")).toEqual([attached]);
+    expect(readProjectAttachments("user-2", "thread-a")).toEqual([]);
+    expect(mocks.routerPush).toHaveBeenCalledWith("/workspace/chats/thread-a");
+  });
+
+  it("uses localized copy for saving conversation files to the shelf", async () => {
+    mocks.threadFileGroups = [
+      {
+        thread_id: "thread-9",
+        display_name: "Report chat",
+        updated_at: "2026-09-09T00:00:00Z",
+        truncated: false,
+        files: [
+          {
+            kind: "output",
+            name: "chart.png",
+            size_bytes: 1024,
+            modified_at: "2026-09-09T00:00:00Z",
+            artifact_url: "/api/threads/thread-9/artifacts/chart.png",
+          },
+        ],
+      },
+    ];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save to project" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Save to project" }),
+    );
+
+    const [, callbacks] = mocks.promoteMutate.mock.calls[0] as [
+      Record<string, unknown>,
+      { onError: (error: Error) => void },
+    ];
+    callbacks.onError(new Error("private save detail"));
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to save file to project",
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith("private save detail");
+  });
+
   it("renders shelf rows with the provenance badge for thread-sourced documents", () => {
     mocks.documents = [
       makeDocument({
@@ -317,6 +530,39 @@ describe("ProjectDocumentsSection", () => {
     expect(screen.queryByRole("button", { name: /Attach to chat/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Move to trash/ })).toBeDefined();
     expect(mocks.fetchPreview).not.toHaveBeenCalled();
+  });
+
+  it("hides cached project mutations and conversation files after permission revocation", () => {
+    mocks.userPermissions = ["projects:read"];
+    mocks.documents = [makeDocument()];
+    mocks.threadFileGroups = [
+      {
+        thread_id: "thread-secret",
+        display_name: "Private chat",
+        updated_at: "2026-09-09T00:00:00Z",
+        truncated: false,
+        files: [
+          {
+            kind: "output",
+            name: "cached-output.csv",
+            size_bytes: 12,
+            modified_at: "2026-09-09T00:00:00Z",
+            artifact_url: "/api/threads/thread-secret/artifacts/output.csv",
+          },
+        ],
+      },
+    ];
+
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+
+    expect(screen.getByText("notes.txt")).toBeDefined();
+    expect(screen.queryByTestId("project-documents-upload-input")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Attach to chat/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Move to trash/ })).toBeNull();
+    expect(screen.queryByText("cached-output.csv")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("threads:read");
   });
 
   it("shows the in-dialog error when a healthy row's preview answers 409", async () => {
@@ -414,6 +660,49 @@ describe("ProjectDocumentsSection", () => {
     const input = screen.getByLabelText("Shelf name");
     expect(input).toHaveProperty("value", "chart.png");
   });
+
+  it("locks the save-to-project draft while promotion is pending", () => {
+    mocks.threadFileGroups = [
+      {
+        thread_id: "thread-9",
+        display_name: "Report chat",
+        updated_at: "2026-09-09T00:00:00Z",
+        truncated: false,
+        files: [
+          {
+            kind: "output",
+            name: "chart.png",
+            size_bytes: 1024,
+            modified_at: "2026-09-09T00:00:00Z",
+            artifact_url:
+              "/api/threads/thread-9/artifacts/mnt/user-data/outputs/chart.png",
+          },
+        ],
+      },
+    ];
+    const view = render(
+      <ProjectDocumentsSection project={makeProject()} threads={THREADS} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save to project" }));
+
+    mocks.promotePending = true;
+    view.rerender(
+      <ProjectDocumentsSection project={makeProject()} threads={THREADS} />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByLabelText("Shelf name").hasAttribute("disabled")).toBe(
+      true,
+    );
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancel" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
   it("paginates the shelf: loaded-vs-total plus a Load more that fetches the next page", () => {
     mocks.documents = [
       makeDocument({ id: "doc-1", name: "a.txt" }),

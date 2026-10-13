@@ -25,6 +25,10 @@ import { cn } from "@/lib/utils";
 type ConversationReferenceListProps = {
   /** The conversation being composed in; it is never offered as a reference. */
   currentThreadId: string;
+  /** Keep the directory query paused until the picker is open and authorized. */
+  enabled?: boolean;
+  /** Account key keeps cached conversation titles separated across users. */
+  cacheScope?: string;
   selected: ConversationReference[];
   maxReferences: number;
   onToggle: (reference: ConversationReference) => void;
@@ -37,23 +41,28 @@ type ConversationReferenceListProps = {
  */
 export function ConversationReferenceList({
   currentThreadId,
+  enabled = true,
+  cacheScope,
   selected,
   maxReferences,
   onToggle,
 }: ConversationReferenceListProps) {
   const { t } = useI18n();
-  const { data: threads, isPending } = useThreads();
+  const { data: threads, isPending } = useThreads(undefined, {
+    enabled,
+    cacheScope,
+  });
   const selectedIds = new Set(selected.map((reference) => reference.threadId));
   const atCap = selected.length >= maxReferences;
-  const candidates = (threads ?? []).filter(
-    (thread) => thread.thread_id !== currentThreadId,
-  );
+  const candidates = enabled
+    ? (threads ?? []).filter((thread) => thread.thread_id !== currentThreadId)
+    : [];
 
   return (
     <Command className="[&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-2">
       <CommandInput placeholder={t.inputBox.referenceConversationsSearch} />
       <CommandList>
-        {isPending ? (
+        {enabled && isPending ? (
           // Never claim there are no conversations before the list has loaded.
           <div
             className="text-muted-foreground py-6 text-center text-sm"
@@ -61,9 +70,9 @@ export function ConversationReferenceList({
           >
             {t.common.loading}
           </div>
-        ) : (
+        ) : enabled ? (
           <CommandEmpty>{t.inputBox.referenceConversationsEmpty}</CommandEmpty>
-        )}
+        ) : null}
         <CommandGroup>
           {candidates.map((thread) => {
             const title = titleOfThread(thread);
@@ -121,7 +130,10 @@ export function ConversationReferencePicker({
         <DialogDescription className="sr-only">
           {t.inputBox.referenceConversationsLimit(listProps.maxReferences)}
         </DialogDescription>
-        <ConversationReferenceList {...listProps} />
+        <ConversationReferenceList
+          {...listProps}
+          enabled={open && (listProps.enabled ?? true)}
+        />
       </DialogContent>
     </Dialog>
   );

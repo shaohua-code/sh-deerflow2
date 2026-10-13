@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "release_id": "",
+  "created_at": "",
+  "owner": "",
+  "product": {
+    "version": "",
+    "commit": ""
+  },
+  "upstream": {
+    "repository": "https://github.com/bytedance/deer-flow",
+    "tag": "",
+    "commit": "",
+    "verified_at": ""
+  },
+  "images": [
+    {
+      "service": "gateway",
+      "reference": "",
+      "digest": ""
+    }
+  ],
+  "configuration": {
+    "schema_version": 0,
+    "config_example_sha256": "",
+    "extensions_example_sha256": ""
+  },
+  "migrations": {
+    "gateway": [],
+    "product_extension": []
+  },
+  "backup": {
+    "id": "",
+    "restore_verified": false,
+    "evidence": ""
+  },
+  "verification": {
+    "build": { "status": "pending", "evidence": "" },
+    "backend_tests": { "status": "pending", "evidence": "" },
+    "frontend_check": { "status": "pending", "evidence": "" },
+    "smoke_test": { "status": "pending", "evidence": "" },
+    "upgrade_compatibility": { "status": "pending", "evidence": "" },
+    "backup_restore": { "status": "pending", "evidence": "" }
+  },
+  "unresolved_issues": []
+}

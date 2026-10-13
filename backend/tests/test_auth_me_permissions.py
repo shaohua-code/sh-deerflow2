@@ -33,6 +33,29 @@ _ALL_PERMISSIONS = [
     Permissions.PROJECTS_READ,
     Permissions.PROJECTS_WRITE,
     Permissions.PROJECTS_DELETE,
+    Permissions.MEMORY_READ,
+    Permissions.MEMORY_WRITE,
+    Permissions.MEMORY_DELETE,
+    Permissions.MEMORY_ADMIN,
+    Permissions.PREFERENCES_READ,
+    Permissions.PREFERENCES_WRITE,
+    Permissions.AGENTS_READ,
+    Permissions.AGENTS_WRITE,
+    Permissions.AGENTS_DELETE,
+    Permissions.AGENTS_ADMIN,
+    Permissions.CHANNELS_READ,
+    Permissions.CHANNELS_WRITE,
+    Permissions.CHANNELS_ADMIN,
+    Permissions.INTEGRATIONS_READ,
+    Permissions.INTEGRATIONS_WRITE,
+    Permissions.INTEGRATIONS_ADMIN,
+    Permissions.SKILLS_READ,
+    Permissions.SKILLS_WRITE,
+    Permissions.SKILLS_DELETE,
+    Permissions.SKILLS_ADMIN,
+    Permissions.SUBAGENTS_READ,
+    Permissions.SUBAGENTS_ADMIN,
+    Permissions.MCP_ADMIN,
 ]
 
 
@@ -220,8 +243,9 @@ async def test_me_fallback_mirrors_authenticate_internal_caller_semantics(monkey
 
     captured = {}
 
-    async def fake_resolve(user, *, is_internal):
+    async def fake_resolve(user, *, is_internal, authz_attributes=None):
         captured["is_internal"] = is_internal
+        captured["authz_attributes"] = authz_attributes
         return ["threads:read"]
 
     monkeypatch.setattr("app.gateway.authz.resolve_route_permissions", fake_resolve)
@@ -230,3 +254,4 @@ async def test_me_fallback_mirrors_authenticate_internal_caller_semantics(monkey
 
     assert response.permissions == ["threads:read"]
     assert captured["is_internal"] is True
+    assert captured["authz_attributes"] is None

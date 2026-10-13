@@ -12,10 +12,11 @@ import {
 
 export const larkIntegrationQueryKey = ["integrations", "lark"] as const;
 
-export function useLarkIntegrationStatus() {
+export function useLarkIntegrationStatus(enabled = true) {
   return useQuery({
     queryKey: larkIntegrationQueryKey,
     queryFn: ({ signal }) => loadLarkIntegrationStatus(signal),
+    enabled,
   });
 }
 

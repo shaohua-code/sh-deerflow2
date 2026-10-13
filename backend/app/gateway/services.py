@@ -530,6 +530,7 @@ _CONTEXT_INTERNAL_CALLER_KEYS: frozenset[str] = frozenset({"non_interactive"})
 # authenticated internal request channel, or reserved for LangGraph Server.
 #   ``is_internal``             — derived from ``request.state.auth_source``
 #   ``authz_attributes``        — Phase 1A has no Gateway-side producer; cleared.
+#   ``route_permissions``       — copied from the authenticated Gateway permission snapshot.
 #   ``channel_user_id``         — accepted only from trusted internal context.
 #   ``langgraph_auth_user*``    — populated only by LangGraph Server auth.
 #   ``sandbox_*_id``           — created only inside the run/subagent lifecycle.
@@ -538,6 +539,7 @@ _SERVER_OWNED_RUNTIME_CONTEXT_KEYS: frozenset[str] = (
         {
             "is_internal",
             "authz_attributes",
+            "route_permissions",
             "channel_user_id",
             "is_subagent",
             "agent_id",
@@ -713,6 +715,16 @@ def inject_authenticated_user_context(
         if isinstance(configurable, dict):
             configurable.pop("user_id", None)
     runtime_context["is_internal"] = auth_source == AUTH_SOURCE_INTERNAL
+    auth_context = getattr(request.state, "auth", None)
+    if auth_context is not None:
+        permissions = getattr(auth_context, "permissions", None)
+        # ToolRuntime.context is transient; do not copy this snapshot into
+        # configurable because LangGraph checkpoints persist that section.
+        runtime_context["route_permissions"] = (
+            list(permissions)
+            if isinstance(permissions, (list, tuple)) and all(isinstance(item, str) for item in permissions)
+            else []
+        )
     if auth_source == AUTH_SOURCE_INTERNAL and request_context is not None:
         channel_user_id = request_context.get("channel_user_id")
         if channel_user_id is not None:
@@ -1463,6 +1475,7 @@ async def start_run(
     *,
     idempotency_key: str | None = None,
     require_existing_thread: bool = False,
+    owner_user_id_override: str | None = None,
 ) -> RunRecord:
     """Create a RunRecord and launch the background agent task.
 
@@ -1523,7 +1536,7 @@ async def start_run(
                 detail=f"Model {model_name!r} is not in the configured model allowlist",
             )
 
-    owner_user_id = get_trusted_internal_owner_user_id(request)
+    owner_user_id = owner_user_id_override or get_trusted_internal_owner_user_id(request)
     # Stateless run endpoints carry thread_id in the request *body*, so the
     # @require_permission(owner_check=True) decorator -- which resolves ownership
     # from the path param -- cannot protect them. Enforce thread ownership here,
@@ -1805,19 +1818,48 @@ async def launch_scheduled_thread_run(
     app: Any | None = None,
     owner_user_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    authorization_context: Any | None = None,
 ) -> dict[str, Any]:
+    # Scheduled tasks execute through an internal Gateway identity, so the
+    # normal request authentication middleware cannot catch a disabled owner.
+    # Re-check the persisted account at dispatch to close the race with a task
+    # that was already queued when an administrator disabled that account.
+    if owner_user_id:
+        owner = await get_local_provider().get_user(owner_user_id)
+        if owner is None or not owner.is_active:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled tasks are unavailable for this account",
+            )
+
     if request is None:
         if app is None:
             raise ValueError("launch_scheduled_thread_run requires request or app")
-        request = SimpleNamespace(
-            app=app,
-            headers=({INTERNAL_OWNER_USER_ID_HEADER_NAME: owner_user_id} if owner_user_id else {}),
-            state=SimpleNamespace(
-                user=get_internal_user(),
-                auth_source=AUTH_SOURCE_INTERNAL,
-            ),
-            cookies={},
-        )
+        if authorization_context is not None:
+            from app.gateway.auth_disabled import AUTH_SOURCE_SESSION
+
+            authorized_user = authorization_context.user
+            request = SimpleNamespace(
+                app=app,
+                headers={},
+                state=SimpleNamespace(
+                    user=authorized_user,
+                    auth=authorization_context.auth,
+                    auth_source=AUTH_SOURCE_SESSION,
+                    iam_authz_attributes=authorization_context.authz_attributes,
+                ),
+                cookies={},
+            )
+        else:
+            request = SimpleNamespace(
+                app=app,
+                headers=({INTERNAL_OWNER_USER_ID_HEADER_NAME: owner_user_id} if owner_user_id else {}),
+                state=SimpleNamespace(
+                    user=get_internal_user(),
+                    auth_source=AUTH_SOURCE_INTERNAL,
+                ),
+                cookies={},
+            )
     body = RunCreateRequest(
         assistant_id=assistant_id,
         input={"messages": [{"role": "user", "content": prompt}]},
@@ -1858,6 +1900,7 @@ async def launch_scheduled_thread_run(
             thread_id,
             request,
             idempotency_key=idempotency_key,
+            owner_user_id_override=(str(authorization_context.user.id) if authorization_context is not None else None),
         )
     return {"run_id": record.run_id, "thread_id": record.thread_id}
 

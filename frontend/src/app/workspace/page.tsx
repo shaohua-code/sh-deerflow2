@@ -1,11 +1,7 @@
-import { redirect } from "next/navigation";
+import { WorkspaceHome } from "@/product/workspace-home";
 
-import { DEMO_THREAD_IDS } from "@/core/threads/static-demo";
-import { env } from "@/env";
-
+// 登录和 owner 权限由上层 workspace layout/Gateway 负责；这个文件只接入
+// 自有总览页，不复制认证逻辑或线程数据查询。
 export default function WorkspacePage() {
-  if (env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true") {
-    return redirect(`/workspace/chats/${DEMO_THREAD_IDS[0]}`);
-  }
-  return redirect("/workspace/chats/new");
+  return <WorkspaceHome />;
 }

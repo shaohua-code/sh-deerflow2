@@ -47,10 +47,10 @@ pytestmark = pytest.mark.asyncio
 
 
 def _admin_request() -> SimpleNamespace:
-    # ``require_admin_user`` reads ``request.state.user``; AuthMiddleware normally
-    # stamps it. A SimpleNamespace is enough for the direct-call tests.
+    # Auth checks have dedicated route tests. These direct calls target the
+    # worker-thread and shared-file behavior only.
     user = SimpleNamespace(id=UUID("11111111-2222-3333-4444-555555555555"), system_role="admin")
-    return SimpleNamespace(state=SimpleNamespace(user=user))
+    return SimpleNamespace(state=SimpleNamespace(user=user), _deerflow_test_bypass_auth=True)
 
 
 def _make_skill(name: str, *, enabled: bool) -> Skill:

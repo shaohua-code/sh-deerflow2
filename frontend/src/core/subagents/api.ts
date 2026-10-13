@@ -23,8 +23,12 @@ async function errorDetail(res: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
-export async function listSubagents(): Promise<Subagent[]> {
-  const res = await fetch(`${getBackendBaseURL()}/api/subagents`);
+export async function listSubagents(options?: {
+  signal?: AbortSignal;
+}): Promise<Subagent[]> {
+  const res = await fetch(`${getBackendBaseURL()}/api/subagents`, {
+    signal: options?.signal,
+  });
   if (!res.ok)
     throw new Error(await errorDetail(res, "Failed to load subagents"));
   const body = (await res.json()) as { subagents: Subagent[] };

@@ -38,8 +38,37 @@ async def test_scheduled_task_repository_create_and_list(tmp_path):
     )
 
     assert created["id"] == "task-1"
+    await repo.create(
+        task_id="task-2",
+        user_id="user-1",
+        thread_id=None,
+        context_mode="fresh_thread_per_run",
+        assistant_id=None,
+        title="Second task",
+        prompt="Run the second task",
+        schedule_type="interval",
+        schedule_spec={"every_seconds": 3600},
+        timezone="UTC",
+        next_run_at=None,
+    )
+    await repo.create(
+        task_id="foreign-task",
+        user_id="user-2",
+        thread_id=None,
+        context_mode="fresh_thread_per_run",
+        assistant_id=None,
+        title="Foreign task",
+        prompt="Must stay private",
+        schedule_type="interval",
+        schedule_spec={"every_seconds": 3600},
+        timezone="UTC",
+        next_run_at=None,
+    )
     listed = await repo.list_by_user("user-1")
-    assert [task["id"] for task in listed] == ["task-1"]
+    page_one = await repo.list_by_user("user-1", limit=1, offset=0)
+    page_two = await repo.list_by_user("user-1", limit=1, offset=1)
+    assert [task["id"] for task in page_one + page_two] == [task["id"] for task in listed]
+    assert await repo.list_by_user("user-2", limit=10, offset=0) == await repo.list_by_user("user-2")
 
     await close_engine()
 

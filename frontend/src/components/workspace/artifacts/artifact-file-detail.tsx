@@ -25,6 +25,14 @@ import {
   ArtifactTitle,
 } from "@/components/ai-elements/artifact";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Select, SelectItem } from "@/components/ui/select";
 import {
   SelectContent,
@@ -79,6 +87,11 @@ import {
 import { useArtifacts } from "./context";
 
 const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
+
+type ArtifactDiscardAction =
+  | { type: "discard-current" }
+  | { type: "select-file"; filepath: string }
+  | { type: "close-panel" };
 
 export function ArtifactFileDetail({
   className,
@@ -255,6 +268,8 @@ export function ArtifactFileDetail({
   const [viewMode, setViewMode] = useState<"code" | "preview">(
     artifactViewState.initialViewMode,
   );
+  const [discardAction, setDiscardAction] =
+    useState<ArtifactDiscardAction | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
   const isLoadingFullContent = fullContentRequested && isLoading;
   const effectiveViewMode =
@@ -262,10 +277,6 @@ export function ArtifactFileDetail({
   useEffect(() => {
     setViewMode(artifactViewState.initialViewMode);
   }, [artifactViewState.initialViewMode, filepathFromProps]);
-
-  const confirmDiscard = useCallback(() => {
-    return !isDirty || window.confirm(t.artifactEditing.discardChanges);
-  }, [isDirty, t.artifactEditing.discardChanges]);
 
   const discardDraft = useCallback(() => {
     const latestContent = content ?? activeDraft.baselineContent;
@@ -282,6 +293,53 @@ export function ArtifactFileDetail({
     }));
     setEditingPath(null);
   }, [activeDraft, content, filepath, setDrafts, setEditingPath, sha256]);
+
+  // 应用内切换文件和关闭面板用产品弹窗；刷新/离开页面由 Provider 的 beforeunload 处理。
+  const applyDiscardAction = useCallback(() => {
+    const action = discardAction;
+    if (!action) return;
+
+    setDiscardAction(null);
+    if (action.type === "discard-current") {
+      discardDraft();
+    } else if (action.type === "select-file") {
+      discardDraft();
+      select(action.filepath);
+    } else {
+      setDrafts({});
+      setEditingPath(null);
+      setOpen(false);
+    }
+  }, [discardAction, discardDraft, select, setDrafts, setEditingPath, setOpen]);
+
+  const requestFileSelection = useCallback(
+    (nextFilepath: string) => {
+      if (isDirty) {
+        setDiscardAction({ type: "select-file", filepath: nextFilepath });
+        return;
+      }
+      select(nextFilepath);
+    },
+    [isDirty, select],
+  );
+
+  const requestDiscardCurrent = useCallback(() => {
+    if (!isDirty) {
+      discardDraft();
+      return;
+    }
+    setDiscardAction({ type: "discard-current" });
+  }, [discardDraft, isDirty]);
+
+  const requestPanelClose = useCallback(() => {
+    if (hasUnsavedDrafts) {
+      setDiscardAction({ type: "close-panel" });
+      return;
+    }
+    setDrafts({});
+    setEditingPath(null);
+    setOpen(false);
+  }, [hasUnsavedDrafts, setDrafts, setEditingPath, setOpen]);
 
   const handleSave = useCallback(async () => {
     if (
@@ -343,9 +401,9 @@ export function ArtifactFileDetail({
       ) {
         toast.error(t.artifactEditing.runInProgress);
       } else {
-        toast.error(
-          error instanceof Error ? error.message : t.artifactEditing.saveFailed,
-        );
+        // 保留 409/412 的明确恢复提示；其他 Gateway detail 只进入诊断渠道。
+        console.error("Failed to save artifact:", error);
+        toast.error(t.artifactEditing.saveFailed);
       }
     } finally {
       setIsSaving(false);
@@ -378,14 +436,15 @@ export function ArtifactFileDetail({
       if (result.success) {
         toast.success(result.message);
       } else {
-        toast.error(result.message ?? "Failed to install skill");
+        console.error("Failed to install skill:", result.message);
+        toast.error(t.settings.skills.installFailed);
       }
     } catch (error) {
       console.error("Failed to install skill:", error);
       if (error instanceof SkillRequestError && error.isAdminRequired) {
         toast.error(t.settings.skills.installAdminRequired);
       } else {
-        toast.error("Failed to install skill");
+        toast.error(t.settings.skills.installFailed);
       }
     } finally {
       setIsInstalling(false);
@@ -399,19 +458,14 @@ export function ArtifactFileDetail({
             {isWriteFile ? (
               <div className="px-2">{getFileName(filepath)}</div>
             ) : (
-              <Select
-                value={filepath}
-                onValueChange={(nextFilepath) => {
-                  if (confirmDiscard()) {
-                    if (isDirty) {
-                      discardDraft();
-                    }
-                    select(nextFilepath);
-                  }
-                }}
-              >
-                <SelectTrigger className="border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0">
-                  <SelectValue placeholder="Select a file" />
+              <Select value={filepath} onValueChange={requestFileSelection}>
+                <SelectTrigger
+                  className="border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0"
+                  aria-label={t.artifactPreview.selectFileLabel}
+                >
+                  <SelectValue
+                    placeholder={t.artifactPreview.selectFileLabel}
+                  />
                 </SelectTrigger>
                 <SelectContent className="select-none">
                   <SelectGroup>
@@ -521,11 +575,7 @@ export function ArtifactFileDetail({
                   label={t.artifactEditing.discard}
                   tooltip={t.artifactEditing.discard}
                   disabled={isSaving}
-                  onClick={() => {
-                    if (confirmDiscard()) {
-                      discardDraft();
-                    }
-                  }}
+                  onClick={requestDiscardCurrent}
                 />
               </>
             )}
@@ -615,16 +665,7 @@ export function ArtifactFileDetail({
             <ArtifactAction
               icon={XIcon}
               label={t.common.close}
-              onClick={() => {
-                if (
-                  !hasUnsavedDrafts ||
-                  window.confirm(t.artifactEditing.discardChanges)
-                ) {
-                  setDrafts({});
-                  setEditingPath(null);
-                  setOpen(false);
-                }
-              }}
+              onClick={requestPanelClose}
               tooltip={t.common.close}
             />
           </ArtifactActions>
@@ -734,6 +775,29 @@ export function ArtifactFileDetail({
           )}
         </div>
       </ArtifactContent>
+      <Dialog
+        open={discardAction !== null}
+        onOpenChange={(open) => {
+          if (!open) setDiscardAction(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t.artifactEditing.discard}</DialogTitle>
+            <DialogDescription>
+              {t.artifactEditing.discardChanges}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiscardAction(null)}>
+              {t.common.cancel}
+            </Button>
+            <Button variant="destructive" onClick={applyDiscardAction}>
+              {t.artifactEditing.discard}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Artifact>
   );
 }

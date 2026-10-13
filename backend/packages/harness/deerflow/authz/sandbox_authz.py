@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from deerflow.authz.principal import build_principal_from_context
-from deerflow.authz.provider import AuthorizationProvider, AuthzDecision, AuthzRequest, Principal
+from deerflow.authz.provider import AuthorizationProvider, AuthzDecision, AuthzRequest, Principal, is_authz_decision
 from deerflow.authz.runtime import construct_authorization_provider, resolve_authorization_provider, resolve_authorization_provider_spec
 from deerflow.config.app_config import AppConfig
 from deerflow.sandbox.exceptions import SandboxAuthorizationError
@@ -126,7 +126,7 @@ def _authorization_request(principal: Principal) -> AuthzRequest:
 
 
 def _enforce_decision(decision: AuthzDecision, *, principal: Principal, method_name: str) -> None:
-    if not isinstance(decision, AuthzDecision):
+    if not is_authz_decision(decision):
         raise TypeError(f"AuthorizationProvider.{method_name} must return AuthzDecision")
     if not decision.allow:
         raise SandboxAuthorizationError(role=principal.role)

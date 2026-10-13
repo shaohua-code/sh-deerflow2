@@ -54,6 +54,20 @@ export type ProjectsConfig = {
 };
 
 /**
+ * 项目 API 错误保留 HTTP 状态，供页面区分资源不存在、临时故障和
+ * instructions 长度限制。message 可能包含服务端实现细节，界面必须映射为本地化文案。
+ */
+export class ProjectAPIError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ProjectAPIError";
+  }
+}
+
+/**
  * Client mirror of the server defaults (config/projects_config.py): callers
  * fall back to these when the config endpoint is unavailable (older gateway,
  * network failure), matching what an unconfigured server enforces.
@@ -64,11 +78,14 @@ export const PROJECTS_CONFIG_DEFAULT: ProjectsConfig = {
 };
 
 /** Server-configured projects limits; shared by the editor and trash. */
-export async function getProjectsConfig(): Promise<ProjectsConfig> {
+export async function getProjectsConfig(options?: {
+  signal?: AbortSignal;
+}): Promise<ProjectsConfig> {
   const response = await fetchWithAuth(
     `${getBackendBaseURL()}/api/projects/config`,
     {
       method: "GET",
+      signal: options?.signal,
     },
   );
 
@@ -124,8 +141,9 @@ export async function getProject(projectId: string): Promise<Project> {
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new ProjectAPIError(
       await readProjectAPIError(response, "Failed to load project."),
+      response.status,
     );
   }
 
@@ -177,8 +195,9 @@ export async function patchProject(
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new ProjectAPIError(
       await readProjectAPIError(response, "Failed to update project."),
+      response.status,
     );
   }
 
@@ -191,8 +210,9 @@ export async function archiveProject(projectId: string): Promise<Project> {
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new ProjectAPIError(
       await readProjectAPIError(response, "Failed to archive project."),
+      response.status,
     );
   }
 
@@ -205,8 +225,9 @@ export async function restoreProject(projectId: string): Promise<Project> {
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new ProjectAPIError(
       await readProjectAPIError(response, "Failed to restore project."),
+      response.status,
     );
   }
 
@@ -219,8 +240,9 @@ export async function deleteProject(projectId: string): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new ProjectAPIError(
       await readProjectAPIError(response, "Failed to delete project."),
+      response.status,
     );
   }
 }

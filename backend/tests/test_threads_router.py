@@ -62,6 +62,9 @@ class _PermissiveThreadMetaStore(MemoryThreadMetaStore):
     async def create(self, thread_id, *, assistant_id=None, user_id=None, display_name=None, metadata=None, project_id=None):  # type: ignore[override]
         return await super().create(thread_id, assistant_id=assistant_id, user_id=None, display_name=display_name, metadata=metadata, project_id=project_id)
 
+    async def delete(self, thread_id, *, user_id=None):  # type: ignore[override]
+        return await super().delete(thread_id, user_id=None)
+
     async def search(self, *, metadata=None, status=None, limit=100, offset=0, user_id=None, archived=None, project_id=PROJECT_FILTER_UNSET):  # type: ignore[override]
         return await super().search(metadata=metadata, status=status, limit=limit, offset=offset, user_id=None, archived=archived, project_id=project_id)
 
@@ -69,9 +72,14 @@ class _PermissiveThreadMetaStore(MemoryThreadMetaStore):
 class _ThreadTestRunManager:
     def __init__(self):
         self.reservations: list[tuple[str, dict]] = []
+        self.history_deletions: list[tuple[str, str | None]] = []
 
     async def list_by_thread(self, _thread_id: str, *, user_id=None, limit: int = 100) -> list:
         return []
+
+    async def delete_thread_runs(self, thread_id: str, *, user_id=None) -> int:
+        self.history_deletions.append((thread_id, user_id))
+        return 0
 
     @asynccontextmanager
     async def reserve_thread_operation(self, _thread_id: str, **_kwargs):
@@ -397,12 +405,12 @@ def test_delete_thread_route_cleans_thread_directory(tmp_path):
     paths.sandbox_work_dir("thread-route", user_id=user_id).mkdir(parents=True, exist_ok=True)
     (paths.sandbox_work_dir("thread-route", user_id=user_id) / "notes.txt").write_text("hello", encoding="utf-8")
 
-    app = make_authed_test_app()
-    app.state.run_manager = _ThreadTestRunManager()
-    app.include_router(threads.router)
+    app, _store, _checkpointer = _build_thread_app()
 
     with patch("app.gateway.routers.threads.get_paths", return_value=paths):
         with TestClient(app) as client:
+            created = client.post("/api/threads", json={"thread_id": "thread-route", "metadata": {}})
+            assert created.status_code == 200, created.text
             response = client.delete("/api/threads/thread-route")
 
     assert response.status_code == 200
@@ -410,14 +418,148 @@ def test_delete_thread_route_cleans_thread_directory(tmp_path):
     assert not thread_dir.exists()
 
 
+def test_delete_thread_route_removes_persisted_run_events(tmp_path):
+    """Deleting a conversation must also erase its separately stored event feed."""
+    from deerflow.runtime.events.store.memory import MemoryRunEventStore
+
+    paths = Paths(tmp_path)
+    app, _store, _checkpointer = _build_thread_app()
+    event_store = MemoryRunEventStore()
+    app.state.run_event_store = event_store
+
+    with (
+        patch("app.gateway.routers.threads.get_paths", return_value=paths),
+        TestClient(app) as client,
+    ):
+        created = client.post("/api/threads", json={"thread_id": "thread-event-delete", "metadata": {}})
+        assert created.status_code == 200, created.text
+        asyncio.run(
+            event_store.put(
+                thread_id="thread-event-delete",
+                run_id="run-event-delete",
+                event_type="message",
+                category="message",
+                content={"type": "human", "id": "message-1", "content": "private conversation"},
+            )
+        )
+        asyncio.run(
+            event_store.put(
+                thread_id="other-thread",
+                run_id="other-run",
+                event_type="message",
+                category="message",
+                content={"type": "human", "id": "message-2", "content": "keep this conversation"},
+            )
+        )
+
+        response = client.delete("/api/threads/thread-event-delete")
+
+    assert response.status_code == 200, response.text
+    assert asyncio.run(event_store.count_messages("thread-event-delete")) == 0
+    assert asyncio.run(event_store.count_messages("other-thread")) == 1
+
+
+def test_delete_thread_route_keeps_metadata_when_event_cleanup_fails(tmp_path):
+    """A failed event purge must be visible and retryable, never reported as success."""
+    paths = Paths(tmp_path)
+    app, store, _checkpointer = _build_thread_app()
+    event_store = SimpleNamespace(delete_by_thread=AsyncMock(side_effect=RuntimeError("private storage detail")))
+    app.state.run_event_store = event_store
+
+    with (
+        patch("app.gateway.routers.threads.get_paths", return_value=paths),
+        TestClient(app) as client,
+    ):
+        created = client.post("/api/threads", json={"thread_id": "thread-event-retry", "metadata": {}})
+        assert created.status_code == 200, created.text
+
+        response = client.delete("/api/threads/thread-event-retry")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to delete thread history."}
+    assert "private storage detail" not in response.text
+    assert asyncio.run(store.aget(THREADS_NS, "thread-event-retry")) is not None
+
+
+def test_delete_thread_route_keeps_metadata_when_checkpoint_cleanup_fails(tmp_path):
+    """A checkpoint failure must stop before the remaining durable history is removed."""
+    paths = Paths(tmp_path)
+    app, store, _checkpointer = _build_thread_app()
+
+    with (
+        patch("app.gateway.routers.threads.get_paths", return_value=paths),
+        TestClient(app) as client,
+    ):
+        created = client.post("/api/threads", json={"thread_id": "thread-checkpoint-retry", "metadata": {}})
+        assert created.status_code == 200, created.text
+        failing_checkpointer = SimpleNamespace(adelete_thread=AsyncMock(side_effect=RuntimeError("private checkpoint detail")))
+        app.state.checkpointer = failing_checkpointer
+
+        response = client.delete("/api/threads/thread-checkpoint-retry")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to delete thread history."}
+    assert "private checkpoint detail" not in response.text
+    failing_checkpointer.adelete_thread.assert_awaited_once_with("thread-checkpoint-retry")
+    assert app.state.run_manager.history_deletions == []
+    assert asyncio.run(store.aget(THREADS_NS, "thread-checkpoint-retry")) is not None
+
+
+def test_delete_thread_route_keeps_metadata_when_run_history_cleanup_fails(tmp_path):
+    """A failed durable usage-history purge must leave the thread retryable."""
+    paths = Paths(tmp_path)
+    app, store, _checkpointer = _build_thread_app()
+    run_manager = app.state.run_manager
+    run_manager.delete_thread_runs = AsyncMock(side_effect=RuntimeError("private run storage detail"))
+
+    with (
+        patch("app.gateway.routers.threads.get_paths", return_value=paths),
+        TestClient(app) as client,
+    ):
+        created = client.post("/api/threads", json={"thread_id": "thread-run-retry", "metadata": {}})
+        assert created.status_code == 200, created.text
+
+        response = client.delete("/api/threads/thread-run-retry")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to delete thread history."}
+    assert "private run storage detail" not in response.text
+    run_manager.delete_thread_runs.assert_awaited_once()
+    assert asyncio.run(store.aget(THREADS_NS, "thread-run-retry")) is not None
+
+
+def test_delete_thread_route_reports_thread_metadata_cleanup_failure(tmp_path):
+    """A failed metadata delete must not be reported as a completed deletion."""
+    paths = Paths(tmp_path)
+    app, store, _checkpointer = _build_thread_app()
+    thread_store = app.state.thread_store
+    thread_store.delete = AsyncMock(side_effect=RuntimeError("private metadata detail"))
+
+    with (
+        patch("app.gateway.routers.threads.get_paths", return_value=paths),
+        TestClient(app) as client,
+    ):
+        created = client.post("/api/threads", json={"thread_id": "thread-metadata-retry", "metadata": {}})
+        assert created.status_code == 200, created.text
+
+        response = client.delete("/api/threads/thread-metadata-retry")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to delete thread history."}
+    assert "private metadata detail" not in response.text
+    thread_store.delete.assert_awaited_once()
+    assert thread_store.delete.await_args.args == ("thread-metadata-retry",)
+    assert thread_store.delete.await_args.kwargs["user_id"] is not None
+    assert app.state.run_manager.history_deletions
+    assert asyncio.run(store.aget(THREADS_NS, "thread-metadata-retry")) is not None
+
+
 def test_delete_thread_route_closes_browser_session(tmp_path):
     """Deleting a thread tears down its live browser session so a later caller
     who reuses the id cannot inherit the retained page/cookies."""
     paths = Paths(tmp_path)
 
-    app = make_authed_test_app()
-    app.state.run_manager = _ThreadTestRunManager()
-    app.include_router(threads.router)
+    app, _store, _checkpointer = _build_thread_app()
 
     manager = SimpleNamespace(close_session=AsyncMock(return_value=True))
     with (
@@ -428,6 +570,8 @@ def test_delete_thread_route_closes_browser_session(tmp_path):
         ),
     ):
         with TestClient(app) as client:
+            created = client.post("/api/threads", json={"thread_id": "thread-browser", "metadata": {}})
+            assert created.status_code == 200, created.text
             response = client.delete("/api/threads/thread-browser")
 
     assert response.status_code == 200
@@ -1369,6 +1513,47 @@ def test_patch_thread_non_pin_metadata_bumps_updated_at() -> None:
     assert _ISO_TIMESTAMP_RE.match(body["updated_at"]), body["updated_at"]
     assert body["updated_at"] != body["created_at"]
     assert body["metadata"] == {"k": "v1"}
+
+
+def test_search_threads_checks_iam_data_scope_before_owner_query(monkeypatch) -> None:
+    app, _store, _checkpointer = _build_thread_app()
+    calls: list[str] = []
+
+    async def check_scope(request, user, *, target: str, resource_id: str | None = None) -> None:
+        assert user.id is not None
+        assert resource_id is None
+        calls.append(f"scope:{target}")
+
+    original_search = app.state.thread_store.search
+
+    async def search_owner_rows(**kwargs):
+        calls.append("owner-query")
+        return await original_search(**kwargs)
+
+    monkeypatch.setattr(threads, "require_iam_data_scope_for_request", check_scope)
+    app.state.thread_store.search = search_owner_rows
+
+    with TestClient(app) as client:
+        response = client.post("/api/threads/search", json={"limit": 10})
+
+    assert response.status_code == 200, response.text
+    assert calls == ["scope:threads:read", "owner-query"]
+
+
+def test_search_threads_stops_when_iam_data_scope_is_unavailable(monkeypatch) -> None:
+    app, _store, _checkpointer = _build_thread_app()
+    search = AsyncMock(return_value=[])
+    app.state.thread_store.search = search
+
+    async def unavailable(*_args, **_kwargs) -> None:
+        raise HTTPException(status_code=503, detail="IAM data-scope authorization is unavailable")
+
+    monkeypatch.setattr(threads, "require_iam_data_scope_for_request", unavailable)
+    with TestClient(app) as client:
+        response = client.post("/api/threads/search", json={"limit": 10})
+
+    assert response.status_code == 503, response.text
+    search.assert_not_awaited()
 
 
 def test_search_threads_normalizes_legacy_unix_seconds_to_iso() -> None:

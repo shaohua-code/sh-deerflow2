@@ -21,13 +21,13 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.gateway.authz import require_permission
+from app.gateway.action_audit import notify_action_audit
+from app.gateway.authz import get_auth_context, require_iam_data_scope_for_request, require_permission
 from app.gateway.deps import get_project_document_repo, get_project_repo
 from app.gateway.routers.project_documents import ProjectDocumentResponse, _to_response
 from deerflow.config.paths import get_paths
 from deerflow.config.projects_config import ProjectsConfig
 from deerflow.projects.trash import make_purge_file_remover, purge_all_trashed, restore_document, run_trash_retention_sweep
-from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +146,16 @@ async def list_trash_documents(
     Triggers the retention sweep lazily before listing (§8.3); a sweep
     failure is logged and never blocks the listing.
     """
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:read")
     repo = get_project_document_repo(request)
-    user_id = get_effective_user_id()
+    user_id = str(user.id)
     try:
+        # The retention sweep can permanently remove expired bytes and rows.
+        # A trash-list permission alone must not authorize that side effect;
+        # if Central IAM denies or cannot resolve delete scope, keep listing
+        # available and skip this opportunistic cleanup.
+        await require_iam_data_scope_for_request(request, user, target="projects:delete", action="delete")
         await run_trash_retention_sweep(
             repo,
             get_paths(),
@@ -180,29 +187,42 @@ async def restore_trash_document(document_id: str, request: Request, body: Resto
     ``merged``; missing or size-mismatched content answers 409
     ``content_missing`` and leaves the row trashed (§11).
     """
+    user = get_auth_context(request).require_user()
     repo = get_project_document_repo(request)
-    user_id = get_effective_user_id()
+    user_id = str(user.id)
     target = body.project_id if body is not None else None
+    # Resolve the source row through the local owner filter first. Its project
+    # id is needed for the resource-scoped IAM check; no mutation occurs until
+    # both write and full-response read scopes have passed.
+    row = await repo.get(document_id, include_trashed=True, user_id=user_id)
+    if row is None:
+        raise _not_found()
     if not target:
         # Read-only probe for the origin hint; restore revalidates everything
         # under its locks, so this decides nothing (§15.5).
-        row = await repo.get(document_id, include_trashed=True)
-        if row is None:
-            raise _not_found()
         origin_id = (row.get("trash_origin") or {}).get("project_id")
         if origin_id:
-            origin = await get_project_repo(request).get(origin_id)
+            origin = await get_project_repo(request).get(origin_id, user_id=user_id)
             if origin is not None and origin.get("status") == "active":
                 target = origin_id
         if not target:
             raise _not_found()
+    await require_iam_data_scope_for_request(request, user, target="projects:write", action="write", resource_id=target)
+    await require_iam_data_scope_for_request(request, user, target="projects:read", action="read", resource_id=target)
     outcome, restored = await restore_document(repo, get_paths(), user_id=user_id, document_id=document_id, target_project_id=target)
     if outcome in ("not_found", "no_target"):
         raise _not_found()
     if outcome == "content_missing":
         raise HTTPException(status_code=409, detail="content_missing")
     assert restored is not None
-    return RestoreResponse(outcome=outcome, document=_to_response(restored))
+    response = RestoreResponse(outcome=outcome, document=_to_response(restored))
+    await notify_action_audit(
+        request,
+        action="project.document.restore",
+        resource_type="project_document",
+        resource_id=document_id,
+    )
+    return response
 
 
 @router.post("/documents/{document_id}/purge", status_code=204)
@@ -214,13 +234,34 @@ async def purge_trash_document(document_id: str, request: Request) -> None:
     transaction back, keeps the trashed row, and answers 500 with a retryable
     message (§11); ``False`` from the repository is the fail-closed 404.
     """
+    user = get_auth_context(request).require_user()
     repo = get_project_document_repo(request)
+    row = await repo.get(document_id, include_trashed=True, user_id=str(user.id))
+    if row is None:
+        raise _not_found()
+    await require_iam_data_scope_for_request(
+        request,
+        user,
+        target="projects:delete",
+        action="delete",
+        resource_id=row["project_id"],
+    )
     try:
-        purged = await repo.purge(document_id, remove_files=make_purge_file_remover(get_paths(), user_id=get_effective_user_id()))
+        purged = await repo.purge(
+            document_id,
+            remove_files=make_purge_file_remover(get_paths(), user_id=str(user.id)),
+            user_id=str(user.id),
+        )
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Purge failed during file cleanup; the document remains in trash and the purge can be retried") from exc
     if not purged:
         raise _not_found()
+    await notify_action_audit(
+        request,
+        action="project.document.purge",
+        resource_type="project_document",
+        resource_id=document_id,
+    )
 
 
 @router.post("/purge", response_model=PurgeResponse)
@@ -236,9 +277,25 @@ async def empty_trash(request: Request) -> PurgeResponse:
     than already-absent content answers 500 with a retryable message; that row
     and every row not yet visited stay trashed.
     """
+    user = get_auth_context(request).require_user()
+    await require_iam_data_scope_for_request(request, user, target="projects:delete", action="delete")
     repo = get_project_document_repo(request)
     try:
-        purged = await purge_all_trashed(repo, get_paths(), user_id=get_effective_user_id())
+        purged = await purge_all_trashed(repo, get_paths(), user_id=str(user.id))
     except OSError as exc:
+        # 批量清理逐文档提交，失败时可能已有部分成功，必须留下失败操作审计。
+        await notify_action_audit(
+            request,
+            action="project.trash.empty",
+            resource_type="project_trash",
+            resource_id=None,
+            outcome="failure",
+        )
         raise HTTPException(status_code=500, detail="Purge failed during file cleanup; the remaining documents stay in trash and the purge can be retried") from exc
+    await notify_action_audit(
+        request,
+        action="project.trash.empty",
+        resource_type="project_trash",
+        resource_id=None,
+    )
     return PurgeResponse(purged=purged)

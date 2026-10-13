@@ -1291,6 +1291,18 @@ def test_resolve_current_user_sid_parses_real_whoami_csv_shape(monkeypatch) -> N
     assert lark_cli._resolve_current_user_sid() == sid
 
 
+def test_resolve_current_user_sid_tolerates_undecodable_display_name(monkeypatch) -> None:
+    """中文 Windows 用户名解码失败也不能吞掉后面的 ASCII SID。"""
+    sid = "S-1-5-21-111-222-333-1001"
+
+    def _fake_run(args, **kwargs):
+        assert kwargs["errors"] == "replace"
+        return subprocess.CompletedProcess(args, returncode=0, stdout=f'"DOMAIN\\�","{sid}"\n', stderr=None)
+
+    monkeypatch.setattr(lark_cli.subprocess, "run", _fake_run)
+    assert lark_cli._resolve_current_user_sid() == sid
+
+
 @pytest.mark.parametrize("fail_kind", ["whoami", "dacl"])
 def test_windows_credential_tree_raises_on_identity_or_acl_failure(monkeypatch, tmp_path, fail_kind) -> None:
     """Identity or ACL manipulation failures must raise, never be silently ignored."""
