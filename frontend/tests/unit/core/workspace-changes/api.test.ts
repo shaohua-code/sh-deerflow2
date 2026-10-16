@@ -52,3 +52,42 @@ test("fetchWorkspaceChanges can request file metadata without diffs", async () =
     expect.objectContaining({ credentials: "include" }),
   );
 });
+
+test("fetchWorkspaceChanges forwards its cancellation signal", async () => {
+  let requestInit: RequestInit | undefined;
+  const fetchMock = rs.fn(
+    async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestInit = init;
+      return new Response(
+        JSON.stringify({
+          available: true,
+          version: 1,
+          summary: {
+            created: 0,
+            modified: 0,
+            deleted: 0,
+            symlink_created: 0,
+            additions: 0,
+            deletions: 0,
+            truncated: false,
+          },
+          files: [],
+          limits: {},
+        }),
+        { status: 200 },
+      );
+    },
+  );
+  rs.stubGlobal("fetch", fetchMock);
+  const { fetchWorkspaceChanges } =
+    await import("@/core/workspace-changes/api");
+  const signal = new AbortController().signal;
+
+  await fetchWorkspaceChanges({
+    threadId: "thread-1",
+    runId: "run-1",
+    signal,
+  });
+
+  expect(requestInit?.signal).toBe(signal);
+});

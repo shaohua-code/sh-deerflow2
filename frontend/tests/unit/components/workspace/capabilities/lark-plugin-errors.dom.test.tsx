@@ -44,7 +44,11 @@ rs.mock("next/navigation", () => ({
 }));
 
 rs.mock("@/core/integrations/lark", () => ({
-  larkIntegrationQueryKey: ["integrations", "lark"],
+  larkIntegrationQueryKey: (cacheScope?: string) => [
+    "integrations",
+    "lark",
+    cacheScope,
+  ],
   LarkIntegrationRequestError: class LarkIntegrationRequestError extends Error {
     constructor(
       readonly status: number,

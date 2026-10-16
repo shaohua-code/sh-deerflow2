@@ -60,6 +60,34 @@ test("retains placeholder usage only for the current thread", () => {
   expect(retainThreadTokenUsagePlaceholder(null, undefined)).toBeUndefined();
 });
 
+test("scopes token usage query keys and placeholders to the signed-in owner", () => {
+  const response: ThreadTokenUsageResponse = {
+    thread_id: "thread-1",
+    total_input_tokens: 1,
+    total_output_tokens: 2,
+    total_tokens: 3,
+    total_runs: 1,
+    by_model: {},
+    by_caller: { lead_agent: 3, subagent: 0, middleware: 0 },
+  };
+
+  expect(threadTokenUsageQueryKey("thread-1", "user-a")).toEqual([
+    "thread-token-usage",
+    "thread-1",
+    "user-a",
+  ]);
+  expect(threadTokenUsageQueryKey("thread-1")).toEqual([
+    "thread-token-usage",
+    "thread-1",
+  ]);
+  expect(
+    retainThreadTokenUsagePlaceholder(response, "thread-1", "user-a", "user-b"),
+  ).toBeUndefined();
+  expect(
+    retainThreadTokenUsagePlaceholder(response, "thread-1", "user-a", "user-a"),
+  ).toBe(response);
+});
+
 test("query observer keeps same-thread data but drops it while a new thread is pending", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },

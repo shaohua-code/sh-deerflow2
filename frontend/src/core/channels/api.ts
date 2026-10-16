@@ -16,8 +16,11 @@ function channelsUrl(path: string): string {
   return `${getBackendBaseURL()}/api/channels${path}`;
 }
 
-export async function listChannelProviders(): Promise<ChannelProvidersResponse> {
-  const response = await fetch(channelsUrl("/providers"));
+export async function listChannelProviders(
+  signal?: AbortSignal,
+): Promise<ChannelProvidersResponse> {
+  const url = channelsUrl("/providers");
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
   if (!response.ok) {
     await throwGatewayApiError(
       response,
@@ -27,8 +30,11 @@ export async function listChannelProviders(): Promise<ChannelProvidersResponse> 
   return response.json() as Promise<ChannelProvidersResponse>;
 }
 
-export async function listChannelConnections(): Promise<ChannelConnection[]> {
-  const response = await fetch(channelsUrl("/connections"));
+export async function listChannelConnections(
+  signal?: AbortSignal,
+): Promise<ChannelConnection[]> {
+  const url = channelsUrl("/connections");
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
   if (!response.ok) {
     await throwGatewayApiError(
       response,

@@ -142,24 +142,36 @@ describe("file center thread inventory", () => {
   });
 
   it("includes unprojected generated outputs and reports per-thread truncation", async () => {
+    const controller = new AbortController();
+    const uploadSignals: (AbortSignal | undefined)[] = [];
+    const outputSignals: (AbortSignal | undefined)[] = [];
     const result = await loadThreadFilePage(
       [thread("thread-output")],
-      async () => ({ files: [], count: 0 }),
+      async (_threadId, signal) => {
+        uploadSignals.push(signal);
+        return { files: [], count: 0 };
+      },
       1,
-      async () => ({
-        count: 201,
-        truncated: true,
-        files: [
-          {
-            filename: "answer.md",
-            size: 16,
-            modified: 1_790_000_000,
-            artifact_url: "/generated/answer.md",
-          },
-        ],
-      }),
+      async (_threadId, signal) => {
+        outputSignals.push(signal);
+        return {
+          count: 201,
+          truncated: true,
+          files: [
+            {
+              filename: "answer.md",
+              size: 16,
+              modified: 1_790_000_000,
+              artifact_url: "/generated/answer.md",
+            },
+          ],
+        };
+      },
+      controller.signal,
     );
 
+    expect(uploadSignals).toEqual([controller.signal]);
+    expect(outputSignals).toEqual([controller.signal]);
     expect(result.failedThreadIds).toEqual([]);
     expect(result.truncatedThreadIds).toEqual(["thread-output"]);
     expect(result.rows).toMatchObject([
@@ -227,20 +239,31 @@ describe("file center thread inventory", () => {
         truncated: false,
       });
 
-    const result = await loadProjectFilePage([
-      {
-        id: "project-1",
-        name: "Research",
-        status: "active",
-        instructions: "",
-        presentation: {},
-        created_at: "",
-        updated_at: "",
-      },
-    ]);
+    const controller = new AbortController();
+    const result = await loadProjectFilePage(
+      [
+        {
+          id: "project-1",
+          name: "Research",
+          status: "active",
+          instructions: "",
+          presentation: {},
+          created_at: "",
+          updated_at: "",
+        },
+      ],
+      3,
+      { signal: controller.signal },
+    );
 
     expect(listProjectDocuments).toHaveBeenCalledTimes(2);
     expect(listProjectThreadFiles).toHaveBeenCalledTimes(2);
+    expect(listProjectDocuments.mock.calls[0]?.[1]?.signal).toBe(
+      controller.signal,
+    );
+    expect(listProjectThreadFiles.mock.calls[0]?.[1]?.signal).toBe(
+      controller.signal,
+    );
     expect(result.rows.map((row) => row.name)).toEqual([
       "brief.md",
       "table.csv",
@@ -248,6 +271,44 @@ describe("file center thread inventory", () => {
     ]);
     expect(result.truncated).toBe(true);
     expect(result.failedProjectIds).toEqual([]);
+  });
+
+  it("stops project file pagination immediately when the export is cancelled", async () => {
+    const controller = new AbortController();
+    const abortableList = (
+      _projectId: string,
+      params?: { signal?: AbortSignal },
+    ) =>
+      new Promise((_resolve, reject) => {
+        params?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    listProjectDocuments.mockImplementation(abortableList);
+    listProjectThreadFiles.mockImplementation(abortableList);
+
+    const pending = loadProjectFilePage(
+      [
+        {
+          id: "project-1",
+          name: "Research",
+          status: "active",
+          instructions: "",
+          presentation: {},
+          created_at: "",
+          updated_at: "",
+        },
+      ],
+      1,
+      { signal: controller.signal },
+    );
+    expect(listProjectDocuments).toHaveBeenCalledTimes(1);
+    expect(listProjectThreadFiles).toHaveBeenCalledTimes(1);
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("keeps project thread files when the project document service fails", async () => {

@@ -5,6 +5,7 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { PROJECTS_QUERY_KEY } from "../projects/api";
 import { isStaticWebsiteOnly } from "../static-mode";
@@ -40,6 +41,14 @@ export function useInfiniteTrashDocuments({
   enabled = true,
 }: { enabled?: boolean } = {}) {
   const active = enabled && !isStaticWebsiteOnly();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (active) return;
+
+    // 撤销项目读取权限后，停止回收站请求并清除先前授权时的列表缓存。
+    void queryClient.cancelQueries({ queryKey: TRASH_QUERY_KEY, exact: true });
+    queryClient.removeQueries({ queryKey: TRASH_QUERY_KEY, exact: true });
+  }, [active, queryClient]);
   const query = useInfiniteQuery<
     TrashListResponse,
     Error,
@@ -49,10 +58,11 @@ export function useInfiniteTrashDocuments({
   >({
     queryKey: TRASH_QUERY_KEY,
     initialPageParam: 0,
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       listTrashDocuments({
         limit: TRASH_DOCUMENTS_PAGE_SIZE,
         offset: pageParam,
+        signal,
       }),
     getNextPageParam: (lastPage) => {
       const loaded = lastPage.offset + lastPage.documents.length;

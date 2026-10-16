@@ -140,6 +140,7 @@ function LarkIntegrationCard({
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const cacheScope = user?.id;
   const isAdmin = user?.system_role === "admin";
   // 状态只读检查；安装还需要 admin/write，连接流程要求 read/write，因为完成路由会再次读取状态。
   const canReadIntegration =
@@ -152,7 +153,7 @@ function LarkIntegrationCard({
   const canInstallIntegration =
     isAdmin && canConnectIntegration && canAdminIntegration;
   const { data, isLoading, error, refetch, isFetching } =
-    useLarkIntegrationStatus(canReadIntegration);
+    useLarkIntegrationStatus(canReadIntegration, cacheScope);
   const install = useInstallLarkIntegration();
   const startConfig = useStartLarkConfiguration();
   const completeConfig = useCompleteLarkConfiguration();
@@ -211,20 +212,26 @@ function LarkIntegrationCard({
 
   const handleInstall = () => {
     if (!canInstallIntegration) return;
-    install.mutate(undefined, {
-      onSuccess: (result) => toast.success(result.message),
-      onError: (err) => {
-        if (err instanceof LarkIntegrationRequestError && err.isAdminRequired) {
-          toast.error(t.settings.integrations.adminRequired);
-          return;
-        }
-        reportLarkFailure(
-          "install",
-          err,
-          t.settings.integrations.lark.installFailed,
-        );
+    install.mutate(
+      { cacheScope },
+      {
+        onSuccess: (result) => toast.success(result.message),
+        onError: (err) => {
+          if (
+            err instanceof LarkIntegrationRequestError &&
+            err.isAdminRequired
+          ) {
+            toast.error(t.settings.integrations.adminRequired);
+            return;
+          }
+          reportLarkFailure(
+            "install",
+            err,
+            t.settings.integrations.lark.installFailed,
+          );
+        },
       },
-    });
+    );
   };
 
   const clearAuthRetryTimer = () => {
@@ -238,7 +245,10 @@ function LarkIntegrationCard({
     clearAuthRetryTimer();
     authAttemptIdRef.current += 1;
     flowGenerationRef.current += 1;
-    void queryClient.cancelQueries({ queryKey: larkIntegrationQueryKey });
+    void queryClient.cancelQueries({
+      queryKey: larkIntegrationQueryKey(cacheScope),
+      exact: true,
+    });
     if (authToastIdRef.current != null) {
       toast.dismiss(authToastIdRef.current);
       authToastIdRef.current = null;
@@ -343,7 +353,10 @@ function LarkIntegrationCard({
       {
         onSuccess: (result) => {
           if (!isActiveFlow(generation)) return;
-          queryClient.setQueryData(larkIntegrationQueryKey, result.status);
+          queryClient.setQueryData(
+            larkIntegrationQueryKey(cacheScope),
+            result.status,
+          );
           toast.success(t.settings.integrations.lark.connectionReady);
           setPendingFlow(null);
           startUserAuth(
@@ -433,7 +446,10 @@ function LarkIntegrationCard({
       {
         onSuccess: (result) => {
           if (!isActiveFlow(generation)) return;
-          queryClient.setQueryData(larkIntegrationQueryKey, result.status);
+          queryClient.setQueryData(
+            larkIntegrationQueryKey(cacheScope),
+            result.status,
+          );
           toast.success(t.settings.integrations.lark.changeAppSwitched);
           setChangeAppSecret("");
           setShowChangeApp(false);
@@ -555,7 +571,10 @@ function LarkIntegrationCard({
           if (automatic && attemptId !== authAttemptIdRef.current) {
             return;
           }
-          queryClient.setQueryData(larkIntegrationQueryKey, result.status);
+          queryClient.setQueryData(
+            larkIntegrationQueryKey(cacheScope),
+            result.status,
+          );
           if (result.success) {
             clearAuthRetryTimer();
             toast.success(result.message, toastOptions);

@@ -8,8 +8,12 @@ function scheduledTasksUrl(path: string): string {
   return `${getBackendBaseURL()}/api/scheduled-tasks${path}`;
 }
 
-export async function fetchScheduledTasks(): Promise<ScheduledTask[]> {
-  const response = await fetch(scheduledTasksUrl(""));
+export async function fetchScheduledTasks(
+  signal?: AbortSignal,
+): Promise<ScheduledTask[]> {
+  const response = signal
+    ? await fetch(scheduledTasksUrl(""), { signal })
+    : await fetch(scheduledTasksUrl(""));
   if (!response.ok) {
     await throwGatewayApiError(
       response,
@@ -21,10 +25,10 @@ export async function fetchScheduledTasks(): Promise<ScheduledTask[]> {
 
 export async function fetchThreadScheduledTasks(
   threadId: string,
+  signal?: AbortSignal,
 ): Promise<ScheduledTask[]> {
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/scheduled-tasks`,
-  );
+  const url = `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/scheduled-tasks`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
   if (!response.ok) {
     await throwGatewayApiError(
       response,

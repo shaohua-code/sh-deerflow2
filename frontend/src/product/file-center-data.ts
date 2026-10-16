@@ -77,9 +77,16 @@ export function mergeFileCenterRows(
  */
 export async function loadThreadFilePage(
   threads: AgentThread[],
-  loadFiles: (threadId: string) => Promise<ListFilesResponse>,
+  loadFiles: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<ListFilesResponse>,
   concurrency = 4,
-  loadOutputs?: (threadId: string) => Promise<ThreadOutputFileListResponse>,
+  loadOutputs?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<ThreadOutputFileListResponse>,
+  signal?: AbortSignal,
 ) {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error("File listing concurrency must be a positive integer");
@@ -89,16 +96,19 @@ export async function loadThreadFilePage(
   const failedThreadIds: string[] = [];
   const truncatedThreadIds: string[] = [];
   for (let start = 0; start < threads.length; start += concurrency) {
+    throwIfAborted(signal);
     const batch = threads.slice(start, start + concurrency);
     const results = await Promise.allSettled(
       batch.map(async (thread) => {
         const [uploadsResult, outputsResult] = await Promise.allSettled([
-          loadFiles(thread.thread_id),
-          loadOutputs?.(thread.thread_id) ?? Promise.resolve(null),
+          loadFiles(thread.thread_id, signal),
+          loadOutputs?.(thread.thread_id, signal) ?? Promise.resolve(null),
         ]);
+        throwIfAborted(signal);
         return { thread, uploadsResult, outputsResult };
       }),
     );
+    throwIfAborted(signal);
     results.forEach((result, index) => {
       if (result.status === "fulfilled") {
         const { thread, uploadsResult, outputsResult } = result.value;
@@ -156,6 +166,7 @@ export async function loadThreadFilePage(
 export async function loadProjectFilePage(
   projects: Project[],
   concurrency = 3,
+  { signal }: { signal?: AbortSignal } = {},
 ) {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error("Project listing concurrency must be a positive integer");
@@ -165,14 +176,16 @@ export async function loadProjectFilePage(
   const failedProjectIds: string[] = [];
   let truncated = false;
   for (let start = 0; start < projects.length; start += concurrency) {
+    throwIfAborted(signal);
     const batch = projects.slice(start, start + concurrency);
     const results = await Promise.allSettled(
       batch.map(async (project) => {
         // 两类 Gateway 来源相互独立：一侧暂时失败，不应丢弃另一侧已读到的文件。
         const [documents, threadFiles] = await Promise.allSettled([
-          loadProjectDocuments(project),
-          loadProjectThreadFiles(project),
+          loadProjectDocuments(project, signal),
+          loadProjectThreadFiles(project, signal),
         ]);
+        throwIfAborted(signal);
         const projectRows = [
           ...(documents.status === "fulfilled" ? documents.value : []),
           ...(threadFiles.status === "fulfilled" ? threadFiles.value.rows : []),
@@ -187,6 +200,7 @@ export async function loadProjectFilePage(
         };
       }),
     );
+    throwIfAborted(signal);
     results.forEach((result, index) => {
       if (result.status === "fulfilled") {
         rows.push(...result.value.rows);
@@ -206,12 +220,19 @@ export async function loadProjectFilePage(
 
 async function loadProjectDocuments(
   project: Project,
+  signal?: AbortSignal,
 ): Promise<FileCenterRow[]> {
   const rows: FileCenterRow[] = [];
   let offset = 0;
   let total = 0;
   do {
-    const page = await listProjectDocuments(project.id, { limit: 100, offset });
+    throwIfAborted(signal);
+    const page = await listProjectDocuments(project.id, {
+      limit: 100,
+      offset,
+      signal,
+    });
+    throwIfAborted(signal);
     total = page.total;
     page.documents.forEach((document: ProjectDocument) => {
       rows.push({
@@ -236,16 +257,19 @@ async function loadProjectDocuments(
   return rows;
 }
 
-async function loadProjectThreadFiles(project: Project) {
+async function loadProjectThreadFiles(project: Project, signal?: AbortSignal) {
   const rows: FileCenterRow[] = [];
   let offset = 0;
   let truncated = false;
   while (offset >= 0) {
+    throwIfAborted(signal);
     const page = await listProjectThreadFiles(project.id, {
       offset,
       thread_limit: 50,
       file_limit: 200,
+      signal,
     });
+    throwIfAborted(signal);
     truncated ||= page.truncated;
     page.groups.forEach((group) => {
       group.files.forEach((file: ProjectThreadFile) => {
@@ -270,4 +294,10 @@ async function loadProjectThreadFiles(project: Project) {
     offset = page.next_offset;
   }
   return { rows, truncated };
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException("Project file export cancelled", "AbortError");
+  }
 }

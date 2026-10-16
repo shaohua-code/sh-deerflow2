@@ -117,6 +117,7 @@ async def _notify_each(
     loop = asyncio.get_running_loop()
     deadline = None if timeout is None else loop.time() + timeout
     for source, contributor in contributors:
+        timeout_scope: asyncio.Timeout | None = None
         try:
             call = invoke(contributor)
             if deadline is None:
@@ -136,12 +137,19 @@ async def _notify_each(
                     timeout,
                 )
                 continue
-            await asyncio.wait_for(call, remaining)
+            timeout_scope = asyncio.timeout(remaining)
+            async with timeout_scope:
+                await call
         except TimeoutError:
-            if deadline is not None and loop.time() >= deadline:
+            if timeout_scope is not None and timeout_scope.expired():
                 # Budget exhaustion mid-hook is the same expected operational
                 # condition as the skip above, so it stays a warning rather
                 # than a hook failure with an asyncio-internal traceback.
+                # Checking the timeout scope avoids a clock-resolution race
+                # between wait_for() raising and the shared deadline check.
+                # Clamp the shared deadline now so later hooks cannot consume
+                # a few extra milliseconds after this cancellation.
+                deadline = loop.time()
                 logger.warning(
                     "Extension %s: %s timed out for task %s; the %.1fs notification budget was spent",
                     source,

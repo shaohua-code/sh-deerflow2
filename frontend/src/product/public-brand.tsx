@@ -11,8 +11,8 @@ import {
 
 import { normalizeLocale } from "@/core/i18n/locale";
 
-import { fetchPublicProductBrand } from "./api";
 import { getBrandName } from "./brand";
+import { fetchPublicProductBrand } from "./public-brand-api";
 
 type PublicBrandNames = { name: string; name_zh: string };
 

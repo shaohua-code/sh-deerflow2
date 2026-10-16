@@ -1,5 +1,6 @@
 import type { Message, Thread } from "@langchain/langgraph-sdk";
 
+import type { FeedbackData } from "../api/feedback";
 import type { Todo } from "../todos";
 
 export interface GoalState {
@@ -55,6 +56,8 @@ export interface RunMessage {
   run_id: string;
   seq: number;
   content: Message;
+  /** Gateway 只会保存/返回每个 run 最后一条可见 AI 消息的评分。 */
+  feedback?: FeedbackData | null;
   metadata: {
     caller: string;
     [key: string]: unknown;

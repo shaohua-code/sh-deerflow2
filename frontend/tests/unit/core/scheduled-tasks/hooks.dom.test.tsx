@@ -71,7 +71,7 @@ afterEach(() => {
   mocks.toastError.mockReset();
 });
 
-it("does not expose cached task lists or fetch after read permission is revoked", () => {
+it("does not expose or retain cached task lists after read permission is revoked", async () => {
   const { client, Wrapper } = createWrapper();
   client.setQueryData(["scheduled-tasks"], [{ id: "private-task" }]);
   client.setQueryData(
@@ -91,6 +91,40 @@ it("does not expose cached task lists or fetch after read permission is revoked"
     expect(result.current.thread.data).toBeUndefined();
     expect(mocks.fetchScheduledTasks).not.toHaveBeenCalled();
     expect(mocks.fetchThreadScheduledTasks).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(client.getQueryData(["scheduled-tasks"])).toBeUndefined();
+      expect(
+        client.getQueryData(["scheduled-tasks", "thread", "thread-a"]),
+      ).toBeUndefined();
+    });
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it("passes React Query cancellation signals to both authorized task inventories", async () => {
+  mocks.fetchScheduledTasks.mockResolvedValue([]);
+  mocks.fetchThreadScheduledTasks.mockResolvedValue([]);
+  const { client, Wrapper } = createWrapper();
+  const { result, unmount } = renderHook(
+    () => ({
+      all: useScheduledTasks({ enabled: true }),
+      thread: useThreadScheduledTasks("thread-a", { enabled: true }),
+    }),
+    { wrapper: Wrapper },
+  );
+  try {
+    await waitFor(() => {
+      expect(result.current.all.isSuccess).toBe(true);
+      expect(result.current.thread.isSuccess).toBe(true);
+    });
+    expect(mocks.fetchScheduledTasks.mock.calls[0]?.[0]).toBeInstanceOf(
+      AbortSignal,
+    );
+    expect(mocks.fetchThreadScheduledTasks.mock.calls[0]?.[1]).toBeInstanceOf(
+      AbortSignal,
+    );
   } finally {
     unmount();
     client.clear();

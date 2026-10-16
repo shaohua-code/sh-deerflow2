@@ -278,7 +278,9 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
   const missingPermissionsFor = (kind: "export" | "deletion", scope: string) =>
     getMissingDataJobPermissions(user, kind, scope);
   const capabilities = useProductDataCapabilities();
-  const [jobOffset, setJobOffset] = useState(0);
+  // 新版 Gateway 用 next_offset 跳过滚动升级产生的旧 NULL 授权行；历史栈用于准确返回上一页。
+  const [jobPageOffsets, setJobPageOffsets] = useState([0]);
+  const jobOffset = jobPageOffsets[jobPageOffsets.length - 1] ?? 0;
   const jobsQuery = useProductDataJobs(jobOffset);
   // 浏览旧记录时仍读取最新页，避免看不到正在运行的任务并重复提交。
   const latestJobsQuery = useProductDataJobs(0);
@@ -473,7 +475,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
 
     submissionLock.current = true;
     // 新任务或恢复请求都回到第一页，以便立即看到服务端的权威状态。
-    setJobOffset(0);
+    setJobPageOffsets([0]);
     const onSuccess = () => {
       // 只清除本次响应对应的键；清理失败时保留恢复入口并暂停新建任务。
       if (clearPendingDataJobSubmission(userId, submission.idempotencyKey)) {
@@ -659,7 +661,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
                         role="status"
                         className="text-muted-foreground text-xs leading-5"
                       >
-                        {t.agents.permissionRequired(missingPermissions[0])}
+                        {t.agents.permissionRequired(missingPermissions[0]!)}
                       </p>
                     )}
                   </div>
@@ -750,7 +752,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
                         role="status"
                         className="text-muted-foreground text-xs leading-5"
                       >
-                        {t.agents.permissionRequired(missingPermissions[0])}
+                        {t.agents.permissionRequired(missingPermissions[0]!)}
                       </p>
                     )}
                   </div>
@@ -834,7 +836,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
         )}
         {pendingSubmission && pendingMissingPermissions.length > 0 && (
           <p role="status" className="text-muted-foreground text-sm">
-            {t.agents.permissionRequired(pendingMissingPermissions[0])}
+            {t.agents.permissionRequired(pendingMissingPermissions[0]!)}
           </p>
         )}
         {downloadError && (
@@ -885,8 +887,8 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
               size="sm"
               disabled={jobOffset === 0 || jobsQuery.isFetching}
               onClick={() =>
-                setJobOffset((current) =>
-                  Math.max(0, current - DATA_JOBS_PAGE_SIZE),
+                setJobPageOffsets((current) =>
+                  current.length > 1 ? current.slice(0, -1) : current,
                 )
               }
             >
@@ -895,7 +897,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
             <span role="status" className="text-muted-foreground text-sm">
               {copy.dataJobsPage.replace(
                 "{page}",
-                String(Math.floor(jobOffset / DATA_JOBS_PAGE_SIZE) + 1),
+                String(jobPageOffsets.length),
               )}
             </span>
             <Button
@@ -903,9 +905,15 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
               variant="outline"
               size="sm"
               disabled={!hasMore || jobsQuery.isFetching}
-              onClick={() =>
-                setJobOffset((current) => current + DATA_JOBS_PAGE_SIZE)
-              }
+              onClick={() => {
+                const nextOffset = jobsQuery.data?.next_offset;
+                setJobPageOffsets((current) => [
+                  ...current,
+                  typeof nextOffset === "number"
+                    ? nextOffset
+                    : jobOffset + DATA_JOBS_PAGE_SIZE,
+                ]);
+              }}
             >
               {copy.dataJobsNext}
             </Button>
@@ -971,7 +979,7 @@ function PreferenceDataJobs({ locale }: { locale: string }) {
                 <p className="text-muted-foreground">
                   {selectedDeletionMissingPermissions.length > 0
                     ? t.agents.permissionRequired(
-                        selectedDeletionMissingPermissions[0],
+                        selectedDeletionMissingPermissions[0]!,
                       )
                     : (capabilityStatus ?? capabilityCopy.changed)}
                 </p>
@@ -1378,7 +1386,7 @@ function PreferenceDataJobRow({
       {permissionBlocked && (
         <p role="status" className="text-muted-foreground text-sm">
           {missingPermissions.length > 0
-            ? t.agents.permissionRequired(missingPermissions[0])
+            ? t.agents.permissionRequired(missingPermissions[0]!)
             : copy.dataOperationError}
         </p>
       )}

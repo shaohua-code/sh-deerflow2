@@ -27,8 +27,11 @@
  */
 import type { Message } from "@langchain/langgraph-sdk";
 
+import type { FeedbackData } from "../api/feedback";
 import { getMessageRunId } from "../messages/run-duration";
 import { isHiddenFromUIMessage } from "../messages/utils";
+
+type MessageWithFeedback = Message & { feedback?: FeedbackData | null };
 
 // Thread-global feed position, attached by the backend to history rows and to
 // `values` frame messages it has already persisted. Mirrors MESSAGE_SEQ_KEY in
@@ -220,6 +223,7 @@ export function mergeMessages(
   const anySeqByIdentity = new Map<string, number>();
   const savedTurnDurations = new Map<string, number>();
   const savedRunIds = new Map<string, string>();
+  const savedFeedbackByIdentity = new Map<string, FeedbackData | null>();
   const collectTrustedSeq = (message: Message) => {
     const identity = messageIdentity(message);
     if (!identity) {
@@ -256,6 +260,11 @@ export function mergeMessages(
         identity,
         message.additional_kwargs.turn_duration as number,
       );
+    }
+    const feedback = (message as MessageWithFeedback).feedback;
+    if (identity && feedback !== undefined) {
+      // Checkpoint 实时消息没有历史评分字段；保留 REST 历史里的 null 或已保存评分。
+      savedFeedbackByIdentity.set(identity, feedback);
     }
   }
   for (const message of threadMessages) {
@@ -413,15 +422,22 @@ export function mergeMessages(
     const shouldRestoreTurnDuration =
       savedTurnDurations.has(identity) &&
       message.additional_kwargs?.turn_duration === undefined;
+    const shouldRestoreFeedback =
+      savedFeedbackByIdentity.has(identity) &&
+      (message as MessageWithFeedback).feedback === undefined;
     if (
       !shouldRestoreSeq &&
       !shouldRestoreRunId &&
-      !shouldRestoreTurnDuration
+      !shouldRestoreTurnDuration &&
+      !shouldRestoreFeedback
     ) {
       return message;
     }
     return {
       ...message,
+      ...(shouldRestoreFeedback
+        ? { feedback: savedFeedbackByIdentity.get(identity) }
+        : {}),
       ...(shouldRestoreRunId ? { run_id: savedRunIds.get(identity) } : {}),
       additional_kwargs: {
         ...message.additional_kwargs,

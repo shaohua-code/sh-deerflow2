@@ -1,3 +1,53 @@
+## 2026-10-14 P301 First Windows offline shard confirmation
+
+- Re-ran the first duration-aware offline test shard on Windows Python 3.12 with UTF-8 mode and a short temporary root: **8,564 passed, 215 skipped, 8,778 deselected, 44 warnings (1,031.95s)**. The randomized DeltaChannel batching test now suppresses only the slow-generation health check; the Windows icacls test tolerates non-UTF-8 tool output.
+- The focused Hypothesis and Windows ACL cases passed **2 tests**; Ruff check/format passed, and the isolated pytest temporary directory was removed. Together with the second shard's **8,587 passed / 194 skipped**, both duration-aware offline groups now pass.
+- Docker Desktop's named pipe denied access and localhost:8002/api/v1/ready was unreachable during a read-only probe. Current IAM database revision/readiness remains unverified; no migration, database, quota, or live provider operation was performed.
+## 2026-10-14 Windows offline shard confirmation and local sandbox mount fallback
+
+- Re-ran the second duration-aware offline test shard on Windows Python 3.12 with UTF-8 mode and a short temporary root: **8,587 passed, 194 skipped, 8,776 deselected, 44 warnings (1,178.94s)**. Removed the isolated pytest temporary directory.
+- `LocalSandboxProvider` now continues evaluating independent operator mounts when managed skill projection is unavailable; focused coverage pins both the fallback and a valid projected public-skill mount. The Windows `icacls` test decodes non-UTF-8 tool output with replacement to avoid a reader-thread warning.
+- The 14 failures from the prior run were isolated to host-codepage/long-temp-path test conditions or the projection-unavailable mount path. The focused rerun after fixes passed **21 tests**; Ruff check and format passed for all three changed Python files. The full shard was not rerun after the warning-only `icacls` decoding adjustment. The first shard's older six-failure snapshot still needs a fresh run; this is not full-suite or target IAM/DeerFlow acceptance.
+- No IAM database, migration, quota enforcement, live provider, or target service was changed or probed.
+
+## 2026-10-14 Central IAM B04 extension-manager tool gate and notification timeout race
+
+- Added explicit `uv` prerequisite skips to 35 extension install/upgrade/remove test functions (38 parameterized cases) after reproducing the missing-tool failure at `uv --version`; corrected the host contract pin test to use the checked-in extension `API_VERSION`.
+- A rerun of the second ordered 104-file slice reported **2,368 passed, 2 failed, 86 skipped, 4 warnings (502.53s)**. The remaining failures were stale venv distribution metadata (`0.2.16` installed vs `0.2.18` source/lock) and a notification-budget timeout race under load.
+- Notification hooks now use `asyncio.timeout().expired()` to classify host timeout cancellations and clamp the shared deadline, so later hooks cannot run after the budget is spent. Lifecycle, manager and contract-pin targeted tests: **126 passed, 40 skipped**; Ruff check/format passed. The ordered slice was not rerun after this production fix.
+- The IAM migration-pending banner was reported by the user; this turn did not perform a readiness probe or revision query. No database migration or quota-enforcement change was made. Temporary test roots were removed.
+
+## 2026-10-14 Central IAM B04 Windows shell harness and tool prerequisites
+
+- The `test_dev_entrypoint.py` harness now writes its extracted sync block to an isolated POSIX shell file before invoking Git Bash. This avoids Windows command-line reinterpretation of a long `sh -c` payload.
+- Makefile injection checks now skip explicitly when GNU make is unavailable, and tests that create a frozen uv project or execute `config-upgrade.sh` skip when `uv` is missing. Static Makefile/config checks continue to run.
+- Targeted validation: `test_dev_entrypoint.py`, `test_extension_dependency_sync.py`, and `test_config_version.py`: **44 passed, 13 skipped**. Ruff check/format and `git diff --check` passed. The temporary test directory was removed.
+- The second 104-file B04 slice and full suite were not rerun. No production runtime, IAM database, migration, or quota setting changed.
+
+## 2026-10-14 Central IAM B04 Windows/Git Bash test isolation
+
+- Normalized the static detector JSON path assertion and extension package-path assertion for Windows; the deploy extras shell test now supplies a known runnable Python 3 shim instead of depending on the host PATH.
+- `test_detect_blocking_io_static.py` and `test_deploy_uv_extras.py` passed **56 tests**; the controlled extension uv-project path test passed **1 test**; the DeltaChannel module passed **35 tests**. Ruff check/format passed on four changed Python files. Test roots were deleted.
+- The second 104-file slice was not rerun after targeted fixes; its original 82 failures remain unclassified beyond observed missing-tool and Windows/Git Bash categories. No production deploy, IAM, database, migration, or quota behavior changed.
+
+## 2026-10-14 Central IAM B04 second ordered slice and DeltaChannel property-test stability
+
+- The next 104 path-sorted offline test files reported **2,339 passed, 82 failed, 35 skipped, 4 warnings in 521.70s**. Failures are not fully triaged; visible categories include missing `uv`/GNU make and Windows/Git Bash process/path assumptions. This is not a full-suite result.
+- Reproduced a Hypothesis `HealthCheck.too_slow` failure in the randomized DeltaChannel differential test. The strategy now returns bounded primitive data and constructs LangChain messages inside the test; only this non-filtering strategy suppresses `too_slow`. The full DeltaChannel test module passed **35/35**, with Ruff check/format passing.
+- Temporary test files were removed. No production runtime, target IAM database/migrations, or quota setting changed.
+
+## 2026-10-14 Central IAM B04 ordered offline slice and Windows test fixes
+
+- Fixed timeout test runner selection by platform. The live-policy subprocess now decodes UTF-8 explicitly and preserves Windows `SystemRoot`/`WINDIR` in its minimal environment; four tests requiring GNU make skip with an explicit prerequisite reason when it is unavailable. Compressed the model-catalog guidance paragraph so `frontend/src/AGENTS.md` returns below its hard byte budget without dropping user scoping, cancellation, or Gateway authorization requirements.
+- Focused tests: timeout **8 passed, 6 skipped**; guidance **12 passed**; live-policy **7 passed, 4 skipped**. Ruff check/format passed on both changed Python files. The first 104 path-sorted offline test files passed **3,099, 67 skipped, 3 deselected, 0 failed** in 476.57s; isolated test roots were removed.
+- This is a partial suite, not a full result. Latest usable full snapshot remains 17,062 passed / 142 failed / 349 skipped / 3 deselected / 0 errors. Another full attempt stopped near 17% with exit code 1073807364 and no summary. No production runtime, target database, IAM migration, or live provider was changed.
+
+## 2026-10-14 Central IAM B04 Windows timeout test fixture
+
+- Updated `test_timeout_output_carries_authoritative_failure_marker` to mock the runner selected by the current OS; Windows no longer tries to launch a real `make test`. No production sandbox behavior changed.
+- `test_local_sandbox_command_timeout.py`: **8 passed, 6 skipped**; Ruff check/format passed. Isolated test artifacts were removed.
+- A full offline rerun stopped around 17% with exit code `1073807364` and no pytest summary; the last usable full snapshot remains 17,062 passed / 142 failed / 349 skipped / 3 deselected / 0 errors. Cause is unknown. No migration or live IAM/Provider validation ran.
+
 ## 2026-10-13 Central IAM B04 context/Gateway service focused verification
 
 - `test_context_compaction.py` and `test_gateway_services.py` passed **212 tests** in an isolated offline run. No source/test changes and no target DB/IAM/provider access.
@@ -3101,4 +3151,13 @@ with **180 merged pull requests** since the first 2.0 milestone tag.
 
 - Legacy SQLite fixtures in `test_persistence_bootstrap.py` and `test_persistence_bootstrap_regression.py` now create only `_BASELINE_TABLE_NAMES`, so later Alembic revisions remain responsible for post-baseline tables such as `iam_model_usage_outbox`. Production bootstrap/runtime was not changed.
 - Five focused migration/bootstrap modules passed **62 tests**; Ruff check and format-check passed for both test files. The first attempt had 22 setup errors because the isolated basetemp parent was absent; after creating it, the full focused command passed. Temporary DB/test/cache directories were removed. Full suite and target DB migration remain unverified.
+## 2026-10-13 Central IAM B04 migration-chain and retry follow-up
+- Removed historical-head assumptions from three migration-chain tests; prevented four legacy-version migration fixtures from pre-creating the later IAM outbox table; corrected the MCP first-transient-failure retry expectation to the configured base interval. Condensed the long thread-history rule in `frontend/src/AGENTS.md` while preserving seq-first ordering and compaction/anchor invariants. No production runtime behavior changed.
+- Focused guidance/migration/retry selection: **27 passed**; Ruff check and format-check passed on eight Python test files. Test temp roots were removed. The previous complete offline snapshot was 17,052 passed, 152 failed, 349 skipped, 3 deselected, 0 errors (82 warnings, 38:27); the post-fix full run is in progress. Live IAM/provider, target DB migration, and quota enforcement were not exercised.
+## 2026-10-13 R03/B04 Agent API, Crawl4AI, and Windows URI test fixes
+
+- Updated the custom-agent API test fixture to provide an explicit test user and scoped agent permissions through a mocked authenticator while leaving route permission decorators active. Crawl4AI offline tests now resolve public test hosts to a deterministic public IP; private-address rejection coverage remains. Windows MCP file-URI tests now use the actual temp-drive letter rather than assuming `C:`. No production runtime changes.
+- Focused tests: **171 passed, 1 skipped, 1 warning** across `test_custom_agent.py`, `test_crawl4ai_tools.py`, and `test_mcp_file_migration.py` (23.06s). Ruff check/format passed; temporary roots were removed.
+- Git status/diff could not be refreshed because this execution environment returned `Invalid executable path`; no cleanup, commit, or reset was performed.
+- The latest complete offline suite remains 17,062 passed / 142 failed / 349 skipped / 3 deselected / 0 errors (82 warnings, 44:15), predating these three fixes. No full rerun, target migration, live IAM/provider, or quota-enforcement check was performed. Missing `uv`/`make`, Windows `WinError 10106`, stale extension API venv metadata, and other failures remain open.
 

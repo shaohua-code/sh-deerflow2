@@ -14,11 +14,12 @@ from deerflow_extension_api import (
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from flow_desk_product_extension.api import _data_job_artifact_filename, build_router
-from flow_desk_product_extension.settings import ProductSettingsStore
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+from flow_desk_product_extension.api import _data_job_artifact_filename, build_router
+from flow_desk_product_extension.settings import ProductSettingsStore
 
 _DATA_JOB_PERMISSIONS = (
     "preferences:read",
@@ -711,14 +712,29 @@ def test_data_job_routes_scope_every_operation_to_the_resolved_owner(tmp_path) -
 
 
 def test_data_job_list_hides_scopes_after_route_permission_revocation() -> None:
+    jobs = [
+        {"job_id": "preferences-job", "kind": "export", "scope": ["preferences"]},
+        {"job_id": "threads-job", "kind": "export", "scope": ["threads"]},
+    ]
+
     class PagedStore:
-        async def list_data_jobs(self, owner_user_id: str, *, limit: int, offset: int):
+        async def list_data_job_authorization_keys(self, owner_user_id: str):
             assert owner_user_id == "user-a"
-            assert limit == 51 and offset == 0
+            return ["export:preferences", "export:threads"]
+
+        async def list_data_jobs(
+            self,
+            owner_user_id: str,
+            *,
+            limit: int,
+            offset: int,
+            authorization_keys: list[str],
+        ):
+            assert owner_user_id == "user-a"
+            assert authorization_keys == ["export:preferences"]
             return [
-                {"job_id": "preferences-job", "kind": "export", "scope": ["preferences"]},
-                {"job_id": "threads-job", "kind": "export", "scope": ["threads"]},
-            ]
+                job for job in jobs if f"{job['kind']}:{job['scope'][0]}" in authorization_keys
+            ][offset : offset + limit]
 
     app = FastAPI()
     _install_test_scope_checker(app)
@@ -734,6 +750,99 @@ def test_data_job_list_hides_scopes_after_route_permission_revocation() -> None:
     assert [job["job_id"] for job in response.json()["jobs"]] == ["preferences-job"]
 
 
+def test_data_job_list_does_not_report_more_when_remaining_jobs_are_forbidden() -> None:
+    jobs = [
+        {"job_id": "visible-preferences-job", "kind": "export", "scope": ["preferences"]},
+        {"job_id": "hidden-thread-job", "kind": "export", "scope": ["threads"]},
+        {"job_id": "hidden-thread-job-2", "kind": "export", "scope": ["threads"]},
+    ]
+
+    class PagedStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, tuple[str, ...]]] = []
+
+        async def list_data_job_authorization_keys(self, owner_user_id: str):
+            assert owner_user_id == "user-a"
+            return ["export:preferences", "export:threads"]
+
+        async def list_data_jobs(
+            self,
+            owner_user_id: str,
+            *,
+            limit: int,
+            offset: int,
+            authorization_keys: list[str],
+        ):
+            assert owner_user_id == "user-a"
+            self.calls.append((limit, offset, tuple(authorization_keys)))
+            visible = [
+                job for job in jobs if f"{job['kind']}:{job['scope'][0]}" in authorization_keys
+            ]
+            return visible[offset : offset + limit]
+
+    store = PagedStore()
+    app = FastAPI()
+    _install_test_scope_checker(app)
+    setattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY, _resolve_test_principal)
+    app.include_router(build_router({"data_jobs": {"enabled": True}}, store))
+
+    response = TestClient(app).get(
+        "/api/product/v1/data-jobs?limit=1&offset=0",
+        headers={"x-test-user": "user-a", "x-test-permissions": "preferences:read"},
+    )
+
+    assert response.status_code == 200
+    assert [job["job_id"] for job in response.json()["jobs"]] == ["visible-preferences-job"]
+    assert response.json()["has_more"] is False
+    assert store.calls == [(2, 0, ("export:preferences",))]
+
+
+def test_data_job_list_finds_visible_jobs_after_forbidden_rows() -> None:
+    jobs = [
+        {"job_id": "visible-preferences-job", "kind": "export", "scope": ["preferences"]},
+        {"job_id": "hidden-thread-job", "kind": "export", "scope": ["threads"]},
+        {"job_id": "visible-preferences-job-2", "kind": "export", "scope": ["preferences"]},
+    ]
+
+    class PagedStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, tuple[str, ...]]] = []
+
+        async def list_data_job_authorization_keys(self, owner_user_id: str):
+            assert owner_user_id == "user-a"
+            return ["export:preferences", "export:threads"]
+
+        async def list_data_jobs(
+            self,
+            owner_user_id: str,
+            *,
+            limit: int,
+            offset: int,
+            authorization_keys: list[str],
+        ):
+            assert owner_user_id == "user-a"
+            self.calls.append((limit, offset, tuple(authorization_keys)))
+            visible = [
+                job for job in jobs if f"{job['kind']}:{job['scope'][0]}" in authorization_keys
+            ]
+            return visible[offset : offset + limit]
+
+    store = PagedStore()
+    app = FastAPI()
+    _install_test_scope_checker(app)
+    setattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY, _resolve_test_principal)
+    app.include_router(build_router({"data_jobs": {"enabled": True}}, store))
+
+    response = TestClient(app).get(
+        "/api/product/v1/data-jobs?limit=1&offset=0",
+        headers={"x-test-user": "user-a", "x-test-permissions": "preferences:read"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["has_more"] is True
+    assert store.calls == [(2, 0, ("export:preferences",))]
+
+
 def test_data_job_list_fails_closed_when_scope_provider_is_unavailable() -> None:
     app = FastAPI()
 
@@ -744,8 +853,18 @@ def test_data_job_list_fails_closed_when_scope_provider_is_unavailable() -> None
     setattr(app.state, EXTENSION_PRINCIPAL_RESOLVER_KEY, _resolve_test_principal)
 
     class PagedStore:
-        async def list_data_jobs(self, _owner_user_id: str, *, limit: int, offset: int):
-            return [{"job_id": "preferences-job", "kind": "export", "scope": ["preferences"]}]
+        async def list_data_job_authorization_keys(self, _owner_user_id: str):
+            return ["export:preferences"]
+
+        async def list_data_jobs(
+            self,
+            _owner_user_id: str,
+            *,
+            limit: int,
+            offset: int,
+            authorization_keys: list[str],
+        ):
+            raise AssertionError("the Gateway authorization check failed before row lookup")
 
     app.include_router(build_router({"data_jobs": {"enabled": True}}, PagedStore()))
     response = TestClient(app).get(

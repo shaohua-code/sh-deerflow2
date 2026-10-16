@@ -1,5 +1,6 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircleIcon,
   BotIcon,
@@ -45,6 +46,7 @@ import { GatewayApiError } from "@/core/api/errors";
 import { useAuth } from "@/core/auth/AuthProvider";
 import {
   getChatSubmissionBlock,
+  getPermissionState,
   hasPermission,
   PERMISSIONS,
 } from "@/core/auth/permissions";
@@ -62,6 +64,7 @@ import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
 import { resolveThreadContext } from "@/core/settings/store";
 import {
+  clearThreadReadCache,
   useThreadMetadata,
   useThreadStream,
   useThreadTokenUsage,
@@ -101,6 +104,10 @@ export default function AgentChatPage() {
 
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  const canReadCurrentThread =
+    canReadAgent &&
+    (isNewThread || isMock || hasPermission(user, PERMISSIONS.THREADS_READ));
+  const queryClient = useQueryClient();
   // `isNewThread` gates history/token-usage fetches until the backend creates
   // the thread. `isWelcomeMode` controls only the centered welcome layout, so
   // it can flip immediately on submit without triggering eager history loads.
@@ -111,10 +118,10 @@ export default function AgentChatPage() {
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
-    { enabled: !isMock },
+    { enabled: !isMock && canReadCurrentThread },
   );
   const threadMetadata = useThreadMetadata(threadId, {
-    enabled: !isNewThread && !isMock,
+    enabled: !isNewThread && !isMock && canReadCurrentThread,
     isMock,
   });
   const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
@@ -134,6 +141,7 @@ export default function AgentChatPage() {
     editAndRegenerateMessage,
     isUploading,
     isHistoryLoading,
+    historyPermissionDenied,
     hasMoreHistory,
     loadMoreHistory,
   } = useThreadStream({
@@ -141,6 +149,9 @@ export default function AgentChatPage() {
     displayThreadId: threadId,
     context: { ...settings.context, agent_name: agent_name },
     isMock,
+    enabled: canReadCurrentThread,
+    historyPermissionDenied:
+      getPermissionState(user, PERMISSIONS.RUNS_READ) === "denied",
     onSend: () => {
       setIsWelcomeMode(false);
     },
@@ -171,6 +182,20 @@ export default function AgentChatPage() {
       }
     },
   });
+
+  useEffect(() => {
+    if (canReadCurrentThread || isNewThread || isMock || !threadId) {
+      return;
+    }
+    clearThreadReadCache(queryClient, threadId, user?.id ?? null);
+  }, [
+    canReadCurrentThread,
+    isMock,
+    isNewThread,
+    queryClient,
+    threadId,
+    user?.id,
+  ]);
 
   const hasThreadMessages = thread.messages.length > 0;
 
@@ -258,7 +283,7 @@ export default function AgentChatPage() {
   );
   const handleEditAndRegenerate = useCallback(
     (messageId: string, replacementText: string) => {
-      if (!canSubmit) return;
+      if (!canSubmit) return false;
       return editAndRegenerateMessage(threadId, messageId, replacementText);
     },
     [canSubmit, editAndRegenerateMessage, threadId],
@@ -299,6 +324,19 @@ export default function AgentChatPage() {
         onRetry={() => void refetchAgent()}
         onBack={() => router.push("/workspace/agents")}
       />
+    );
+  }
+
+  if (!canReadCurrentThread) {
+    return (
+      <main className="flex size-full items-center justify-center p-6">
+        <div
+          role="alert"
+          className="text-muted-foreground max-w-md rounded-xl border p-6 text-center"
+        >
+          {t.chats.readPermissionRequired}
+        </div>
+      </main>
     );
   }
 
@@ -393,6 +431,14 @@ export default function AgentChatPage() {
             </header>
 
             <main className="flex min-h-0 max-w-full grow flex-col">
+              {historyPermissionDenied && (
+                <p
+                  role="status"
+                  className="text-muted-foreground border-b px-4 py-2 text-center text-sm"
+                >
+                  {t.conversation.historyUnavailable}
+                </p>
+              )}
               <div className="flex min-h-0 flex-1 justify-center">
                 <MessageList
                   archiveDownloadsEnabled={

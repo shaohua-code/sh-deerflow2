@@ -33,6 +33,10 @@ describe("shouldShowOfflineBanner", () => {
   it("hides as soon as the client recovers an authenticated user", () => {
     expect(shouldShowOfflineBanner(fakeUser, true)).toBe(false);
   });
+
+  it("shows when a signed-in user's permission snapshot cannot be refreshed", () => {
+    expect(shouldShowOfflineBanner(fakeUser, false, true)).toBe(true);
+  });
 });
 
 describe("OFFLINE_BANNER_RETRY_INTERVAL_MS", () => {

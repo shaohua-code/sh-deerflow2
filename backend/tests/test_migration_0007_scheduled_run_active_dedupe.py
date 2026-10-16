@@ -55,6 +55,9 @@ def _seed_pre_0007_with_duplicates(db_path: Path) -> None:
     try:
         Base.metadata.create_all(sync_engine)
         with sync_engine.begin() as conn:
+            # The current ORM includes this table from a later revision.
+            # Leave it absent so the historical upgrade can create it.
+            conn.execute(sa.text("DROP TABLE IF EXISTS iam_model_usage_outbox"))
             # Drop only the partial unique index — its absence is what permits
             # duplicate active rows to exist in the first place.
             conn.execute(sa.text("DROP INDEX IF EXISTS uq_scheduled_task_run_active"))

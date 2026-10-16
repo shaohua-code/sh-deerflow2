@@ -38,6 +38,7 @@ import { Welcome } from "@/components/workspace/welcome";
 import { useAuth } from "@/core/auth/AuthProvider";
 import {
   getChatSubmissionBlock,
+  getPermissionState,
   hasPermission,
   PERMISSIONS,
 } from "@/core/auth/permissions";
@@ -58,6 +59,7 @@ import { resolveThreadContext } from "@/core/settings/store";
 import { createThread } from "@/core/threads/api";
 import {
   useBranchThread,
+  clearThreadReadCache,
   INFINITE_THREADS_QUERY_KEY_PREFIX,
   useThreadMetadata,
   useThreadStream,
@@ -84,6 +86,8 @@ export default function ChatPage() {
   const searchParams = useSearchParams();
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  const canReadCurrentThread =
+    isNewThread || isMock || hasPermission(user, PERMISSIONS.THREADS_READ);
   // Project-scoped new chat: `/workspace/chats/new?project={id}` assigns the
   // thread to the project on the FIRST submit — primarily via an explicit
   // `POST /api/threads` pre-create with `project_id`, with the run-request
@@ -114,10 +118,10 @@ export default function ChatPage() {
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
-    { enabled: !isMock },
+    { enabled: !isMock && canReadCurrentThread },
   );
   const threadMetadata = useThreadMetadata(threadId, {
-    enabled: !isNewThread && !isMock,
+    enabled: !isNewThread && !isMock && canReadCurrentThread,
     isMock,
   });
   const branchThread = useBranchThread();
@@ -148,6 +152,7 @@ export default function ChatPage() {
     editAndRegenerateMessage,
     isUploading,
     isHistoryLoading,
+    historyPermissionDenied,
     hasMoreHistory,
     loadMoreHistory,
   } = useThreadStream({
@@ -155,6 +160,9 @@ export default function ChatPage() {
     displayThreadId: threadId,
     context: settings.context,
     isMock,
+    enabled: canReadCurrentThread,
+    historyPermissionDenied:
+      getPermissionState(user, PERMISSIONS.RUNS_READ) === "denied",
     // onSend only animates the UI; do NOT flip `isNewThread` here — the
     // LangGraph SDK eagerly fetches /history the moment it receives a
     // thread id and assumes the thread exists on the backend (issue #2746).
@@ -184,6 +192,21 @@ export default function ChatPage() {
       }
     },
   });
+
+  useEffect(() => {
+    if (canReadCurrentThread || isNewThread || isMock || !threadId) {
+      return;
+    }
+
+    clearThreadReadCache(queryClient, threadId, user?.id ?? null);
+  }, [
+    canReadCurrentThread,
+    isMock,
+    isNewThread,
+    queryClient,
+    threadId,
+    user?.id,
+  ]);
 
   const hasThreadMessages = thread.messages.length > 0;
 
@@ -315,7 +338,7 @@ export default function ChatPage() {
   );
   const handleEditAndRegenerate = useCallback(
     (messageId: string, replacementText: string) => {
-      if (!canSubmit) return;
+      if (!canSubmit) return false;
       return editAndRegenerateMessage(threadId, messageId, replacementText);
     },
     [canSubmit, editAndRegenerateMessage, threadId],
@@ -373,6 +396,19 @@ export default function ChatPage() {
       ? projectIdOfThread(threadMetadata.data)
       : null;
 
+  if (!canReadCurrentThread) {
+    return (
+      <main className="flex size-full items-center justify-center p-6">
+        <div
+          role="alert"
+          className="text-muted-foreground max-w-md rounded-xl border p-6 text-center"
+        >
+          {t.chats.readPermissionRequired}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
       <SidecarProvider
@@ -406,7 +442,10 @@ export default function ChatPage() {
                     />
                   )}
                 {affiliatedProjectId && (
-                  <ProjectAffiliationBadge projectId={affiliatedProjectId} />
+                  <ProjectAffiliationBadge
+                    projectId={affiliatedProjectId}
+                    enabled={hasPermission(user, PERMISSIONS.PROJECTS_READ)}
+                  />
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -446,6 +485,14 @@ export default function ChatPage() {
               </div>
             </header>
             <main className="flex min-h-0 max-w-full grow flex-col">
+              {historyPermissionDenied && (
+                <p
+                  role="status"
+                  className="text-muted-foreground border-b px-4 py-2 text-center text-sm"
+                >
+                  {t.conversation.historyUnavailable}
+                </p>
+              )}
               <div className="flex min-h-0 flex-1 justify-center">
                 <MessageList
                   archiveDownloadsEnabled={
@@ -630,8 +677,14 @@ export default function ChatPage() {
  * while the project lookup is pending or when it fails (e.g. the project
  * was deleted) — an unresolvable affiliation degrades silently.
  */
-function ProjectAffiliationBadge({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+function ProjectAffiliationBadge({
+  projectId,
+  enabled,
+}: {
+  projectId: string;
+  enabled: boolean;
+}) {
+  const { data: project } = useProject(projectId, { enabled });
   if (!project) {
     return null;
   }

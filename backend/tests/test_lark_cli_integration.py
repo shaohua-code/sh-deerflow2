@@ -1519,6 +1519,7 @@ def test_windows_credential_tree_hardening_removes_arbitrary_existing_explicit_s
         check=True,
         capture_output=True,
         text=True,
+        errors="replace",
     )
     assert unwanted_sid in _windows_acl_sids(secret_file), "seed explicit grant was not applied"
 
@@ -1802,6 +1803,7 @@ def test_windows_credential_tree_exclusive_parent_no_propagation(monkeypatch, tm
         check=True,
         capture_output=True,
         text=True,
+        errors="replace",
     )
     before = _windows_acl_sids(child)
     assert unwanted in before, "seed child grant was not applied"

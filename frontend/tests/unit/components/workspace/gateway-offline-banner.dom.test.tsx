@@ -8,13 +8,17 @@ import {
 } from "@testing-library/react";
 
 import { GatewayOfflineBanner } from "@/components/workspace/gateway-offline-banner";
-import { AuthProvider } from "@/core/auth/AuthProvider";
+import { AuthProvider, useAuth } from "@/core/auth/AuthProvider";
+import { PERMISSIONS, getPermissionState } from "@/core/auth/permissions";
+import type { User } from "@/core/auth/types";
+
+const mocks = rs.hoisted(() => ({ push: rs.fn() }));
 
 // AuthProvider pulls useRouter/usePathname from next/navigation. Hand it a
 // no-op router so logout()'s `router.push("/")` stays inert under happy-dom
 // instead of trying to drive a real Next.js router.
 rs.mock("next/navigation", () => ({
-  useRouter: () => ({ push: rs.fn(), replace: rs.fn(), refresh: rs.fn() }),
+  useRouter: () => ({ push: mocks.push, replace: rs.fn(), refresh: rs.fn() }),
   usePathname: () => "/workspace",
 }));
 
@@ -36,6 +40,8 @@ rs.mock("@/core/i18n/hooks", () => ({
         logout: "Log out",
         gatewayUnavailable: "Gateway unavailable.",
         gatewayUnavailableRetrying: "Retrying…",
+        gatewayRetry: "Retry now",
+        gatewayRetrying: "Retrying now…",
       },
     },
     changeLocale: rs.fn(),
@@ -44,8 +50,41 @@ rs.mock("@/core/i18n/hooks", () => ({
 
 afterEach(() => {
   rs.restoreAllMocks();
+  mocks.push.mockClear();
   cleanup();
 });
+
+const signedInUser: User = {
+  id: "user-1",
+  email: "user@example.com",
+  system_role: "user",
+  needs_setup: false,
+  permissions: [PERMISSIONS.AGENTS_READ],
+};
+
+function AuthRefreshProbe() {
+  const { user, authRefreshUnavailable, refreshUser } = useAuth();
+  const agentPermission = getPermissionState(user, PERMISSIONS.AGENTS_READ);
+  return (
+    <>
+      <div data-testid="auth-refresh-state">
+        {`${user?.email ?? "signed-out"}|${agentPermission}|${authRefreshUnavailable}`}
+      </div>
+      <button type="button" onClick={() => void refreshUser()}>
+        Refresh account
+      </button>
+    </>
+  );
+}
+
+function renderAuthRefreshProbe({ withBanner = false } = {}) {
+  return render(
+    <AuthProvider initialUser={signedInUser}>
+      {withBanner && <GatewayOfflineBanner gatewayUnavailable={false} />}
+      <AuthRefreshProbe />
+    </AuthProvider>,
+  );
+}
 
 /**
  * Install a fetch double that keeps the gateway "unavailable" for the
@@ -94,6 +133,94 @@ function renderBanner() {
 }
 
 describe("GatewayOfflineBanner logout recovery (#3001)", () => {
+  it("refreshes server permissions when the visible window regains focus", async () => {
+    const revokedUser: User = { ...signedInUser, permissions: [] };
+    const fetchSpy = rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(revokedUser), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    renderAuthRefreshProbe();
+
+    expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+      "user@example.com|granted|false",
+    );
+    fireEvent.focus(window);
+    // Browsers can emit focus and visibilitychange together when returning
+    // to a tab; the shared throttle must keep that to one /auth/me request.
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "user@example.com|denied|false",
+      ),
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith("/api/v1/auth/me", {
+      credentials: "include",
+    });
+  });
+
+  it("lets a user retry the gateway probe immediately and clears the banner on recovery", async () => {
+    let probeCalls = 0;
+    let finishRecovery: ((response: Response) => void) | undefined;
+    rs.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (!url.includes("/auth/me")) {
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }
+
+      probeCalls += 1;
+      if (probeCalls === 1) {
+        return Promise.resolve(
+          new Response("service unavailable", { status: 503 }),
+        );
+      }
+      if (probeCalls === 2) {
+        return new Promise((resolve) => {
+          finishRecovery = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(signedInUser), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    renderBanner();
+
+    const retry = await screen.findByRole("button", { name: "Retry now" });
+    await waitFor(() => expect(probeCalls).toBe(1));
+    await waitFor(() =>
+      expect((retry as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(probeCalls).toBe(2));
+    await waitFor(() =>
+      expect((retry as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(retry.textContent).toBe("Retrying now…");
+    if (!finishRecovery) {
+      throw new Error("expected the manual recovery request to be pending");
+    }
+    finishRecovery(
+      new Response(JSON.stringify(signedInUser), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
   it("renders a <button> (not a GET-style link) as the logout affordance", async () => {
     installFetch();
     renderBanner();
@@ -127,5 +254,84 @@ describe("GatewayOfflineBanner logout recovery (#3001)", () => {
     // Lock down the regression documented in #3001: a GET against this
     // POST-only endpoint returns 405 and fails to clear the session.
     expect(logoutCall.method).not.toBe("GET");
+  });
+
+  it("keeps the signed-in identity but fails closed and shows recovery feedback on 503", async () => {
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("service unavailable", { status: 503 }),
+    );
+    renderAuthRefreshProbe({ withBanner: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh account" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "user@example.com|denied|true",
+      );
+    });
+    expect(screen.getByRole("status").textContent).toContain(
+      "Gateway unavailable.",
+    );
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("keeps identity and fails closed when the auth request cannot connect", async () => {
+    rs.spyOn(console, "error").mockImplementation(() => {});
+    rs.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    renderAuthRefreshProbe({ withBanner: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh account" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "user@example.com|denied|true",
+      );
+    });
+    expect(screen.getByRole("status").textContent).toContain(
+      "Gateway unavailable.",
+    );
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("restores server permissions after a later successful refresh", async () => {
+    rs.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(signedInUser), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    renderAuthRefreshProbe();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh account" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "user@example.com|denied|true",
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh account" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "user@example.com|granted|false",
+      );
+    });
+  });
+
+  it("still clears identity and redirects for an actual 401", async () => {
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("unauthorized", { status: 401 }),
+    );
+    renderAuthRefreshProbe();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh account" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-refresh-state").textContent).toBe(
+        "signed-out|unresolved|false",
+      );
+    });
+    expect(mocks.push).toHaveBeenCalledWith("/login?next=%2Fworkspace");
   });
 });

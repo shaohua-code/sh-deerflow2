@@ -141,6 +141,15 @@ export const zhCN: Translations = {
     separator: " ",
   },
 
+  messageFeedback: {
+    groupLabel: "评价助手回答",
+    positive: "认为此回答有帮助",
+    negative: "认为此回答没有帮助",
+    removePositive: "取消有帮助反馈",
+    removeNegative: "取消无帮助反馈",
+    removePermissionRequired: "需要 threads:delete 权限才能取消已提交的反馈。",
+  },
+
   // Home
   home: {
     docs: "文档",
@@ -340,6 +349,10 @@ export const zhCN: Translations = {
     goalFailed: "目标更新失败，请重试。",
     goalConflict: "当前会话仍在运行，请等待任务结束后再修改目标。",
     goalTooLong: "目标过长，请控制在 {max} 个字符以内。",
+    goalReadPermissionRequired:
+      "你没有查看当前目标的权限，请联系管理员开通 threads:read。",
+    goalWritePermissionRequired:
+      "你没有修改当前目标的权限，请联系管理员开通 threads:write。",
     goalLengthCounter: "目标长度：{length}/{max} 字符",
     compactSuccess:
       "已压缩早期上下文。完整聊天记录仍保留，后续模型将基于摘要和最近消息继续。",
@@ -347,6 +360,8 @@ export const zhCN: Translations = {
     compactConflict:
       "当前无法压缩上下文。请等待正在运行的任务结束，或联系管理员确认是否启用了压缩。",
     compactFailed: "上下文压缩失败，请重试。",
+    compactPermissionRequired:
+      "你没有压缩此会话的权限，请联系管理员开通 threads:write。",
     suggestions: [
       {
         suggestion: "写作",
@@ -493,6 +508,8 @@ export const zhCN: Translations = {
     deleteDocumentFailed: "移入回收站失败",
     contentMissing: "内容缺失",
     previewUnsupported: "无法在浏览器中预览此文件类型，请下载后查看。",
+    documentPreviewDialogHint:
+      "预览当前项目文档。较大的文件可能只显示部分内容，可下载查看完整文件。",
     archivedDocumentsBanner:
       "该项目已归档，文档为只读：上传、保存到项目与移至回收站不可用。",
     conversationFiles: "对话文件",
@@ -500,6 +517,7 @@ export const zhCN: Translations = {
     threadFilesTruncated: (count) => `仅显示该对话的前 ${count} 个文件。`,
     threadFilesBrowseInThread: "在对话中浏览全部文件",
     saveToProject: "保存到项目",
+    saveToProjectDialogHint: "为要保存到项目文件架的这份对话文件选择名称。",
     saveToProjectFailed: "保存到项目失败",
     savedToProject: (name) => `已将「${name}」保存到文件架`,
     shelfNameLabel: "文件架名称",
@@ -903,6 +921,8 @@ export const zhCN: Translations = {
     logout: "退出登录",
     gatewayUnavailable: "网关暂时不可用。",
     gatewayUnavailableRetrying: "正在后台重试…",
+    gatewayRetry: "立即重试",
+    gatewayRetrying: "正在重试…",
     modelLoadFailed:
       "模型列表加载失败，模型选择和 Token 用量信息可能暂时不可用。",
     modelLoadRetry: "重试",
@@ -918,6 +938,8 @@ export const zhCN: Translations = {
     streamFailed: "对话暂时未能完成，请重试。",
     streamRetrying: "服务暂时繁忙，正在重试…",
     streamReplayGap: "部分实时更新已过期，已从持久化状态恢复对话。",
+    historyUnavailable:
+      "完整会话历史需要 runs:read 权限；当前运行中的消息仍可能显示。",
     outlineLabel: "对话章节",
     outlineAttachmentFallback: "图片或文件消息",
   },
@@ -929,6 +951,10 @@ export const zhCN: Translations = {
       `确定删除“${title}”吗？这将删除对话及其文件，此操作不可撤销。`,
     deleteFailed: "删除对话失败，请重试。",
     noActiveChats: "暂无近期会话",
+    readPermissionRequired:
+      "你没有查看会话的权限，请联系管理员开通 threads:read。",
+    writePermissionRequired:
+      "你没有修改会话的权限，请联系管理员开通 threads:write。",
     activeChats: "近期会话",
     archivedChats: "已归档",
     archiveChat: "归档",
@@ -1104,6 +1130,7 @@ export const zhCN: Translations = {
 
   subtasks: {
     subtask: "子任务",
+    historyUnavailable: "缺少 runs:read 权限，无法读取历史步骤。",
     executing: (count: number) =>
       `${count > 1 ? "并行" : ""}执行 ${count} 个子任务`,
     in_progress: "子任务运行中",

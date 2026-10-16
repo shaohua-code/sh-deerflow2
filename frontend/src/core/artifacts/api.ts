@@ -67,12 +67,18 @@ export async function updateArtifactContent({
 export async function downloadArtifactArchive({
   threadId,
   runId,
+  signal,
 }: {
   threadId: string;
   runId: string;
+  signal?: AbortSignal;
 }): Promise<ArtifactArchiveDownload> {
+  const requestInit: RequestInit = { method: "POST" };
+  if (signal) {
+    requestInit.signal = signal;
+  }
   const response = await fetch(urlOfArtifactArchive({ threadId, runId }), {
-    method: "POST",
+    ...requestInit,
   });
   if (!response.ok) {
     throw new ArtifactRequestError(
@@ -91,11 +97,17 @@ export async function downloadArtifactArchive({
 export async function getArtifactArchiveManifest({
   threadId,
   runId,
+  signal,
 }: {
   threadId: string;
   runId: string;
+  signal?: AbortSignal;
 }): Promise<ArtifactArchiveManifest> {
-  const response = await fetch(urlOfArtifactArchive({ threadId, runId }));
+  const requestInit = signal ? { signal } : undefined;
+  const response = await fetch(
+    urlOfArtifactArchive({ threadId, runId }),
+    requestInit,
+  );
   if (!response.ok) {
     throw new ArtifactRequestError(
       response.status,

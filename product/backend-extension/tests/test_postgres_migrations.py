@@ -96,11 +96,11 @@ async def test_postgres_migration_is_isolated_and_idempotent() -> None:
     try:
         deps = ExtensionRuntimeDeps(session_factory=session_factory)
         await store.start(deps)
-        # 第二次启动必须读取现有 fd_0007，而不是重建表或卡住 advisory lock。
+        # 第二次启动必须读取现有 fd_0008，而不是重建表或卡住 advisory lock。
         await store.start(deps)
-        await store.put_for_user(owner_id, "ci-smoke", {"migration": "fd_0007"})
+        await store.put_for_user(owner_id, "ci-smoke", {"migration": "fd_0008"})
         assert await store.list_for_user(owner_id) == [
-            {"key": "ci-smoke", "value": {"migration": "fd_0007"}}
+            {"key": "ci-smoke", "value": {"migration": "fd_0008"}}
         ]
 
         async with engine.connect() as connection:
@@ -123,7 +123,7 @@ async def test_postgres_migration_is_isolated_and_idempotent() -> None:
             "flowdesk_file_catalog_entries",
             "flowdesk_alembic_version",
         } <= product_tables
-        assert revision == "fd_0007"
+        assert revision == "fd_0008"
     finally:
         await store.stop()
         await engine.dispose()

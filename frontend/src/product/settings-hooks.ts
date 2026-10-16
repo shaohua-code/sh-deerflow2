@@ -105,9 +105,36 @@ export function useDeleteProductSetting() {
  */
 export function useProductDataJobs(offset = 0) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const userId = user?.id ?? null;
+  // 任务历史中的范围会随路由授权变化；用权限快照分区，防止撤权后复用旧列表。
+  const permissionSnapshot =
+    user?.permissions == null
+      ? "unresolved"
+      : JSON.stringify([...new Set(user.permissions)].sort());
+  const queryKey = [
+    ...PRODUCT_DATA_JOBS_QUERY_KEY,
+    userId,
+    permissionSnapshot,
+    offset,
+  ] as const;
+
+  useEffect(() => {
+    if (userId === null) return;
+    const staleFilter = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        query.queryKey[0] === PRODUCT_DATA_JOBS_QUERY_KEY[0] &&
+        query.queryKey[1] === PRODUCT_DATA_JOBS_QUERY_KEY[1] &&
+        query.queryKey[2] === userId &&
+        query.queryKey[3] !== permissionSnapshot,
+    };
+    // 旧分页既要停止在途读取，也要从内存缓存移除；Gateway 仍逐任务复核授权。
+    void queryClient.cancelQueries(staleFilter);
+    queryClient.removeQueries(staleFilter);
+  }, [permissionSnapshot, queryClient, userId]);
+
   return useQuery({
-    queryKey: [...PRODUCT_DATA_JOBS_QUERY_KEY, userId, offset],
+    queryKey,
     queryFn: ({ signal }) => fetchProductDataJobs(20, offset, signal),
     enabled: userId !== null,
     retry: false,

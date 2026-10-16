@@ -1,5 +1,9 @@
 # DeerFlow Frontend
 
+**2026-10-14 Central IAM B04 update:** This pass changed backend notification timeout handling and backend test prerequisites only; no frontend source or API contract changed. Backend lifecycle/extension-manager/API-pin focused regressions passed **126** with **40** uv-dependent skips. The latest second 104-file slice had **2,368 passed, 2 failed, 86 skipped** before the timeout fix; frontend typecheck, lint, build, and browser acceptance were not run. IAM database migration remains pending per the user-reported UI message.
+
+**2026-10-14 Central IAM B04 follow-up:** Only backend test harnesses changed in this pass; no frontend source or API contract changed. Backend shell/tool-gate tests passed **44** and skipped **13** for missing GNU make/`uv`. No frontend typecheck, lint, build, or browser acceptance was run; see the [project handoff](../docs/改造进度与后续计划.md).
+
 **2026-10-11 IAM pilot backend update:** No DeerFlow frontend source changed in this slice. Backend usage callbacks now persist terminal events in the fd_0028 SQL outbox and retry delivery; focused backend regressions passed 118 tests with one existing warning. The live IAM/Provider flow, deployment migration, and browser acceptance remain open, so quota enforcement stays disabled.
 
 Central IAM-protected console reports now require resource-aligned grants: stats needs run/thread/agent read, run history needs run/thread read, and usage needs run read. The Gateway also checks matching self data scopes and continues filtering rows by local user. This update changed the backend API contract only; the frontend source, build, and browser flow were not changed or revalidated. Configure IAM roles explicitly before enabling the console for users. Backend console route regressions passed 25/25.
@@ -155,6 +159,7 @@ src/
 
 - Uses pnpm workspaces (see `packageManager` in package.json)
 - Webpack is the default development bundler until the upstream Turbopack PostCSS worker leak is fixed in a stable Next.js release (#5132). Set `DEER_FLOW_DEV_BUNDLER=turbo` to opt in to Turbopack for local diagnosis, or `DEER_FLOW_DEV_BUNDLER=webpack` to select Webpack explicitly. Reconsider the default after the stable fix is verified on macOS arm64 and Linux.
+- The public homepage uses a small anonymous brand API client in the root layout. Keep it separate from the authenticated product API so opening `/` does not compile workspace API dependencies.
 - Environment validation can be skipped with `SKIP_ENV_VALIDATION=1` (useful for Docker)
 - Backend API URLs are optional; nginx proxy is used by default in development
 

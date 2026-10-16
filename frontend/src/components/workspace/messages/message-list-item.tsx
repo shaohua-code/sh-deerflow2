@@ -1,4 +1,5 @@
 import type { Message } from "@langchain/langgraph-sdk";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   CheckIcon,
   FileIcon,
@@ -11,6 +12,8 @@ import {
 import {
   memo,
   useCallback,
+  useEffect,
+  useId,
   useMemo,
   useState,
   type ImgHTMLAttributes,
@@ -60,6 +63,7 @@ import {
 } from "@/core/skills";
 import { useSkills } from "@/core/skills/hooks";
 import { SafeReasoningContent } from "@/core/streamdown/components";
+import { threadHistoryQueryKey } from "@/core/threads/hooks";
 import { pathOfThread } from "@/core/threads/utils";
 import { cn } from "@/lib/utils";
 
@@ -83,14 +87,33 @@ function FeedbackButtons({
   runId: string;
   initialFeedback: FeedbackData | null;
 }) {
+  const { user } = useAuth();
+  const { t } = useI18n();
+  const canWriteFeedback = hasPermission(user, PERMISSIONS.THREADS_WRITE);
+  const canDeleteFeedback = hasPermission(user, PERMISSIONS.THREADS_DELETE);
+  const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<FeedbackData | null>(
     initialFeedback,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const deletePermissionHintId = useId();
+
+  useEffect(() => {
+    // 历史请求刷新后用 Gateway 的持久化结果校准局部按钮状态。
+    setFeedback(initialFeedback);
+  }, [initialFeedback]);
 
   const handleClick = useCallback(
     async (rating: number) => {
-      if (isSubmitting) return;
+      // 前端权限状态用于隐藏不可用操作；Gateway 仍负责最终授权。
+      // 同时在事件回调里复核，避免权限更新与 React 重绘之间的短暂竞态。
+      if (
+        isSubmitting ||
+        !canWriteFeedback ||
+        (feedback?.rating === rating && !canDeleteFeedback)
+      ) {
+        return;
+      }
       setIsSubmitting(true);
       try {
         if (feedback?.rating === rating) {
@@ -100,43 +123,98 @@ function FeedbackButtons({
           const result = await upsertFeedback(threadId, runId, rating);
           setFeedback(result);
         }
+        // 让重新挂载或切换会话后仍从 Gateway 读到刚保存的评分。
+        void queryClient.invalidateQueries({
+          queryKey: threadHistoryQueryKey(threadId),
+        });
       } catch {
         // Revert on error — feedback state unchanged on catch
       } finally {
         setIsSubmitting(false);
       }
     },
-    [threadId, runId, feedback, isSubmitting],
+    [
+      threadId,
+      runId,
+      feedback,
+      isSubmitting,
+      canWriteFeedback,
+      canDeleteFeedback,
+      queryClient,
+    ],
   );
 
+  // 写权限被明确拒绝时不展示会话反馈写入控件；旧 Gateway 的未知快照
+  // 仍由 hasPermission 兼容，最终鉴权始终由对应 Gateway 路由完成。
+  if (!canWriteFeedback) return null;
+
+  const positiveSelected = feedback?.rating === 1;
+  const negativeSelected = feedback?.rating === -1;
+  const needsDeletePermissionHint =
+    !canDeleteFeedback && (positiveSelected || negativeSelected);
+
   return (
-    <div className="flex gap-1">
+    <div
+      className="flex items-center gap-1"
+      role="group"
+      aria-label={t.messageFeedback.groupLabel}
+      aria-describedby={
+        needsDeletePermissionHint ? deletePermissionHintId : undefined
+      }
+    >
       <button
         type="button"
+        aria-label={
+          positiveSelected
+            ? t.messageFeedback.removePositive
+            : t.messageFeedback.positive
+        }
+        aria-pressed={positiveSelected}
+        title={
+          positiveSelected && !canDeleteFeedback
+            ? t.messageFeedback.removePermissionRequired
+            : undefined
+        }
         className={cn(
-          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors",
-          feedback?.rating === 1 && "text-foreground",
+          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+          positiveSelected && "text-foreground",
         )}
         onClick={() => handleClick(1)}
-        disabled={isSubmitting}
+        disabled={isSubmitting || (positiveSelected && !canDeleteFeedback)}
       >
         <ThumbsUpIcon
-          className={cn("size-4", feedback?.rating === 1 && "fill-current")}
+          className={cn("size-4", positiveSelected && "fill-current")}
         />
       </button>
       <button
         type="button"
+        aria-label={
+          negativeSelected
+            ? t.messageFeedback.removeNegative
+            : t.messageFeedback.negative
+        }
+        aria-pressed={negativeSelected}
+        title={
+          negativeSelected && !canDeleteFeedback
+            ? t.messageFeedback.removePermissionRequired
+            : undefined
+        }
         className={cn(
-          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors",
-          feedback?.rating === -1 && "text-foreground",
+          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+          negativeSelected && "text-foreground",
         )}
         onClick={() => handleClick(-1)}
-        disabled={isSubmitting}
+        disabled={isSubmitting || (negativeSelected && !canDeleteFeedback)}
       >
         <ThumbsDownIcon
-          className={cn("size-4", feedback?.rating === -1 && "fill-current")}
+          className={cn("size-4", negativeSelected && "fill-current")}
         />
       </button>
+      {needsDeletePermissionHint && (
+        <span id={deletePermissionHintId} className="sr-only">
+          {t.messageFeedback.removePermissionRequired}
+        </span>
+      )}
     </div>
   );
 }

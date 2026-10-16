@@ -145,6 +145,16 @@ export const enUS: Translations = {
     separator: " ",
   },
 
+  messageFeedback: {
+    groupLabel: "Rate the assistant response",
+    positive: "Mark this response as helpful",
+    negative: "Mark this response as unhelpful",
+    removePositive: "Remove helpful feedback",
+    removeNegative: "Remove unhelpful feedback",
+    removePermissionRequired:
+      "You need threads:delete permission to remove saved feedback.",
+  },
+
   // Home
   home: {
     docs: "Docs",
@@ -369,6 +379,10 @@ export const enUS: Translations = {
     goalConflict:
       "A run is active in this conversation. Wait until it finishes before changing the goal.",
     goalTooLong: "Goal is too long. Keep it under {max} characters.",
+    goalReadPermissionRequired:
+      "You do not have permission to view this conversation's goal. Ask your administrator for threads:read.",
+    goalWritePermissionRequired:
+      "You do not have permission to change this conversation's goal. Ask your administrator for threads:write.",
     goalLengthCounter: "Goal length: {length}/{max} characters",
     compactSuccess:
       "Earlier context compacted. The full chat remains visible; future model calls will use the summary and recent messages.",
@@ -376,6 +390,8 @@ export const enUS: Translations = {
     compactConflict:
       "Context cannot be compacted right now. Wait for active work to finish, or ask your administrator whether compaction is enabled.",
     compactFailed: "Could not compact context. Please try again.",
+    compactPermissionRequired:
+      "You do not have permission to compact this conversation. Ask your administrator for threads:write.",
     suggestions: [
       {
         suggestion: "Write",
@@ -533,6 +549,8 @@ export const enUS: Translations = {
     contentMissing: "Content missing",
     previewUnsupported:
       "This file type can't be previewed in the browser. Download it to view it.",
+    documentPreviewDialogHint:
+      "Preview this project document. Large files may show only a preview; download to view the full file.",
     archivedDocumentsBanner:
       "This project is archived. Documents are read-only — upload, save to project, and trash are unavailable.",
     conversationFiles: "Conversation files",
@@ -541,6 +559,8 @@ export const enUS: Translations = {
       `Only the first ${count} files of this chat are shown.`,
     threadFilesBrowseInThread: "Browse all files in the chat",
     saveToProject: "Save to project",
+    saveToProjectDialogHint:
+      "Choose the name this conversation file will use on the project shelf.",
     saveToProjectFailed: "Failed to save file to project",
     savedToProject: (name) => `Saved "${name}" to the shelf`,
     shelfNameLabel: "Shelf name",
@@ -971,6 +991,8 @@ export const enUS: Translations = {
     logout: "Log out",
     gatewayUnavailable: "Gateway is temporarily unavailable.",
     gatewayUnavailableRetrying: "Retrying in the background…",
+    gatewayRetry: "Retry now",
+    gatewayRetrying: "Retrying…",
     modelLoadFailed:
       "Models couldn't be loaded. Model selection and token usage may be unavailable.",
     modelLoadRetry: "Retry",
@@ -987,6 +1009,8 @@ export const enUS: Translations = {
     streamRetrying: "The service is temporarily busy. Retrying…",
     streamReplayGap:
       "Some live updates expired. The conversation was restored from saved state.",
+    historyUnavailable:
+      "Full conversation history requires runs:read. Current live messages may still appear.",
     outlineLabel: "Conversation outline",
     outlineAttachmentFallback: "Image or file message",
   },
@@ -998,6 +1022,10 @@ export const enUS: Translations = {
       `Delete “${title}”? This will delete the conversation and its files. This action cannot be undone.`,
     deleteFailed: "Failed to delete chat. Please try again.",
     noActiveChats: "No recent chats",
+    readPermissionRequired:
+      "You do not have permission to view conversations. Ask your administrator for threads:read.",
+    writePermissionRequired:
+      "You do not have permission to update conversations. Ask your administrator for threads:write.",
     activeChats: "Recent chats",
     archivedChats: "Archived",
     archiveChat: "Archive chat",
@@ -1180,6 +1208,8 @@ export const enUS: Translations = {
 
   subtasks: {
     subtask: "Subtask",
+    historyUnavailable:
+      "Run history is unavailable without runs:read permission.",
     executing: (count: number) =>
       `Executing ${count === 1 ? "" : count + " "}subtask${count === 1 ? "" : "s in parallel"}`,
     in_progress: "Running subtask",

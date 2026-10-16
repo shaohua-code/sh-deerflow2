@@ -256,6 +256,7 @@ describe("product preference data-job DTO", () => {
         limit: 20,
         offset: 0,
         has_more: true,
+        next_offset: 1,
       }),
     ).toBe(true);
     expect(
@@ -265,6 +266,16 @@ describe("product preference data-job DTO", () => {
         limit: 20,
         offset: 0,
         has_more: "yes",
+      }),
+    ).toBe(false);
+    expect(
+      isProductDataJobPage({
+        api_version: 1,
+        jobs: [job],
+        limit: 20,
+        offset: 0,
+        has_more: true,
+        next_offset: -1,
       }),
     ).toBe(false);
   });

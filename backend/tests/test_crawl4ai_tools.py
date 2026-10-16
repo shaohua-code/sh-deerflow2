@@ -163,6 +163,15 @@ class TestCrawl4AiClient:
 class TestCrawl4AiTools:
     """Tests for the Crawl4AI tool functions."""
 
+    @pytest.fixture(autouse=True)
+    def allow_public_test_dns(self, monkeypatch):
+        # SSRF protection must be deterministic in offline tests. The
+        # production resolver is exercised by the URL safety unit tests.
+        monkeypatch.setattr(
+            "deerflow.community.url_safety.resolve_host_addresses",
+            lambda _hostname: [ipaddress.ip_address("93.184.216.34")],
+        )
+
     @patch("deerflow.community.crawl4ai.tools._build_client")
     async def test_web_fetch_tool_success(self, mock_build):
         from deerflow.community.crawl4ai import tools

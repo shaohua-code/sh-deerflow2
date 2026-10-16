@@ -6,6 +6,7 @@ import { MCPConfigRequestError } from "@/core/mcp/api";
 
 const mcpMockState = rs.hoisted(() => ({
   permissions: null as string[] | null,
+  configReadEnabled: true,
   isPending: false,
   isLoading: false,
   error: null as Error | null,
@@ -90,11 +91,14 @@ rs.mock("@/core/auth/AuthProvider", () => ({
 }));
 
 rs.mock("@/core/mcp/hooks", () => ({
-  useMCPConfig: () => ({
-    config: { mcp_servers: mcpMockState.servers },
-    isLoading: mcpMockState.isLoading,
-    error: mcpMockState.error,
-  }),
+  useMCPConfig: (enabled = true) => {
+    mcpMockState.configReadEnabled = enabled;
+    return {
+      config: { mcp_servers: mcpMockState.servers },
+      isLoading: mcpMockState.isLoading,
+      error: mcpMockState.error,
+    };
+  },
   useEnableMCPServer: () => ({
     isPending: mcpMockState.isPending,
     mutate: mcpMockState.mutate,
@@ -144,6 +148,7 @@ function definitionTextbox(): HTMLTextAreaElement {
 
 afterEach(() => {
   mcpMockState.permissions = null;
+  mcpMockState.configReadEnabled = true;
   mcpMockState.isPending = false;
   mcpMockState.isLoading = false;
   mcpMockState.error = null;
@@ -155,34 +160,15 @@ afterEach(() => {
 });
 
 describe("MCPPluginManager MCP switches", () => {
-  it("disables MCP writes after an explicit mcp:admin denial", () => {
+  it("does not read or display cached MCP config after mcp:admin denial", () => {
     mcpMockState.permissions = [];
     twoServers();
     render(<MCPPluginManager />);
 
-    expect(screen.getByRole("status").textContent).toContain("Admin required");
-    expect(
-      (screen.getByRole("button", { name: "Add server" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
-      (
-        screen.getByRole("switch", {
-          name: "Enabled github",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByRole("button", { name: "Edit github" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Delete github",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+    expect(mcpMockState.configReadEnabled).toBe(false);
+    expect(screen.getByRole("alert").textContent).toContain("Admin required");
+    expect(screen.queryByRole("switch", { name: "Enabled github" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add server" })).toBeNull();
   });
 
   it.each(["loading", "error"])(

@@ -20,12 +20,14 @@ PREVIOUS = "0026_iam_oidc_token_vault"
 LEGACY_STAMP = "0024_project_documents"
 
 
-async def test_repair_revision_is_the_single_head_after_product_migrations():
+async def test_repair_revision_remains_in_the_single_head_chain():
     script = ScriptDirectory(str(_MIGRATIONS_DIR))
+    heads = script.get_heads()
 
-    assert script.get_heads() == [REVISION]
+    assert len(heads) == 1
     assert script.get_revision(REVISION).down_revision == PREVIOUS
-    assert _get_head_revision() == REVISION
+    assert REVISION in {revision.revision for revision in script.walk_revisions()}
+    assert _get_head_revision() == heads[0]
 
 
 async def test_upgrade_repairs_run_change_schema_skipped_by_existing_stamp(tmp_path):

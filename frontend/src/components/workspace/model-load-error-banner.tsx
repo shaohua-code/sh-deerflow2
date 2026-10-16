@@ -19,7 +19,7 @@ export function ModelLoadErrorBanner({
   gatewayUnavailable = false,
 }: ModelLoadErrorBannerProps) {
   const { t } = useI18n();
-  const { user } = useAuth();
+  const { user, authRefreshUnavailable } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
   // Observe the shared query without starting it. Model consumers remain in
   // charge of loading; this single observer only centralizes their feedback.
@@ -50,7 +50,7 @@ export function ModelLoadErrorBanner({
   if (
     (!visibleError && !isRetrying) ||
     visibleError instanceof UnauthorizedError ||
-    shouldShowOfflineBanner(user, gatewayUnavailable)
+    shouldShowOfflineBanner(user, gatewayUnavailable, authRefreshUnavailable)
   ) {
     return null;
   }

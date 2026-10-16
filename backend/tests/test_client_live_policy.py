@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 LIVE_TEST_PATH = BACKEND_ROOT / "tests" / "test_client_live.py"
 LIVE_OPT_IN = "DEER_FLOW_RUN_LIVE_TESTS"
+requires_make = pytest.mark.skipif(shutil.which("make") is None, reason="GNU make is required to inspect Makefile targets")
 REPRESENTATIVE_LIVE_NODE_IDS = (
     "::TestLiveBasicChat::test_chat_returns_nonempty_string",
     "::TestLiveStreaming::test_stream_yields_messages_tuple_and_end",
@@ -50,6 +52,13 @@ def _collect_live_tests(
         ),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     }
+    if os.name == "nt":
+        # A deliberately minimal subprocess environment still needs Windows' DLL root.
+        # Without it, nested Python can fail Winsock initialization during collection.
+        for variable in ("SystemRoot", "WINDIR"):
+            value = os.environ.get(variable)
+            if value:
+                env[variable] = value
     if opt_in:
         env[LIVE_OPT_IN] = "1"
     if ci:
@@ -73,6 +82,8 @@ def _collect_live_tests(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -124,6 +135,7 @@ def test_opt_in_without_config_reports_missing_config(tmp_path: Path) -> None:
     _assert_collection_skipped(result, "No config.yaml found")
 
 
+@requires_make
 def test_make_targets_keep_default_tests_offline_and_support_live_opt_in() -> None:
     default_command = _dry_run_make_target("test")
     live_command = _dry_run_make_target("test-live")
@@ -165,6 +177,7 @@ def test_default_ci_workflow_does_not_opt_in_to_live_tests() -> None:
     assert LIVE_OPT_IN not in workflow
 
 
+@requires_make
 def test_ci_unit_test_workflow_runs_duration_aware_shards() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "backend-unit-tests.yml").read_text(encoding="utf-8")
 
@@ -194,6 +207,7 @@ def test_ci_unit_test_workflow_runs_duration_aware_shards() -> None:
     assert LIVE_OPT_IN not in full_command
 
 
+@requires_make
 def test_duration_baseline_target_replaces_stale_entries() -> None:
     command = _dry_run_make_target("test-shard-durations")
 
@@ -202,6 +216,7 @@ def test_duration_baseline_target_replaces_stale_entries() -> None:
     assert "--durations-path=.test_durations" in command
 
 
+@requires_make
 def test_blocking_io_ci_workflow_owns_dedicated_suite() -> None:
     command = _dry_run_make_target("test-blocking-io")
     workflow = (REPO_ROOT / ".github" / "workflows" / "backend-blocking-io-tests.yml").read_text(encoding="utf-8")

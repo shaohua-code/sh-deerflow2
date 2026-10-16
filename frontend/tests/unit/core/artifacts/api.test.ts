@@ -86,6 +86,24 @@ describe("downloadArtifactArchive", () => {
     expect(result.filename).toBe("artifacts-run-1.zip");
     expect(await result.blob.text()).toBe("zip");
   });
+
+  it("forwards an abort signal to the archive download", async () => {
+    const controller = new AbortController();
+    const fetchMock = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Blob(["zip"])));
+
+    await downloadArtifactArchive({
+      threadId: "thread-1",
+      runId: "run-1",
+      signal: controller.signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/threads/thread-1/runs/run-1/artifacts/archive",
+      expect.objectContaining({ method: "POST", signal: controller.signal }),
+    );
+  });
 });
 
 describe("getArtifactArchiveManifest", () => {
@@ -106,5 +124,25 @@ describe("getArtifactArchiveManifest", () => {
       expect.objectContaining({ credentials: "include" }),
     );
     expect(result).toEqual({ fileCount: 3 });
+  });
+
+  it("forwards an abort signal to the archive manifest request", async () => {
+    const controller = new AbortController();
+    const fetchMock = rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ file_count: 2 }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await getArtifactArchiveManifest({
+      threadId: "thread-1",
+      runId: "run-1",
+      signal: controller.signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/threads/thread-1/runs/run-1/artifacts/archive",
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 });

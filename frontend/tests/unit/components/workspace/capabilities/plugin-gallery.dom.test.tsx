@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 const mocks = rs.hoisted(() => ({
   refetch: rs.fn(),
   statusResult: null as unknown,
+  statusScope: undefined as string | undefined,
 }));
 
 rs.mock("next/navigation", () => ({
@@ -27,7 +28,10 @@ rs.mock("next/dynamic", () => ({
     },
 }));
 rs.mock("@/core/integrations/lark", () => ({
-  useLarkIntegrationStatus: () => mocks.statusResult,
+  useLarkIntegrationStatus: (_enabled = true, cacheScope?: string) => {
+    mocks.statusScope = cacheScope;
+    return mocks.statusResult;
+  },
 }));
 rs.mock("@/components/workspace/capabilities/mcp-plugin-manager", () => ({
   MCPPluginManager: ({
@@ -45,9 +49,31 @@ rs.mock("@/components/workspace/capabilities/mcp-plugin-manager", () => ({
 }));
 
 import { PluginGallery } from "@/components/workspace/capabilities/plugin-gallery";
+import { AuthProvider } from "@/core/auth/AuthProvider";
+import type { User } from "@/core/auth/types";
 import { I18nProvider } from "@/core/i18n/context";
 
+const user = {
+  id: "user-1",
+  email: "admin@example.test",
+  system_role: "admin",
+  needs_setup: false,
+  oauth_provider: null,
+  permissions: null,
+} as User;
+
+function renderGallery(locale: "en-US" | "zh-CN") {
+  return render(
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider initialUser={user}>
+        <PluginGallery query="" />
+      </AuthProvider>
+    </I18nProvider>,
+  );
+}
+
 beforeEach(() => {
+  mocks.statusScope = undefined;
   mocks.statusResult = {
     data: undefined,
     error: new Error("Gateway unavailable"),
@@ -71,12 +97,9 @@ describe("PluginGallery integration status errors", () => {
     (locale, status, retry) => {
       // 模拟真实请求中的语言持久化 Cookie，避免复用其他测试留下的默认语言。
       document.cookie = `locale=${locale}; path=/`;
-      render(
-        <I18nProvider initialLocale={locale}>
-          <PluginGallery query="" />
-        </I18nProvider>,
-      );
+      renderGallery(locale);
 
+      expect(mocks.statusScope).toBe("user-1");
       expect(screen.getByText(status)).toBeDefined();
       fireEvent.click(screen.getByRole("button", { name: retry }));
       expect(mocks.refetch).toHaveBeenCalledTimes(1);
@@ -95,11 +118,7 @@ describe("PluginGallery integration status errors", () => {
       refetch: mocks.refetch,
     };
     document.cookie = "locale=en-US; path=/";
-    render(
-      <I18nProvider initialLocale="en-US">
-        <PluginGallery query="" />
-      </I18nProvider>,
-    );
+    renderGallery("en-US");
 
     fireEvent.click(screen.getByRole("button", { name: "Install" }));
     fireEvent.click(

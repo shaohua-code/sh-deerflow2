@@ -1,8 +1,14 @@
 # DeerFlow 后端
 
+**2026-10-14 Central IAM B04 更新：** 后 104 文件离线切片在最后一次通知超时修复前结果为 **2,368 passed、2 failed、86 skipped、4 warnings**。通知预算现用 `asyncio.timeout().expired()` 判别宿主超时并截断共享 deadline；lifecycle、扩展管理器和 API pin 定向回归 **126 passed、40 skipped**，Ruff check/format 通过。venv 中 `deerflow-extension-api` metadata 仍为 **0.2.16**，源码/lock 为 **0.2.18**；最终修复后的整片尚未重跑。用户报告 IAM 页面显示数据库待迁移；本轮未迁移数据库或改配额。
+
+**2026-10-14 Central IAM B04 补充：** `test_dev_entrypoint.py` 改为把 sync block 写入临时 POSIX 文件后交给 Git Bash 执行，避免 Windows `sh -c` 长参数被重解释；缺少 GNU make/`uv` 时，依赖这些工具的契约用例明确 skip。三个定向模块 **44 passed、13 skipped**；Ruff 与 `git diff --check` 通过。后 104 文件切片及完整套件尚未重跑；未改生产运行时和 IAM 数据库。
+
+**2026-10-14 Central IAM B04：** 前 104 文件离线切片 **3,099 passed、67 skipped、3 deselected、0 failed**；后 104 文件原始结果 **2,339 passed、82 failed、35 skipped**，失败未全部归因且定向修复后未重跑整片。DeltaChannel **35 passed**、detector/deploy 两模块 **56 passed**、扩展路径单测 **1 passed**；4 个相关 Python 文件 Ruff check/format 通过。Windows timeout/live-policy fixture 和指导预算修复也已验证。切片不是全量验收；最近完整快照仍 17,062/142/349/3/0；未触碰生产运行时、目标数据库或 quota enforcement。
+
 **2026-10-12 Central IAM Provider 路径审计：** 对仓内内置生产模型调用做静态审计：共享工厂模型、Gateway 单次调用、DeerMem 直连 `init_chat_model()`（Gateway hook）均在 LangChain callback 生命周期内；自定义 Codex Responses 模型也通过共享工厂创建并返回 usage metadata。外部扩展动态 Provider 未穷尽。当前 `request_id` 是每个 LangChain invocation 的幂等标识，Codex 内部 HTTP 重试尚未拆分成多个计量 attempt，Provider 实际计费语义待确认。本轮仅只读静态审计，未运行测试或真实 IAM/Provider 请求。
 
-**2026-10-13 Central IAM B04 聚焦核验：** 最近完整 Windows Python 3.12 离线快照仍是修正前的 17,004 passed、186 failed、349 skipped、3 deselected、5 errors。独立定向结果：migration/bootstrap 五模块 62；Studio 6；Gateway 启动/checkpoint/regenerate 45；FastCRW/thread routes 142；PAT auth/repository/vault 63；extension task runtime 15；context compaction + Gateway services 212 passed。旧库迁移测试现在只创建 `_BASELINE_TABLE_NAMES`；相关 Ruff check/format 通过。本轮仅改测试夹具/文档，未改生产 runtime。全量未重跑，`uv`、`WinError 10106` 和其余失败仍待处理。未运行目标 migration、真实 IAM/Provider 或 quota enforcement。
+**2026-10-13 Central IAM B04 后续复核：** 最近完整 Windows Python 3.12 离线快照为 17,062 passed、142 failed、349 skipped、3 deselected、0 errors（82 warnings，44:15），早于最后三项测试夹具修正。Agent API、Crawl4AI SSRF 与 Windows MCP URI 三个聚焦模块 **171 passed、1 skipped**，3 个 Python 文件 Ruff check/format 通过；仅更新隔离测试身份、固定公网 DNS 与盘符无关断言，不改生产逻辑。全量未在本次修正后重跑。`uv`/`make` 缺失、Windows `WinError 10106`、venv extension API metadata 落后及余项仍待分类；未改目标数据库、真实 IAM/Provider 或 quota enforcement。
 
 **2026-10-12 Central IAM 记忆模型用量：** DeerMem timer 后台模型调用现在按次从当前用户及 OIDC vault 会话创建 usage callback，绑定服务端模型档案，并在 LangChain 终态结果后关闭。启用计量但 admission 不可用时在 Provider 外呼前失败关闭；队列不含凭证/capability。Windows Python 3.12 隔离环境下两组现有回归 20/20、Harness boundary 1/1 通过，6 个变更 Python 文件 Ruff check/format 通过；全量及真实 IAM/Provider 验证未运行。
 

@@ -1,4 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
 
 import {
   completeLarkAuthorization,
@@ -10,24 +16,69 @@ import {
   startLarkConfiguration,
 } from "./api";
 
-export const larkIntegrationQueryKey = ["integrations", "lark"] as const;
+export const larkIntegrationQueryKey = (cacheScope?: string) =>
+  ["integrations", "lark", cacheScope] as const;
 
-export function useLarkIntegrationStatus(enabled = true) {
-  return useQuery({
-    queryKey: larkIntegrationQueryKey,
+export function useLarkIntegrationStatus(
+  enabled = true,
+  cacheScope?: string,
+): UseQueryResult<
+  Awaited<ReturnType<typeof loadLarkIntegrationStatus>>,
+  Error
+> {
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => larkIntegrationQueryKey(cacheScope),
+    [cacheScope],
+  );
+
+  useEffect(() => {
+    if (enabled) return;
+
+    // 用户失去 integrations:read 后，停止请求并清除其状态快照。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [enabled, queryClient, queryKey]);
+
+  const query = useQuery({
+    queryKey,
     queryFn: ({ signal }) => loadLarkIntegrationStatus(signal),
     enabled,
   });
+
+  return enabled
+    ? query
+    : ({
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+        isLoadingError: false,
+        isRefetchError: false,
+        isSuccess: false,
+        isPending: true,
+        isPlaceholderData: false,
+        status: "pending",
+        fetchStatus: "idle",
+      } as UseQueryResult<
+        Awaited<ReturnType<typeof loadLarkIntegrationStatus>>,
+        Error
+      >);
 }
 
 export function useInstallLarkIntegration() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: installLarkIntegration,
-    onSuccess: async (result) => {
-      queryClient.setQueryData(larkIntegrationQueryKey, result.status);
+    mutationFn: (_variables: { cacheScope: string | undefined }) =>
+      installLarkIntegration(),
+    onSuccess: async (_result, variables) => {
+      const queryKey = larkIntegrationQueryKey(variables.cacheScope);
+      // Refetch the initiating account only; a late install response must not
+      // repopulate a status cache after that account lost read access.
       await queryClient.invalidateQueries({
-        queryKey: larkIntegrationQueryKey,
+        queryKey,
       });
       await queryClient.invalidateQueries({ queryKey: ["skills"] });
     },

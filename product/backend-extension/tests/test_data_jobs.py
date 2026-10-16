@@ -7,14 +7,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from deerflow_extension_api import ExtensionRuntimeDeps
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
 from flow_desk_product_extension.settings import (
     DataJobIdempotencyConflict,
     DataJobInProgressConflict,
     DataJobRateLimitError,
     ProductSettingsStore,
 )
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 
 def test_data_job_is_durable_owner_scoped_and_idempotent(tmp_path) -> None:
@@ -60,6 +61,93 @@ def test_data_job_is_durable_owner_scoped_and_idempotent(tmp_path) -> None:
         assert persisted is not None
         assert persisted["status"] == "queued"
         assert persisted["scope"] == ["files", "threads"]
+        await store.stop()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_data_job_authorization_keys_filter_owner_pages_before_offset(tmp_path) -> None:
+    database_path = tmp_path / "flow-desk-data-job-authorization-index.sqlite"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        poolclass=NullPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    store = ProductSettingsStore()
+
+    async def scenario() -> None:
+        await store.start(ExtensionRuntimeDeps(session_factory=session_factory))
+
+        async def finish(job_id: str) -> None:
+            async with engine.begin() as connection:
+                await connection.exec_driver_sql(
+                    "UPDATE flowdesk_data_jobs SET status = 'completed' WHERE job_id = ?",
+                    (job_id,),
+                )
+
+        visible_first = await store.create_data_job(
+            owner_user_id="user-a",
+            kind="export",
+            idempotency_key="visible-preferences-job-1",
+            scope=["preferences"],
+            now=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        await finish(visible_first["job_id"])
+        hidden_same_owner = await store.create_data_job(
+            owner_user_id="user-a",
+            kind="export",
+            idempotency_key="hidden-threads-job",
+            scope=["threads"],
+            now=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        await finish(hidden_same_owner["job_id"])
+        visible_second = await store.create_data_job(
+            owner_user_id="user-a",
+            kind="export",
+            idempotency_key="visible-preferences-job-2",
+            scope=["preferences"],
+            now=datetime(2026, 1, 3, tzinfo=UTC),
+        )
+        await finish(visible_second["job_id"])
+        other_owner = await store.create_data_job(
+            owner_user_id="user-b",
+            kind="export",
+            idempotency_key="other-owner-thread-job",
+            scope=["threads"],
+        )
+
+        assert await store.list_data_job_authorization_keys("user-a") == [
+            "export:preferences",
+            "export:threads",
+        ]
+        assert await store.list_data_job_authorization_keys("user-b") == ["export:threads"]
+        first_page = await store.list_data_jobs(
+            "user-a",
+            limit=1,
+            offset=0,
+            authorization_keys=["export:preferences"],
+        )
+        second_page = await store.list_data_jobs(
+            "user-a",
+            limit=1,
+            offset=1,
+            authorization_keys=["export:preferences"],
+        )
+        assert {job["job_id"] for job in first_page + second_page} == {
+            visible_first["job_id"],
+            visible_second["job_id"],
+        }
+        thread_page = await store.list_data_jobs(
+            "user-a",
+            limit=2,
+            offset=0,
+            authorization_keys=["export:threads"],
+        )
+        assert [job["job_id"] for job in thread_page] == [hidden_same_owner["job_id"]]
+        assert other_owner["job_id"] not in {job["job_id"] for job in first_page}
         await store.stop()
 
     try:

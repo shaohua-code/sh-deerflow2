@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -133,6 +134,7 @@ def test_newer_user_version_no_warning(caplog):
 
 
 @pytest.mark.skipif(SCRIPT_BASH is None, reason="repo shell-script tests need Git Bash on Windows")
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required to run the config-upgrade script")
 def test_version_26_config_upgrades_to_checkpoint_channel_mode(tmp_path, caplog):
     """A v26 user config must be flagged outdated and merge the new persisted field.
 

@@ -90,6 +90,25 @@ describe("fetchSubtaskSteps", () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
+  test("forwards the abort signal to every paged event request", async () => {
+    mockedFetch
+      .mockResolvedValueOnce(
+        jsonResponse(200, [stepEvent(10, 0, "web_search")]),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, []));
+    const controller = new AbortController();
+
+    await fetchSubtaskSteps("t", "r", "A", 1, controller.signal);
+
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    expect(mockedFetch.mock.calls[0]![1]).toEqual({
+      signal: controller.signal,
+    });
+    expect(mockedFetch.mock.calls[1]![1]).toEqual({
+      signal: controller.signal,
+    });
+  });
+
   test("throws when a page request fails", async () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(500, { detail: "boom" }));
 

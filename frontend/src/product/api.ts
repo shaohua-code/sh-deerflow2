@@ -1,6 +1,12 @@
 import { fetch as fetchWithAuth } from "@/core/api/fetcher";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 
+export {
+  fetchPublicProductBrand,
+  isPublicProductBrand,
+} from "./public-brand-api";
+export type { PublicProductBrand } from "./public-brand-api";
+
 /**
  * `/api/product/v1` DTO。它与 DeerFlow 的 LangGraph API 分开版本化，产品页面
  * 可以逐步演进，同时继续复用原有的登录 Cookie、CSRF 与 nginx 同源代理。
@@ -24,63 +30,6 @@ export type ProductBootstrap = {
   };
   user: { id: string; is_admin: boolean };
 };
-
-/** 未登录的公开页面只读取产品名；该 DTO 不包含 feature flags 或用户身份。 */
-export type PublicProductBrand = {
-  api_version: 1;
-  product: { name: string; name_zh: string };
-};
-
-/**
- * 读取公开页面品牌名时不携带 Cookie，也不走会把 401 重定向到登录页的鉴权 fetcher。
- * 静态演示没有 Gateway，直接由品牌源码回退即可。
- */
-export async function fetchPublicProductBrand(
-  signal?: AbortSignal,
-): Promise<PublicProductBrand> {
-  if (isStaticWebsiteOnly()) {
-    throw new Error("Public product brand is unavailable in static demo mode");
-  }
-  const response = await globalThis.fetch("/api/product/v1/public-brand", {
-    credentials: "omit",
-    redirect: "error",
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Unable to load public product brand (${response.status})`);
-  }
-  const payload: unknown = await response.json();
-  if (!isPublicProductBrand(payload)) {
-    throw new Error(
-      "The public product-brand API returned an unsupported response",
-    );
-  }
-  return payload;
-}
-
-export function isPublicProductBrand(
-  payload: unknown,
-): payload is PublicProductBrand {
-  if (!isProductApiRecord(payload)) return false;
-  const product = payload.product;
-  return (
-    Object.keys(payload).length === 2 &&
-    Object.hasOwn(payload, "api_version") &&
-    Object.hasOwn(payload, "product") &&
-    payload.api_version === 1 &&
-    isProductApiRecord(product) &&
-    Object.keys(product).length === 2 &&
-    Object.hasOwn(product, "name") &&
-    Object.hasOwn(product, "name_zh") &&
-    typeof product.name === "string" &&
-    typeof product.name_zh === "string" &&
-    product.name.trim().length > 0 &&
-    product.name_zh.trim().length > 0 &&
-    [...product.name].length <= 80 &&
-    [...product.name_zh].length <= 80
-  );
-}
 
 /**
  * 产品用户偏好只承载 JSON 数据，不用于保存 provider 密钥等凭据。
@@ -150,6 +99,8 @@ export type ProductDataJobPage = {
   offset: number;
   /** 旧版 v1 Gateway 升级期间可能缺少此字段；前端会按页长兼容回退。 */
   has_more?: boolean;
+  /** 新版 Gateway 提供可见任务后的真实 offset；滚动升级时跨过被过滤的 NULL 授权行。 */
+  next_offset?: number | null;
 };
 
 export type ProductDataExportScope =
@@ -972,7 +923,10 @@ export function isProductDataJobPage(
     (page.offset ?? -1) >= 0 &&
     Array.isArray(page.jobs) &&
     page.jobs.every(isProductDataJob) &&
-    (page.has_more === undefined || typeof page.has_more === "boolean")
+    (page.has_more === undefined || typeof page.has_more === "boolean") &&
+    (page.next_offset === undefined ||
+      page.next_offset === null ||
+      (Number.isInteger(page.next_offset) && page.next_offset >= 0))
   );
 }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -12,11 +13,28 @@ import pytest
 from support.shell import find_script_bash
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "scripts" / "docker.sh"
 BASH_EXECUTABLE = find_script_bash()
 
 if BASH_EXECUTABLE is None:
     pytestmark = pytest.mark.skip(reason="Git Bash is required for docker.sh detection tests")
+
+
+def _shell_quote(path: Path) -> str:
+    """Quote a repository path in the Git Bash namespace on Windows."""
+    value = str(path)
+    if os.name == "nt" and BASH_EXECUTABLE is not None:
+        converted = subprocess.run(
+            [BASH_EXECUTABLE, "-c", 'cygpath -u "$1"', "cygpath", value],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        value = converted.stdout.strip()
+    return shlex.quote(value)
+
+
+SCRIPT_PATH = _shell_quote(REPO_ROOT / "scripts" / "docker.sh")
 
 
 def _detect_mode_with_config(config_content: str) -> str:
@@ -25,7 +43,7 @@ def _detect_mode_with_config(config_content: str) -> str:
         tmp_root = Path(tmpdir)
         (tmp_root / "config.yaml").write_text(config_content, encoding="utf-8")
 
-        command = f"source '{SCRIPT_PATH}' && PROJECT_ROOT='{tmp_root}' && detect_sandbox_mode"
+        command = f"source {SCRIPT_PATH} && PROJECT_ROOT={_shell_quote(tmp_root)} && detect_sandbox_mode"
 
         output = subprocess.check_output(
             [BASH_EXECUTABLE, "-lc", command],
@@ -39,7 +57,7 @@ def _detect_mode_with_config(config_content: str) -> str:
 def test_detect_mode_defaults_to_local_when_config_missing():
     """No config file should default to local mode."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        command = f"source '{SCRIPT_PATH}' && PROJECT_ROOT='{tmpdir}' && detect_sandbox_mode"
+        command = f"source {SCRIPT_PATH} && PROJECT_ROOT={_shell_quote(Path(tmpdir))} && detect_sandbox_mode"
         output = subprocess.check_output(
             [BASH_EXECUTABLE, "-lc", command],
             text=True,
@@ -121,9 +139,9 @@ def _run_docker_sh(tmp_root: Path, body: str) -> None:
     path still resolves; only PROJECT_ROOT / DOCKER_DIR are redirected.
     """
     command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 require_compose_version() {{ :; }}
 {body}
 """
@@ -178,8 +196,8 @@ def test_ensure_env_files_copies_from_examples():
         _seed_env_examples(tmp_root)
 
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
 ensure_env_files
 """
         subprocess.check_call([BASH_EXECUTABLE, "-lc", command])
@@ -200,8 +218,8 @@ def test_ensure_env_files_leaves_existing_env_untouched():
         (frontend / ".env").write_text("KEEP=frontend\n", encoding="utf-8")
 
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
 ensure_env_files
 """
         subprocess.check_call([BASH_EXECUTABLE, "-lc", command])
@@ -226,7 +244,7 @@ def test_require_compose_version_enforces_minimum(reported_version, expected_ret
     # Stub both binaries so an empty plugin probe cannot fall through to the
     # real hyphenated docker-compose installed on the developer machine.
     command = f"""
-source '{SCRIPT_PATH}'
+source {SCRIPT_PATH}
 docker() {{ echo '{reported_version}'; }}
 docker-compose() {{ echo '{reported_version}'; }}
 require_compose_version
@@ -256,9 +274,9 @@ def test_require_compose_version_falls_back_to_hyphenated_binary():
         marker = tmp_root / "hyphenated_invoke.txt"
 
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 docker() {{
   if [ "$1" = compose ]; then
     echo "docker: unknown command" >&2
@@ -272,7 +290,7 @@ docker-compose() {{
     return 0
   fi
   # Real wrapper ops (down/logs/...) must hit this binary, not `docker compose`.
-  printf '%s\n' "$*" > '{marker}'
+  printf '%s\n' "$*" > {_shell_quote(marker)}
 }}
 unset DEER_FLOW_ROOT
 stop
@@ -292,7 +310,7 @@ stop
 def test_require_compose_version_rejects_old_hyphenated_binary():
     """An old docker-compose binary must still fail the floor check."""
     command = f"""
-source '{SCRIPT_PATH}'
+source {SCRIPT_PATH}
 docker() {{
   if [ "$1" = compose ]; then
     return 1
@@ -324,9 +342,9 @@ def test_aio_dood_socket_preflight_allows_windows_when_docker_reachable():
             encoding="utf-8",
         )
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 require_compose_version() {{ :; }}
 uname() {{ echo 'MINGW64_NT-10.0'; }}
 docker() {{
@@ -361,9 +379,9 @@ def test_aio_dood_socket_preflight_rejects_missing_socket_on_posix():
             encoding="utf-8",
         )
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 require_compose_version() {{ :; }}
 uname() {{ echo 'Linux'; }}
 DEER_FLOW_DOCKER_SOCKET='/nonexistent/docker.sock'
@@ -392,9 +410,9 @@ def test_aio_dood_socket_preflight_rejects_missing_custom_socket_on_windows():
             encoding="utf-8",
         )
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 require_compose_version() {{ :; }}
 uname() {{ echo 'MINGW64_NT-10.0'; }}
 docker() {{
@@ -433,9 +451,9 @@ def test_aio_dood_socket_preflight_rejects_windows_when_docker_unreachable():
             encoding="utf-8",
         )
         command = f"""
-source '{SCRIPT_PATH}'
-PROJECT_ROOT='{tmp_root}'
-DOCKER_DIR='{tmp_root}'
+source {SCRIPT_PATH}
+PROJECT_ROOT={_shell_quote(tmp_root)}
+DOCKER_DIR={_shell_quote(tmp_root)}
 require_compose_version() {{ :; }}
 uname() {{ echo 'MINGW64_NT-10.0'; }}
 docker() {{

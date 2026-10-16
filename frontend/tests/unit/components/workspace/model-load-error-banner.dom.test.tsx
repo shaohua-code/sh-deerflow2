@@ -38,12 +38,12 @@ import { UnauthorizedError } from "@/core/api/errors";
 import { useAuth } from "@/core/auth/AuthProvider";
 import type { User } from "@/core/auth/types";
 import { loadModels } from "@/core/models/api";
-import { MODELS_QUERY_KEY, useModels } from "@/core/models/hooks";
+import { modelsQueryKey, useModels } from "@/core/models/hooks";
 import type { ModelsResponse } from "@/core/models/types";
 
 const mockedLoadModels = rs.mocked(loadModels);
 const mockedUseAuth = rs.mocked(useAuth);
-const fakeUser = {} as User;
+const fakeUser = { id: "user-a" } as User;
 
 function createAuthState(user: User | null): ReturnType<typeof useAuth> {
   return {
@@ -53,6 +53,7 @@ function createAuthState(user: User | null): ReturnType<typeof useAuth> {
     logout: rs.fn(),
     refreshUser: rs.fn(),
     applyUser: rs.fn(),
+    authRefreshUnavailable: false,
   };
 }
 
@@ -126,7 +127,7 @@ describe("ModelLoadErrorBanner", () => {
       ],
       token_usage: { enabled: true },
     };
-    queryClient.setQueryData(MODELS_QUERY_KEY, cached, {
+    queryClient.setQueryData(modelsQueryKey(fakeUser.id), cached, {
       updatedAt: Date.now() - 10 * 60 * 1000,
     });
     mockedLoadModels.mockResolvedValue(refreshed);
@@ -138,6 +139,73 @@ describe("ModelLoadErrorBanner", () => {
     );
     expect(result.current.tokenUsageEnabled).toBe(true);
     expect(mockedLoadModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates model catalogs and cancels an old owner's request on account switch", async () => {
+    const { queryClient, QueryWrapper } = createWrapper();
+    const firstOwnerResponse = createDeferred<ModelsResponse>();
+    const secondOwnerResponse = createDeferred<ModelsResponse>();
+    const firstOwner = { id: "user-a" } as User;
+    const secondOwner = { id: "user-b" } as User;
+    const signals: AbortSignal[] = [];
+    mockedLoadModels.mockImplementation((signal) => {
+      if (signal) signals.push(signal);
+      return signals.length === 1
+        ? firstOwnerResponse.promise
+        : secondOwnerResponse.promise;
+    });
+    mockedUseAuth.mockReturnValue(createAuthState(firstOwner));
+
+    const { result, rerender } = renderHook(() => useModels(), {
+      wrapper: QueryWrapper,
+    });
+    await waitFor(() => expect(mockedLoadModels).toHaveBeenCalledTimes(1));
+
+    mockedUseAuth.mockReturnValue(createAuthState(secondOwner));
+    rerender();
+
+    await waitFor(() => expect(mockedLoadModels).toHaveBeenCalledTimes(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(result.current.models).toEqual([]);
+
+    firstOwnerResponse.resolve({
+      models: [
+        {
+          id: "private-model-a",
+          name: "private-model-a",
+          model: "provider/private-model-a",
+          display_name: "Private model A",
+          description: null,
+          supports_thinking: false,
+          supports_reasoning_effort: false,
+        },
+      ],
+      token_usage: { enabled: false },
+    });
+    secondOwnerResponse.resolve({
+      models: [
+        {
+          id: "private-model-b",
+          name: "private-model-b",
+          model: "provider/private-model-b",
+          display_name: "Private model B",
+          description: null,
+          supports_thinking: false,
+          supports_reasoning_effort: false,
+        },
+      ],
+      token_usage: { enabled: true },
+    });
+
+    await waitFor(() =>
+      expect(result.current.models[0]?.name).toBe("private-model-b"),
+    );
+    expect(queryClient.getQueryData(modelsQueryKey(firstOwner.id))).toBe(
+      undefined,
+    );
+    expect(
+      queryClient.getQueryData(modelsQueryKey(secondOwner.id)),
+    ).toMatchObject({ models: [{ name: "private-model-b" }] });
   });
 
   it("observes model failures without starting an extra request", async () => {
@@ -232,7 +300,9 @@ describe("ModelLoadErrorBanner", () => {
     );
 
     await waitFor(() => {
-      expect(queryClient.getQueryState(MODELS_QUERY_KEY)?.status).toBe("error");
+      expect(
+        queryClient.getQueryState(modelsQueryKey(fakeUser.id))?.status,
+      ).toBe("error");
     });
     expect(mockedLoadModels).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("alert")).toBeNull();
@@ -252,7 +322,9 @@ describe("ModelLoadErrorBanner", () => {
     const { rerender } = render(renderView(), { wrapper: QueryWrapper });
 
     await waitFor(() => {
-      expect(queryClient.getQueryState(MODELS_QUERY_KEY)?.status).toBe("error");
+      expect(queryClient.getQueryState(modelsQueryKey(null))?.status).toBe(
+        "error",
+      );
     });
     expect(screen.queryByRole("alert")).toBeNull();
 
@@ -280,7 +352,7 @@ describe("ModelLoadErrorBanner", () => {
 
     await screen.findByRole("alert");
     const backgroundRefetch = queryClient.refetchQueries({
-      queryKey: MODELS_QUERY_KEY,
+      queryKey: modelsQueryKey(fakeUser.id),
     });
     await waitFor(() => {
       expect(mockedLoadModels).toHaveBeenCalledTimes(3);

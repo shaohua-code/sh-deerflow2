@@ -8,6 +8,7 @@ import { fetch } from "@/core/api/fetcher";
 import {
   createScheduledTask,
   fetchScheduledTasks,
+  fetchThreadScheduledTasks,
   type ScheduledTaskPayload,
 } from "@/core/scheduled-tasks/api";
 
@@ -72,6 +73,27 @@ describe("scheduled tasks api", () => {
     expect(url).toContain("/api/scheduled-tasks");
     expect(call?.[1]?.method).toBeUndefined();
     expect(result).toEqual([SAMPLE_TASK]);
+  });
+
+  it("passes an AbortSignal to the task inventory request", async () => {
+    const controller = new AbortController();
+    mockedFetch.mockResolvedValue(jsonResponse([SAMPLE_TASK]));
+
+    await fetchScheduledTasks(controller.signal);
+
+    expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+  });
+
+  it("passes an AbortSignal to a thread task inventory request", async () => {
+    const controller = new AbortController();
+    mockedFetch.mockResolvedValue(jsonResponse([SAMPLE_TASK]));
+
+    await fetchThreadScheduledTasks("thread-1", controller.signal);
+
+    expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(String(mockedFetch.mock.calls[0]?.[0])).toContain(
+      "/api/threads/thread-1/scheduled-tasks",
+    );
   });
 
   it("createScheduledTask hits POST /api/scheduled-tasks with payload", async () => {

@@ -54,6 +54,31 @@ describe("checkAgentName", () => {
     expect(result).toEqual({ available: true, name: "dealagent" });
   });
 
+  test("forwards the caller's signal so an access change can cancel name checks", async () => {
+    const signal = new AbortController().signal;
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, { available: true, name: "dealagent" }),
+    );
+
+    await checkAgentName("dealagent", { signal });
+
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/agents/check?name=dealagent",
+      { signal },
+    );
+  });
+
+  test("preserves abort errors instead of reporting a network outage", async () => {
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    controller.abort();
+    mockedFetch.mockRejectedValueOnce(abortError);
+
+    await expect(
+      checkAgentName("dealagent", { signal: controller.signal }),
+    ).rejects.toBe(abortError);
+  });
+
   test("treats network-layer fetch rejection as backend_unreachable", async () => {
     mockedFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await expect(checkAgentName("dealagent")).rejects.toMatchObject({

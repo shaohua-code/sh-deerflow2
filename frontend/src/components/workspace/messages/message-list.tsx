@@ -26,6 +26,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Button } from "@/components/ui/button";
 import { extractArtifactsFromThread } from "@/core/artifacts/utils";
+import type { FeedbackData } from "@/core/api/feedback";
 import { useI18n } from "@/core/i18n/hooks";
 import { getArtifactArchiveCandidatesByGroupIndex } from "@/core/messages/artifact-archive";
 import {
@@ -1128,6 +1129,13 @@ export function MessageList({
                           }
                           threadId={threadId}
                           artifactPaths={artifactPaths}
+                          feedback={
+                            (
+                              msg as Message & {
+                                feedback?: FeedbackData | null;
+                              }
+                            ).feedback
+                          }
                           runId={
                             group.type === "assistant"
                               ? (msg as { run_id?: string }).run_id

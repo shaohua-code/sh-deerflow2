@@ -914,6 +914,60 @@ test("buildVisibleHistoryMessages attaches run_id to each content message (#3779
   expect((result[0] as { run_id?: string }).run_id).toBe("run-1");
 });
 
+test("buildVisibleHistoryMessages exposes feedback only on each run's last visible AI response", () => {
+  const savedFeedback = {
+    feedback_id: "feedback-1",
+    rating: 1,
+    comment: "helpful",
+  };
+  const rows = [
+    {
+      run_id: "run-1",
+      seq: 1,
+      content: { id: "human-1", type: "human", content: "question" } as Message,
+      feedback: null,
+      metadata: { caller: "lead_agent" },
+      created_at: "2026-06-26T00:00:00Z",
+    },
+    {
+      run_id: "run-1",
+      seq: 2,
+      content: { id: "ai-1", type: "ai", content: "draft" } as Message,
+      feedback: null,
+      metadata: { caller: "lead_agent" },
+      created_at: "2026-06-26T00:00:01Z",
+    },
+    {
+      run_id: "run-1",
+      seq: 3,
+      content: { id: "ai-2", type: "ai", content: "final" } as Message,
+      feedback: savedFeedback,
+      metadata: { caller: "lead_agent" },
+      created_at: "2026-06-26T00:00:02Z",
+    },
+    {
+      run_id: "run-2",
+      seq: 4,
+      content: { id: "ai-3", type: "ai", content: "another run" } as Message,
+      feedback: null,
+      metadata: { caller: "lead_agent" },
+      created_at: "2026-06-26T00:00:03Z",
+    },
+  ] as RunMessage[];
+
+  const result = buildVisibleHistoryMessages(rows, new Set());
+  const byId = new Map(result.map((message) => [message.id, message]));
+
+  expect(
+    (byId.get("human-1") as { feedback?: unknown }).feedback,
+  ).toBeUndefined();
+  expect((byId.get("ai-1") as { feedback?: unknown }).feedback).toBeUndefined();
+  expect((byId.get("ai-2") as { feedback?: unknown }).feedback).toEqual(
+    savedFeedback,
+  );
+  expect((byId.get("ai-3") as { feedback?: unknown }).feedback).toBeNull();
+});
+
 // Regression coverage for #3825: after context summarization the backend emits
 // RemoveMessage(ALL) + summary + retained, and onUpdateEvent rescues the removed
 // messages into a current-stream transient bridge. The bridge fills only the
@@ -2972,6 +3026,36 @@ test("mergeMessages preserves canonical seq when a live copy without seq replace
     "run-1",
     "run-1",
   ]);
+});
+
+test("mergeMessages keeps persisted feedback when a live checkpoint refreshes the message", () => {
+  const savedFeedback = {
+    feedback_id: "feedback-1",
+    rating: -1,
+    comment: null,
+  };
+  const history = buildVisibleHistoryMessages(
+    [
+      {
+        run_id: "run-1",
+        seq: 1,
+        content: { id: "ai-1", type: "ai", content: "saved answer" } as Message,
+        feedback: savedFeedback,
+        metadata: { caller: "lead_agent" },
+        created_at: "2026-09-08T00:00:00Z",
+      },
+    ],
+    new Set(),
+  );
+
+  const merged = mergeMessages(
+    history,
+    [{ id: "ai-1", type: "ai", content: "fresh checkpoint answer" } as Message],
+    [],
+  );
+
+  expect(merged[0]?.content).toBe("fresh checkpoint answer");
+  expect((merged[0] as { feedback?: unknown }).feedback).toEqual(savedFeedback);
 });
 
 test("mergeMessages places a live message with seq inside the loaded window by position (R4)", () => {

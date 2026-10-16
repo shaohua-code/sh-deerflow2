@@ -2,14 +2,25 @@ import type { TokenUsage } from "@/core/messages/usage";
 
 import type { ThreadTokenUsageResponse } from "./types";
 
-export function threadTokenUsageQueryKey(threadId?: string | null) {
-  return ["thread-token-usage", threadId] as const;
+export function threadTokenUsageQueryKey(
+  threadId?: string | null,
+  userId?: string | null,
+) {
+  const threadKey = ["thread-token-usage", threadId] as const;
+  // Omitting userId deliberately returns a prefix for mutation invalidation.
+  // Actual reads always include the authenticated owner in their cache key.
+  return userId === undefined ? threadKey : ([...threadKey, userId] as const);
 }
 
 export function retainThreadTokenUsagePlaceholder(
   previous: ThreadTokenUsageResponse | null | undefined,
   threadId?: string | null,
+  previousUserId?: string | null,
+  userId?: string | null,
 ): ThreadTokenUsageResponse | undefined {
+  if (previousUserId !== undefined && previousUserId !== userId) {
+    return undefined;
+  }
   return previous && previous.thread_id === threadId ? previous : undefined;
 }
 

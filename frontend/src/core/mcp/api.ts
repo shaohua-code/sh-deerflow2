@@ -25,8 +25,9 @@ async function readErrorDetail(
   return typeof error.detail === "string" ? error.detail : fallback;
 }
 
-export async function loadMCPConfig() {
-  const response = await fetch(`${getBackendBaseURL()}/api/mcp/config`);
+export async function loadMCPConfig(signal?: AbortSignal) {
+  const url = `${getBackendBaseURL()}/api/mcp/config`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
   if (!response.ok) {
     throw new MCPConfigRequestError(
       response.status,

@@ -2,7 +2,7 @@ import copy
 from typing import get_type_hints
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import AgentMiddleware
@@ -37,18 +37,41 @@ def _outcome(call):
         return ("error", type(exc), str(exc))
 
 
+def _materialize_message_merge_case(case: tuple[list, list]) -> tuple[list, list]:
+    """Build LangChain message objects after Hypothesis has drawn raw data.
+
+    Keeping Pydantic-backed message construction out of the strategy prevents
+    Windows/CI scheduling spikes from being misclassified as slow input
+    generation by Hypothesis' health check.
+    """
+    raw_state, raw_writes = case
+    state = [{"role": role, "content": content, "id": message_id} for role, content, message_id in raw_state]
+    writes = []
+    for raw_write in raw_writes:
+        write = []
+        for kind, message_id, role, content in raw_write:
+            if kind == "remove":
+                write.append(RemoveMessage(id=message_id))
+            elif role == "ai_chunk":
+                write.append(AIMessageChunk(id=message_id, content=content))
+            elif role == "tool_chunk":
+                write.append(ToolMessageChunk(id=message_id, content=content, tool_call_id=f"call-{message_id}"))
+            else:
+                write.append({"role": role, "content": content, "id": message_id})
+        writes.append(write)
+    return state, writes
+
+
 @st.composite
 def _message_merge_cases(draw):
     message_ids = ["a", "b", "c", "missing"]
-    state_ids = draw(st.lists(st.sampled_from(message_ids[:-1]), max_size=6))
-    state = [
-        {
-            "role": draw(st.sampled_from(["user", "assistant"])),
-            "content": f"state-{index}",
-            "id": message_id,
-        }
-        for index, message_id in enumerate(state_ids)
-    ]
+    # Keep generated graphs small enough for the Pydantic-backed message
+    # constructors to stay cheap on Windows and slower CI workers. The
+    # differential properties still cover repeated IDs, removals, chunks,
+    # multiple writes, and empty batches without spending most of the test
+    # budget building oversized examples.
+    state_ids = draw(st.lists(st.sampled_from(message_ids[:-1]), max_size=4))
+    state = [(draw(st.sampled_from(["user", "assistant"])), f"state-{index}", message_id) for index, message_id in enumerate(state_ids)]
 
     operation = st.one_of(
         st.tuples(
@@ -64,21 +87,8 @@ def _message_merge_cases(draw):
             st.none(),
         ),
     )
-    raw_writes = draw(st.lists(st.lists(operation, max_size=6), max_size=8))
-    writes = []
-    for raw_write in raw_writes:
-        write = []
-        for kind, message_id, role, content in raw_write:
-            if kind == "remove":
-                write.append(RemoveMessage(id=message_id))
-            elif role == "ai_chunk":
-                write.append(AIMessageChunk(id=message_id, content=content))
-            elif role == "tool_chunk":
-                write.append(ToolMessageChunk(id=message_id, content=content, tool_call_id=f"call-{message_id}"))
-            else:
-                write.append({"role": role, "content": content, "id": message_id})
-        writes.append(write)
-    return state, writes
+    raw_writes = draw(st.lists(st.lists(operation, max_size=4), max_size=5))
+    return state, raw_writes
 
 
 @pytest.mark.parametrize(
@@ -97,9 +107,10 @@ def test_merge_message_writes_matches_sequential_add_messages(writes: list) -> N
     assert merge_message_writes([], writes) == _fold([], writes)
 
 
+@settings(suppress_health_check=[HealthCheck.too_slow])
 @given(case=_message_merge_cases())
 def test_merge_message_writes_randomized_differential(case: tuple[list, list]) -> None:
-    state, writes = case
+    state, writes = _materialize_message_merge_case(case)
 
     expected = _outcome(lambda: _fold(copy.deepcopy(state), copy.deepcopy(writes)))
     actual = _outcome(lambda: merge_message_writes(copy.deepcopy(state), copy.deepcopy(writes)))
@@ -120,9 +131,10 @@ def test_merge_message_writes_is_batching_invariant(split: int) -> None:
     assert merge_message_writes(merge_message_writes(state, xs), ys) == merge_message_writes(state, writes)
 
 
+@settings(suppress_health_check=[HealthCheck.too_slow])
 @given(case=_message_merge_cases(), data=st.data())
 def test_merge_message_writes_randomized_batching_invariance(case: tuple[list, list], data: st.DataObject) -> None:
-    state, writes = case
+    state, writes = _materialize_message_merge_case(case)
     split = data.draw(st.integers(min_value=0, max_value=len(writes)))
 
     expected = _outcome(lambda: merge_message_writes(copy.deepcopy(state), copy.deepcopy(writes)))

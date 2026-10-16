@@ -11,7 +11,11 @@ import {
 const artifactState = rs.hoisted(() => ({
   select: rs.fn(),
   setOpen: rs.fn(),
-  user: null as { system_role: string } | null,
+  user: null as {
+    id: string;
+    system_role: string;
+    permissions: string[] | null;
+  } | null,
 }));
 const archiveState = rs.hoisted(() => {
   class RequestError extends Error {
@@ -71,6 +75,11 @@ const files = [
 function renderList(
   props: Partial<React.ComponentProps<typeof ArtifactFileList>> = {},
 ) {
+  artifactState.user ??= {
+    id: "owner-a",
+    system_role: "user",
+    permissions: ["runs:read"],
+  };
   const componentProps = { files, threadId: "thread-1", ...props };
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -89,6 +98,7 @@ function renderList(
   const result = render(component(componentProps));
   return {
     ...result,
+    queryClient,
     rerenderList: (
       nextProps: Partial<React.ComponentProps<typeof ArtifactFileList>>,
     ) => result.rerender(component({ ...componentProps, ...nextProps })),
@@ -114,10 +124,13 @@ describe("ArtifactFileList archive download", () => {
         name: "Download current versions (2 files)",
       }),
     ).toBeTruthy();
-    expect(archiveState.manifest).toHaveBeenCalledWith({
-      runId: "branch-run",
-      threadId: "branch-thread",
-    });
+    expect(archiveState.manifest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "branch-run",
+        threadId: "branch-thread",
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(
       screen.getByText(
         "The file list comes from this response. Contents are the current versions and may have changed.",
@@ -141,10 +154,13 @@ describe("ArtifactFileList archive download", () => {
     renderList({ runId: "run-1" });
 
     await waitFor(() => {
-      expect(archiveState.manifest).toHaveBeenCalledWith({
-        runId: "run-1",
-        threadId: "thread-1",
-      });
+      expect(archiveState.manifest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "run-1",
+          threadId: "thread-1",
+          signal: expect.any(AbortSignal),
+        }),
+      );
     });
     expect(
       screen.queryByRole("button", {
@@ -201,6 +217,42 @@ describe("ArtifactFileList archive download", () => {
     ).toBeNull();
   });
 
+  it("does not read or show a manifest without runs:read", () => {
+    artifactState.user = {
+      id: "owner-a",
+      system_role: "user",
+      permissions: [],
+    };
+    renderList({ runId: "run-1" });
+
+    expect(archiveState.manifest).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: /Download current versions/ }),
+    ).toBeNull();
+  });
+
+  it("does not reuse a manifest cache after switching owners", async () => {
+    archiveState.manifest
+      .mockResolvedValueOnce({ fileCount: 2 })
+      .mockImplementation(() => new Promise(() => undefined));
+    const { rerenderList } = renderList({ runId: "run-1" });
+    await screen.findByRole("button", {
+      name: "Download current versions (2 files)",
+    });
+
+    artifactState.user = {
+      id: "owner-b",
+      system_role: "user",
+      permissions: ["runs:read"],
+    };
+    rerenderList({});
+
+    await waitFor(() => expect(archiveState.manifest).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByRole("button", { name: /Download current versions/ }),
+    ).toBeNull();
+  });
+
   it("hides a cached archive while downloads are disabled", async () => {
     archiveState.manifest.mockResolvedValue({ fileCount: 2 });
     const { rerenderList } = renderList({ runId: "run-1" });
@@ -224,10 +276,13 @@ describe("ArtifactFileList archive download", () => {
     renderList({ runId: "parent-run" });
 
     await waitFor(() => {
-      expect(archiveState.manifest).toHaveBeenCalledWith({
-        runId: "parent-run",
-        threadId: "thread-1",
-      });
+      expect(archiveState.manifest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "parent-run",
+          threadId: "thread-1",
+          signal: expect.any(AbortSignal),
+        }),
+      );
     });
     expect(
       screen.queryByRole("button", {
@@ -262,10 +317,13 @@ describe("ArtifactFileList archive download", () => {
     );
 
     await waitFor(() => {
-      expect(archiveState.download).toHaveBeenCalledWith({
-        runId: "run-1",
-        threadId: "thread-1",
-      });
+      expect(archiveState.download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "run-1",
+          threadId: "thread-1",
+          signal: expect.any(AbortSignal),
+        }),
+      );
       expect(downloadedFilename).toBe("artifacts-run-1.zip");
       expect(createObjectURL).toHaveBeenCalledWith(blob);
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:archive");
@@ -288,6 +346,41 @@ describe("ArtifactFileList archive download", () => {
         "Failed to download artifact archive.",
       );
     });
+  });
+
+  it("aborts an archive download and ignores its result after runs:read revoke", async () => {
+    archiveState.manifest.mockResolvedValue({ fileCount: 2 });
+    let requestSignal: AbortSignal | undefined;
+    archiveState.download.mockImplementation(
+      ({ signal }: { signal: AbortSignal }) => {
+        requestSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    const { rerenderList } = renderList({ runId: "run-1" });
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Download current versions (2 files)",
+      }),
+    );
+    await waitFor(() => expect(requestSignal).toBeDefined());
+
+    artifactState.user = {
+      id: "owner-a",
+      system_role: "user",
+      permissions: [],
+    };
+    rerenderList({});
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(archiveState.toastError).not.toHaveBeenCalled();
   });
 
   it("maps archive-limit errors to safe localized feedback", async () => {
@@ -359,7 +452,11 @@ describe("ArtifactFileList archive download", () => {
   });
 
   it("shows safe localized feedback when installing a skill from the file list fails", async () => {
-    artifactState.user = { system_role: "admin" };
+    artifactState.user = {
+      id: "owner-a",
+      system_role: "admin",
+      permissions: ["runs:read"],
+    };
     archiveState.install.mockResolvedValue({
       success: false,
       skill_name: "demo",

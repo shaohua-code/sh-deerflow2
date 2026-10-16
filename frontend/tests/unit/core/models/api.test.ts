@@ -38,6 +38,26 @@ test("loadModels includes credentials for authenticated gateway requests", async
   expect(requestedInit?.credentials).toBe("include");
 });
 
+test("loadModels forwards an AbortSignal to the gateway request", async () => {
+  let requestedInit: RequestInit | undefined;
+  rs.stubGlobal(
+    "fetch",
+    rs.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedInit = init;
+      return new Response(JSON.stringify({ models: [], token_usage: {} }), {
+        status: 200,
+      });
+    }),
+  );
+
+  const { loadModels } = await import("@/core/models/api");
+  const signal = new AbortController().signal;
+
+  await loadModels(signal);
+
+  expect(requestedInit?.signal).toBe(signal);
+});
+
 test("loadModels rejects unsuccessful gateway responses", async () => {
   rs.stubGlobal(
     "fetch",

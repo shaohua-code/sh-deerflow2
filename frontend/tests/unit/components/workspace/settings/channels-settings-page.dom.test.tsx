@@ -26,6 +26,12 @@ const mocks = rs.hoisted(() => ({
   disconnectProvider: rs.fn(),
   toastError: rs.fn(),
   toastSuccess: rs.fn(),
+  routerPush: rs.fn(),
+}));
+
+rs.mock("next/navigation", () => ({
+  usePathname: () => "/workspace",
+  useRouter: () => ({ push: mocks.routerPush }),
 }));
 
 rs.mock("@/core/channels/hooks", () => ({
@@ -115,6 +121,7 @@ beforeEach(() => {
   mocks.configureProvider.mockReset().mockResolvedValue(cachedProvider);
   mocks.disconnectConnection.mockReset().mockResolvedValue(undefined);
   mocks.disconnectProvider.mockReset().mockResolvedValue(cachedProvider);
+  mocks.routerPush.mockReset();
   mocks.toastError.mockReset();
   mocks.toastSuccess.mockReset();
   mocks.useProviders.mockReset().mockReturnValue({

@@ -532,7 +532,7 @@ describe("ProjectDocumentsSection", () => {
     expect(mocks.fetchPreview).not.toHaveBeenCalled();
   });
 
-  it("hides cached project mutations and conversation files after permission revocation", () => {
+  it("hides project mutations and cached conversation files without permissions", () => {
     mocks.userPermissions = ["projects:read"];
     mocks.documents = [makeDocument()];
     mocks.threadFileGroups = [
@@ -557,7 +557,7 @@ describe("ProjectDocumentsSection", () => {
       wrapper: Wrapper,
     });
 
-    expect(screen.getByText("notes.txt")).toBeDefined();
+    expect(screen.getByText("roadmap.md")).toBeDefined();
     expect(screen.queryByTestId("project-documents-upload-input")).toBeNull();
     expect(screen.queryByRole("button", { name: /Attach to chat/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Move to trash/ })).toBeNull();
@@ -657,6 +657,12 @@ describe("ProjectDocumentsSection", () => {
       { wrapper: Wrapper },
     );
     fireEvent.click(screen.getByRole("button", { name: "Save to project" }));
+    const dialog = screen.getByRole("dialog");
+    const descriptionId = dialog.getAttribute("aria-describedby");
+    expect(descriptionId).toBeTruthy();
+    expect(
+      document.getElementById(descriptionId as string)?.textContent,
+    ).toContain("Choose the name this conversation file will use");
     const input = screen.getByLabelText("Shelf name");
     expect(input).toHaveProperty("value", "chart.png");
   });
@@ -776,6 +782,11 @@ describe("ProjectDocumentsSection", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     const dialog = await screen.findByRole("dialog");
+    const descriptionId = dialog.getAttribute("aria-describedby");
+    expect(descriptionId).toBeTruthy();
+    expect(
+      document.getElementById(descriptionId as string)?.textContent,
+    ).toContain("Preview this project document");
     // The unified PDF mechanism: an iframe WITHOUT sandbox (Chromium blocks
     // its built-in viewer inside sandbox=""), same as the artifact detail
     // view.

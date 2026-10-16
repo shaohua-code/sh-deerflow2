@@ -102,6 +102,8 @@ export function ThreadSidebarItem({
 }) {
   const { t } = useI18n();
   const { user } = useAuth();
+  const canReadThreads = hasPermission(user, PERMISSIONS.THREADS_READ);
+  const canWriteThreads = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   const canDeleteThreads = hasPermission(user, PERMISSIONS.THREADS_DELETE);
   const requestDelete = useThreadDeleteDialog();
   const { mutate: renameThread } = useRenameThread();
@@ -121,9 +123,18 @@ export function ThreadSidebarItem({
 
   const handleMoveProject = useCallback(
     (projectId: string | null) => {
+      if (!canWriteThreads) {
+        toast.error(t.chats.writePermissionRequired);
+        return;
+      }
       moveThreadToProject({ threadId: thread.thread_id, projectId });
     },
-    [moveThreadToProject, thread.thread_id],
+    [
+      canWriteThreads,
+      moveThreadToProject,
+      t.chats.writePermissionRequired,
+      thread.thread_id,
+    ],
   );
   const archiveAction = useThreadArchiveAction();
 
@@ -131,7 +142,19 @@ export function ThreadSidebarItem({
   const [renameValue, setRenameValue] = useState("");
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
 
+  // 中央 IAM 撤销写权限后，立即关闭已打开的重命名表单并清空草稿。
+  useEffect(() => {
+    if (!canWriteThreads && renameDialogOpen) {
+      setRenameDialogOpen(false);
+      setRenameValue("");
+    }
+  }, [canWriteThreads, renameDialogOpen]);
+
   const handleRenameSubmit = useCallback(() => {
+    if (!canWriteThreads) {
+      toast.error(t.chats.writePermissionRequired);
+      return;
+    }
     if (renameValue.trim()) {
       renameThread(
         { threadId: thread.thread_id, title: renameValue.trim() },
@@ -147,9 +170,20 @@ export function ThreadSidebarItem({
         },
       );
     }
-  }, [renameThread, thread.thread_id, renameValue, t.common.renameFailed]);
+  }, [
+    canWriteThreads,
+    renameThread,
+    thread.thread_id,
+    renameValue,
+    t.chats.writePermissionRequired,
+    t.common.renameFailed,
+  ]);
 
   const handleTogglePin = useCallback(() => {
+    if (!canWriteThreads) {
+      toast.error(t.chats.writePermissionRequired);
+      return;
+    }
     updatePinnedThread(
       {
         threadId: thread.thread_id,
@@ -162,7 +196,13 @@ export function ThreadSidebarItem({
         },
       },
     );
-  }, [t.chats.pinChatFailed, thread, updatePinnedThread]);
+  }, [
+    canWriteThreads,
+    t.chats.pinChatFailed,
+    t.chats.writePermissionRequired,
+    thread,
+    updatePinnedThread,
+  ]);
 
   const handleShare = useCallback(async () => {
     const shareUrl = buildThreadShareUrl(
@@ -184,6 +224,10 @@ export function ThreadSidebarItem({
 
   const handleExport = useCallback(
     async (format: ThreadExportFormat) => {
+      if (!canReadThreads) {
+        toast.error(t.chats.readPermissionRequired);
+        return;
+      }
       try {
         const apiClient = getAPIClient();
         const state = await apiClient.threads.getState<AgentThreadState>(
@@ -200,7 +244,7 @@ export function ThreadSidebarItem({
         toast.error(t.common.exportFailed);
       }
     },
-    [t, thread],
+    [canReadThreads, t, thread],
   );
 
   const channelSource = channelSourceOfThread(thread);
@@ -272,52 +316,62 @@ export function ThreadSidebarItem({
             side={"right"}
             align={"start"}
           >
-            <DropdownMenuItem onSelect={handleTogglePin}>
-              {pinned ? (
-                <PinOff className="text-muted-foreground" />
-              ) : (
-                <Pin className="text-muted-foreground" />
-              )}
-              <span>{pinned ? t.chats.unpinChat : t.chats.pinChat}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                setRenameValue(titleOfThread(thread));
-                setRenameDialogOpen(true);
-              }}
-            >
-              <Pencil className="text-muted-foreground" />
-              <span>{t.common.rename}</span>
-            </DropdownMenuItem>
+            {canWriteThreads && (
+              <>
+                <DropdownMenuItem onSelect={handleTogglePin}>
+                  {pinned ? (
+                    <PinOff className="text-muted-foreground" />
+                  ) : (
+                    <Pin className="text-muted-foreground" />
+                  )}
+                  <span>{pinned ? t.chats.unpinChat : t.chats.pinChat}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setRenameValue(titleOfThread(thread));
+                    setRenameDialogOpen(true);
+                  }}
+                >
+                  <Pencil className="text-muted-foreground" />
+                  <span>{t.common.rename}</span>
+                </DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuItem onSelect={() => void handleShare()}>
               <Share2 className="text-muted-foreground" />
               <span>{t.common.share}</span>
             </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Download className="text-muted-foreground" />
-                <span>{t.common.export}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  onSelect={() => void handleExport("markdown")}
-                >
-                  <FileText className="text-muted-foreground" />
-                  <span>{t.common.exportAsMarkdown}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void handleExport("json")}>
-                  <FileJson className="text-muted-foreground" />
-                  <span>{t.common.exportAsJSON}</span>
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem
-              disabled={archiveAction.isPending}
-              onSelect={() => archiveAction.setArchived(thread.thread_id, true)}
-            >
-              <Archive className="text-muted-foreground" />
-              <span>{t.chats.archiveChat}</span>
-            </DropdownMenuItem>
+            {canReadThreads && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <Download className="text-muted-foreground" />
+                  <span>{t.common.export}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem
+                    onSelect={() => void handleExport("markdown")}
+                  >
+                    <FileText className="text-muted-foreground" />
+                    <span>{t.common.exportAsMarkdown}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void handleExport("json")}>
+                    <FileJson className="text-muted-foreground" />
+                    <span>{t.common.exportAsJSON}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {canWriteThreads && (
+              <DropdownMenuItem
+                disabled={archiveAction.isPending}
+                onSelect={() =>
+                  archiveAction.setArchived(thread.thread_id, true)
+                }
+              >
+                <Archive className="text-muted-foreground" />
+                <span>{t.chats.archiveChat}</span>
+              </DropdownMenuItem>
+            )}
             <MoveToProjectMenu
               thread={thread}
               onNewProject={() => setNewProjectDialogOpen(true)}
@@ -339,7 +393,10 @@ export function ThreadSidebarItem({
       )}
 
       {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+      <Dialog
+        open={renameDialogOpen && canWriteThreads}
+        onOpenChange={setRenameDialogOpen}
+      >
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>{t.common.rename}</DialogTitle>

@@ -11,6 +11,8 @@ rs.mock("@/core/config", () => ({
 import { fetch as fetcher } from "@/core/api/fetcher";
 import {
   deleteUploadedFile,
+  getUploadLimits,
+  listUploadedFiles,
   listThreadOutputFiles,
   UploadRequestError,
   uploadFiles,
@@ -211,6 +213,45 @@ describe("uploads api", () => {
 
     expect(mockedFetch).toHaveBeenCalledWith(
       "/backend/api/threads/thread%20%231/uploads/outputs?limit=200",
+    );
+  });
+
+  test("passes cancellation signals to thread file manifests", async () => {
+    const controller = new AbortController();
+    mockedFetch
+      .mockResolvedValueOnce(jsonResponse(200, { files: [], count: 0 }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { files: [], count: 0, truncated: false }),
+      );
+
+    await listUploadedFiles("thread-1", controller.signal);
+    await listThreadOutputFiles("thread-1", 200, controller.signal);
+
+    expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(mockedFetch.mock.calls[1]?.[1]?.signal).toBe(controller.signal);
+  });
+
+  test("passes cancellation signals to upload-limit reads", async () => {
+    const controller = new AbortController();
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        max_files: 10,
+        max_file_size: 1024,
+        max_total_size: 4096,
+      }),
+    );
+
+    await expect(
+      getUploadLimits("thread-1", controller.signal),
+    ).resolves.toEqual({
+      max_files: 10,
+      max_file_size: 1024,
+      max_total_size: 4096,
+    });
+
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/backend/api/threads/thread-1/uploads/limits",
+      { signal: controller.signal },
     );
   });
 });

@@ -144,7 +144,9 @@ export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
                   title={t.backgroundTasks.active}
                   tasks={activeTasks}
                   cancellingTaskId={
-                    cancelTask.isPending ? cancelTask.variables : undefined
+                    cancelTask.isPending
+                      ? cancelTask.variables?.taskId
+                      : undefined
                   }
                   onCancel={canCancelTasks ? handleCancelTask : undefined}
                   cacheScope={cacheScope}

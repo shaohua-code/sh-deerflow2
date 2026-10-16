@@ -54,9 +54,10 @@ describe("background task mutation error copy", () => {
     mocks.cancel.mockRejectedValue(new Error("private task storage detail"));
     rs.spyOn(console, "error").mockImplementation(() => undefined);
     const { client, Wrapper } = createWrapper();
-    const { result } = renderHook(() => useCancelBackgroundTask("thread-1"), {
-      wrapper: Wrapper,
-    });
+    const { result } = renderHook(
+      () => useCancelBackgroundTask("thread-1", { enabled: true }),
+      { wrapper: Wrapper },
+    );
 
     act(() => {
       void result.current.mutate({
@@ -100,7 +101,7 @@ describe("background task mutation error copy", () => {
 });
 
 describe("background task read permissions", () => {
-  it("does not expose cached task rows or details while a query is disabled", () => {
+  it("does not expose or retain cached task rows or details while a query is disabled", async () => {
     const { client, Wrapper } = createWrapper();
     const privateTask = { task_id: "task-private" };
     client.setQueryData(backgroundTasksQueryKey("thread-1", "user-1"), [
@@ -132,7 +133,54 @@ describe("background task read permissions", () => {
     expect(detail.result.current.data).toBeUndefined();
     expect(mocks.fetchTasks).not.toHaveBeenCalled();
     expect(mocks.fetchTask).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(
+        client.getQueryData(backgroundTasksQueryKey("thread-1", "user-1")),
+      ).toBeUndefined();
+      expect(
+        client.getQueryData(
+          backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+        ),
+      ).toBeUndefined();
+    });
     cleanup();
     client.clear();
+  });
+
+  it("passes cancellation signals to authorized list and detail reads", async () => {
+    const { client, Wrapper } = createWrapper();
+    mocks.fetchTasks.mockResolvedValueOnce([]);
+    mocks.fetchTask.mockResolvedValueOnce({
+      task_id: "task-1",
+      status: "completed",
+    });
+    const list = renderHook(
+      () =>
+        useBackgroundTasks("thread-1", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    const detail = renderHook(
+      () =>
+        useBackgroundTask("thread-1", "task-1", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    try {
+      await waitFor(() => {
+        expect(list.result.current.isSuccess).toBe(true);
+        expect(detail.result.current.isSuccess).toBe(true);
+      });
+      expect(mocks.fetchTasks.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
+      expect(mocks.fetchTask.mock.calls[0]?.[2]).toBeInstanceOf(AbortSignal);
+    } finally {
+      list.unmount();
+      detail.unmount();
+      client.clear();
+    }
   });
 });

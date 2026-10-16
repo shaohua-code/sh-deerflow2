@@ -66,7 +66,7 @@ export function WorkspaceChannelsList() {
   const canWrite = canWriteChannels(user);
   const canManageRuntime = canManageChannelRuntime(user);
   const { enabled, providers, isLoading, error } = useChannelProviders(canRead);
-  const connectMutation = useConnectChannelProvider();
+  const connectMutation = useConnectChannelProvider(canRead);
   const configureMutation = useConfigureChannelProvider();
   const [setupProvider, setSetupProvider] = useState<ChannelProvider | null>(
     null,
@@ -229,7 +229,7 @@ export function WorkspaceChannelsList() {
           }
         }}
         onSubmit={(provider, values) => {
-          if (!canEditRuntimeConfig) {
+          if (!providerCanEditRuntimeConfig(provider) || !canManageRuntime) {
             toast.error(t.channels.adminPermissionRequired);
             return;
           }

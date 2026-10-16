@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 
 import { useI18n } from "@/core/i18n/hooks";
@@ -34,12 +35,26 @@ type CancelBackgroundTaskVariables = {
 
 export function useBackgroundTasks(
   threadId: string,
-  options: { enabled?: boolean; cacheScope?: string } = {},
+  options: { enabled: boolean; cacheScope?: string },
 ) {
-  const active = options.enabled !== false && Boolean(threadId);
+  const active = options.enabled && Boolean(threadId);
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => backgroundTasksQueryKey(threadId, options.cacheScope),
+    [options.cacheScope, threadId],
+  );
+
+  useEffect(() => {
+    if (active) return;
+
+    // 线程读取权限撤销后按用户和线程清理列表及详情，防止响应继续回填。
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }, [active, queryClient, queryKey]);
+
   const query = useQuery({
-    queryKey: backgroundTasksQueryKey(threadId, options.cacheScope),
-    queryFn: () => fetchBackgroundTasks(threadId),
+    queryKey,
+    queryFn: ({ signal }) => fetchBackgroundTasks(threadId, signal),
     enabled: active,
     refetchInterval: (query) =>
       query.state.data?.some(isActiveBackgroundTask) ? 3000 : 15000,
@@ -47,19 +62,40 @@ export function useBackgroundTasks(
   });
   // TanStack Query retains data while disabled; never expose it after access
   // is revoked or the consumer changes to another account.
-  return active ? query : { ...query, data: undefined };
+  return active
+    ? query
+    : {
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+      };
 }
 
 export function useBackgroundTask(
   threadId: string,
   taskId: string,
-  options: { enabled?: boolean; cacheScope?: string } = {},
+  options: { enabled: boolean; cacheScope?: string },
 ) {
-  const active =
-    options.enabled !== false && Boolean(threadId) && Boolean(taskId);
+  const active = options.enabled && Boolean(threadId) && Boolean(taskId);
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => backgroundTaskQueryKey(threadId, taskId, options.cacheScope),
+    [options.cacheScope, taskId, threadId],
+  );
+
+  useEffect(() => {
+    if (active) return;
+
+    // 详情只在展开时读取；关闭详情或失去读取权后取消并清除该详情。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [active, queryClient, queryKey]);
+
   const query = useQuery({
-    queryKey: backgroundTaskQueryKey(threadId, taskId, options.cacheScope),
-    queryFn: () => fetchBackgroundTask(threadId, taskId),
+    queryKey,
+    queryFn: ({ signal }) => fetchBackgroundTask(threadId, taskId, signal),
     enabled: active,
     refetchInterval: (query) =>
       query.state.data && shouldPollBackgroundTaskDetail(query.state.data)
@@ -67,12 +103,20 @@ export function useBackgroundTask(
         : false,
     refetchIntervalInBackground: false,
   });
-  return active ? query : { ...query, data: undefined };
+  return active
+    ? query
+    : {
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+      };
 }
 
 export function useCancelBackgroundTask(
   threadId: string,
-  options: { enabled?: boolean } = {},
+  options: { enabled: boolean },
 ) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
@@ -82,38 +126,13 @@ export function useCancelBackgroundTask(
     CancelBackgroundTaskVariables
   >({
     mutationFn: (variables) => {
-      if (
-        options.enabled === false ||
-        !variables.enabled ||
-        !variables.threadId
-      ) {
+      if (!options.enabled || !variables.enabled || !variables.threadId) {
         throw new Error("Task cancellation is not permitted.");
       }
       return cancelBackgroundTask(variables.threadId, variables.taskId);
     },
-    onSuccess: (task, variables) => {
-      queryClient.setQueryData(
-        backgroundTaskQueryKey(
-          variables.threadId,
-          task.task_id,
-          variables.cacheScope,
-        ),
-        task,
-      );
-      queryClient.setQueryData(
-        backgroundTasksQueryKey(variables.threadId, variables.cacheScope),
-        (current: unknown) =>
-          Array.isArray(current)
-            ? current.map((item) =>
-                typeof item === "object" &&
-                item !== null &&
-                "task_id" in item &&
-                item.task_id === task.task_id
-                  ? task
-                  : item,
-              )
-            : current,
-      );
+    onSuccess: (_task, variables) => {
+      // 只让仍启用的读取 hook 刷新；不能在权限撤销后写回旧 task detail。
       void queryClient.invalidateQueries({
         queryKey: backgroundTasksQueryKey(
           variables.threadId,

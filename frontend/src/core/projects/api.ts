@@ -117,11 +117,15 @@ function projectUrl(projectId: string, suffix = ""): string {
   return `${getBackendBaseURL()}/api/projects/${encodeURIComponent(projectId)}${suffix}`;
 }
 
-export async function listProjects(status?: ProjectStatus): Promise<Project[]> {
+export async function listProjects(
+  status?: ProjectStatus,
+  options: { signal?: AbortSignal } = {},
+): Promise<Project[]> {
   const response = await fetchWithAuth(
     `${getBackendBaseURL()}/api/projects${status ? `?status=${encodeURIComponent(status)}` : ""}`,
     {
       method: "GET",
+      ...(options.signal ? { signal: options.signal } : {}),
     },
   );
 
@@ -135,9 +139,13 @@ export async function listProjects(status?: ProjectStatus): Promise<Project[]> {
   return body.projects;
 }
 
-export async function getProject(projectId: string): Promise<Project> {
+export async function getProject(
+  projectId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<Project> {
   const response = await fetchWithAuth(projectUrl(projectId), {
     method: "GET",
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 
   if (!response.ok) {
@@ -249,7 +257,7 @@ export async function deleteProject(projectId: string): Promise<void> {
 
 export async function listProjectThreads(
   projectId: string,
-  params: { limit?: number; offset?: number } = {},
+  params: { limit?: number; offset?: number; signal?: AbortSignal } = {},
 ): Promise<ProjectThread[]> {
   const search = new URLSearchParams();
   if (params.limit !== undefined) {
@@ -263,6 +271,7 @@ export async function listProjectThreads(
     projectUrl(projectId, `/threads${query}`),
     {
       method: "GET",
+      ...(params.signal ? { signal: params.signal } : {}),
     },
   );
 
@@ -277,7 +286,7 @@ export async function listProjectThreads(
 
 export async function listProjectDocuments(
   projectId: string,
-  params: { limit?: number; offset?: number } = {},
+  params: { limit?: number; offset?: number; signal?: AbortSignal } = {},
 ): Promise<ProjectDocumentListResponse> {
   const search = new URLSearchParams();
   if (params.limit !== undefined) {
@@ -291,6 +300,7 @@ export async function listProjectDocuments(
     projectUrl(projectId, `/documents${query}`),
     {
       method: "GET",
+      ...(params.signal ? { signal: params.signal } : {}),
     },
   );
 
@@ -602,6 +612,7 @@ export async function listProjectThreadFiles(
     offset?: number;
     thread_limit?: number;
     file_limit?: number;
+    signal?: AbortSignal;
   } = {},
 ): Promise<ProjectThreadFilesResponse> {
   const search = new URLSearchParams();
@@ -619,6 +630,7 @@ export async function listProjectThreadFiles(
     projectUrl(projectId, `/thread-files${query}`),
     {
       method: "GET",
+      ...(params.signal ? { signal: params.signal } : {}),
     },
   );
 

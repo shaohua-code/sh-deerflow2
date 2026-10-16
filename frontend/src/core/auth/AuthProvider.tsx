@@ -24,6 +24,8 @@ interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  /** /auth/me 暂时不可用时保留身份、清空权限快照，并由工作台提示和重试。 */
+  authRefreshUnavailable: boolean;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   applyUser: (user: User | null) => void;
@@ -47,6 +49,7 @@ interface AuthProviderProps {
 export function AuthProvider({ children, initialUser }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(initialUser);
   const [isLoading, setIsLoading] = useState(false);
+  const [authRefreshUnavailable, setAuthRefreshUnavailable] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   const staticMode = isStaticWebsiteOnly();
@@ -60,6 +63,7 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
    */
   const applyUser = useCallback((next: User | null) => {
     setUser(next);
+    setAuthRefreshUnavailable(false);
   }, []);
 
   /**
@@ -78,17 +82,29 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
       if (res.ok) {
         const data = await res.json();
         setUser(data);
+        setAuthRefreshUnavailable(false);
       } else if (res.status === 401) {
         // Session expired or invalid
         setUser(null);
+        setAuthRefreshUnavailable(false);
         // Redirect to login if on a protected route
         if (pathname?.startsWith("/workspace")) {
           router.push(buildLoginUrl(pathname));
         }
+      } else {
+        // 临时错误不等同于退出登录；撤掉旧授权快照，避免撤权后继续显示受保护数据。
+        setUser((current) =>
+          current ? { ...current, permissions: [] } : current,
+        );
+        setAuthRefreshUnavailable(true);
       }
     } catch (err) {
       console.error("Failed to refresh user:", err);
-      setUser(null);
+      // 网络中断时保留账号身份，但让所有有明确权限门禁的入口 fail closed。
+      setUser((current) =>
+        current ? { ...current, permissions: [] } : current,
+      );
+      setAuthRefreshUnavailable(true);
     } finally {
       setIsLoading(false);
     }
@@ -108,6 +124,7 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
   const logout = useCallback(async () => {
     // Immediately clear local state to prevent UI flicker
     setUser(null);
+    setAuthRefreshUnavailable(false);
 
     if (staticMode) {
       router.push("/");
@@ -146,7 +163,7 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
   useEffect(() => {
     if (staticMode) return;
 
-    const handleVisibilityChange = () => {
+    const refreshIfStale = () => {
       if (document.visibilityState !== "visible" || user === null) return;
       const now = Date.now();
       if (now - lastCheckRef.current < 60_000) return;
@@ -154,9 +171,16 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
       void refreshUser();
     };
 
+    const handleVisibilityChange = () => refreshIfStale();
+    // Alt-tab may restore window focus without a visibilitychange event.
+    // Re-check the server-owned permission snapshot on that path too.
+    const handleWindowFocus = () => refreshIfStale();
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
     };
   }, [staticMode, user, refreshUser]);
 
@@ -164,6 +188,7 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
     user,
     isAuthenticated,
     isLoading,
+    authRefreshUnavailable,
     logout,
     refreshUser,
     applyUser,
@@ -197,10 +222,20 @@ export function useRequireAuth(): AuthContextType {
     if (isStaticWebsiteOnly()) return;
 
     // Only redirect if we're sure user is not authenticated (not just loading)
-    if (!auth.isLoading && !auth.isAuthenticated) {
+    if (
+      !auth.isLoading &&
+      !auth.isAuthenticated &&
+      !auth.authRefreshUnavailable
+    ) {
       router.push(buildLoginUrl(pathname || "/workspace"));
     }
-  }, [auth.isAuthenticated, auth.isLoading, router, pathname]);
+  }, [
+    auth.authRefreshUnavailable,
+    auth.isAuthenticated,
+    auth.isLoading,
+    router,
+    pathname,
+  ]);
 
   return auth;
 }

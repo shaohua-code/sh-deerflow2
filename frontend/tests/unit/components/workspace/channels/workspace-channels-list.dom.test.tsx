@@ -25,6 +25,28 @@ const mocks = rs.hoisted(() => ({
   },
 }));
 
+const auth = rs.hoisted(() => ({
+  user: null as {
+    id: string;
+    permissions?: readonly string[];
+    system_role?: string;
+  } | null,
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  AuthProvider: ({
+    children,
+    initialUser,
+  }: {
+    children: ReactNode;
+    initialUser: unknown;
+  }) => {
+    auth.user = initialUser as typeof auth.user;
+    return children;
+  },
+  useAuth: () => ({ user: auth.user }),
+}));
+
 rs.mock("@/components/ui/sidebar", () => ({
   SidebarGroup: ({ children }: { children: ReactNode }) => (
     <section>{children}</section>

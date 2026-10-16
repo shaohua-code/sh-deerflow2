@@ -20,7 +20,16 @@ const mocks = rs.hoisted(() => ({
 const auth = rs.hoisted(() => ({ userId: "admin-1" }));
 
 rs.mock("@/core/auth/AuthProvider", () => ({
-  useAuth: () => ({ user: auth.userId ? { id: auth.userId } : null }),
+  useAuth: () =>
+    auth.userId
+      ? {
+          user: {
+            id: auth.userId,
+            system_role: "admin",
+            permissions: ["product:admin", "accounts:admin"],
+          },
+        }
+      : { user: null },
 }));
 
 rs.mock("@/product/api", () => ({
@@ -634,7 +643,7 @@ describe("ProductAdminPage activity audit", () => {
     expect(screen.getAllByText("private-admin-one@example.com")).toHaveLength(
       2,
     );
-    expect(screen.getAllByText("private-admin-one-actor")).toHaveLength(2);
+    expect(screen.getByText("private-admin-one-actor")).toBeDefined();
 
     auth.userId = "admin-2";
     view.rerender(<ProductAdminPage />);
@@ -1149,7 +1158,9 @@ describe("ProductAdminPage activity audit", () => {
 
     expect(await screen.findAllByText("member@example.com")).toHaveLength(2);
     const disableButton = screen
-      .getAllByRole("button", { name: "Disable account" })
+      .getAllByRole("button", {
+        name: "Disable account member@example.com",
+      })
       .at(0);
     if (!disableButton) throw new Error("Expected an account disable action");
     fireEvent.click(disableButton);
@@ -1190,7 +1201,9 @@ describe("ProductAdminPage activity audit", () => {
 
     expect(await screen.findAllByText("member@example.com")).toHaveLength(2);
     const disableButton = screen
-      .getAllByRole("button", { name: "Disable account" })
+      .getAllByRole("button", {
+        name: "Disable account member@example.com",
+      })
       .at(0);
     if (!disableButton) throw new Error("Expected an account disable action");
     fireEvent.click(disableButton);
@@ -1224,7 +1237,9 @@ describe("ProductAdminPage activity audit", () => {
     const view = render(<ProductAdminPage />, { wrapper: Wrapper });
     expect(await screen.findAllByText("member@example.com")).toHaveLength(2);
     const disableButton = screen
-      .getAllByRole("button", { name: "Disable account" })
+      .getAllByRole("button", {
+        name: "Disable account member@example.com",
+      })
       .at(0);
     if (!disableButton) throw new Error("Expected an account disable action");
     fireEvent.click(disableButton);

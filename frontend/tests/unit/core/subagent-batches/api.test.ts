@@ -44,6 +44,21 @@ describe("subagent batch API", () => {
     );
   });
 
+  it("passes cancellation signals to batch and item reads", async () => {
+    const controller = new AbortController();
+    mockedFetch
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]));
+
+    await fetchSubagentBatches("thread-1", controller.signal);
+    await fetchSubagentBatchItems("thread-1", "batch-1", {
+      signal: controller.signal,
+    });
+
+    expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(mockedFetch.mock.calls[1]?.[1]?.signal).toBe(controller.signal);
+  });
+
   it("posts control and failed-item retry actions", async () => {
     mockedFetch
       .mockResolvedValueOnce(jsonResponse({}))

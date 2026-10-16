@@ -8,7 +8,7 @@ Gateway 的记忆管理接口也会将用户主动发起的导出、导入、清
 
 `GET /api/product/v1/bootstrap` 返回版本化的产品展示配置，以及由 Gateway 解析的当前用户 ID 和管理员标记。Gateway 会为扩展路由执行会话认证；principal 无法解析时接口会拒绝请求。响应只包含白名单产品设置，不会回传扩展的任意私有配置。
 
-个人偏好通过产品自有的 `flowdesk_user_settings` 表保存，对应接口为 `GET /api/product/v1/settings`、`PUT /api/product/v1/settings/{key}` 和 `DELETE /api/product/v1/settings/{key}`。读取要求 `preferences:read`，新增、更新和删除要求 `preferences:write`；扩展先检查 Gateway principal 与有效路由授权，再访问存储，并始终按 principal 的用户 ID 限定范围。每个 JSON 值最多 64 KiB；键名仅允许小写字母、数字、`.`、`_` 和 `-`。不要在这里保存模型提供商密钥或 API 凭据；部署密钥应由运维的密钥管理系统保存。扩展使用独立 Alembic 迁移链，当前版本为 `fd_0007`，迁移版本保存在 `flowdesk_alembic_version` 表中。PostgreSQL 将表放在显式的 `product` schema；SQLite 没有 schema 命名空间，因此通过 schema 映射使用默认数据库。
+个人偏好通过产品自有的 `flowdesk_user_settings` 表保存，对应接口为 `GET /api/product/v1/settings`、`PUT /api/product/v1/settings/{key}` 和 `DELETE /api/product/v1/settings/{key}`。读取要求 `preferences:read`，新增、更新和删除要求 `preferences:write`；扩展先检查 Gateway principal 与有效路由授权，再访问存储，并始终按 principal 的用户 ID 限定范围。每个 JSON 值最多 64 KiB；键名仅允许小写字母、数字、`.`、`_` 和 `-`。不要在这里保存模型提供商密钥或 API 凭据；部署密钥应由运维的密钥管理系统保存。扩展使用独立 Alembic 迁移链，当前版本为 `fd_0008`，迁移版本保存在 `flowdesk_alembic_version` 表中。PostgreSQL 将表放在显式的 `product` schema；SQLite 没有 schema 命名空间，因此通过 schema 映射使用默认数据库。
 
 `fd_0002` 迁移新增 `flowdesk_audit_events`。偏好写入/删除及对应审计事件在同一事务提交。Gateway 账号启用/停用操作也会通过公开的 `AdminActionObserver` 契约投递到此表，投递发生在宿主账号事务提交之后。事件只包含受限长度的操作者/资源 ID、稳定动作码、结果、时间和可选 request ID，不包含偏好内容、个人资料、消息正文或凭据。宿主账号审计采用尽力投递；失败会记入 Gateway 诊断。`GET /api/product/v1/admin/audit-events` 要求 Gateway 投影的管理员身份，分页大小限制为 1–100；响应的 `has_more` 通过多读一条哨兵记录精确判断，避免整页边界误导前端；旧版响应没有该字段时，前端仍按页长兼容。Gateway 不会将个人访问令牌（PAT）视为管理员身份。没有修改或删除审计事件的 API。
 
@@ -23,6 +23,8 @@ plugins:
       data_jobs:
         enabled: true
 ```
+
+`fd_0008` 为任务保存 `kind:scope` 授权键，并按 owner、授权键、创建时间和任务 ID 建立分页索引。列表先逐类复核当前 route grant 与 Central IAM self-scope，再在 SQL 中只选取获准类别并应用 `offset`，避免加载并逐条检查整段任务历史。`has_more` 仅在后续存在至少一条当前可见任务时为 `true`。滚动升级期间旧进程新写入的 NULL 授权键仍按任务 scope 逐条检查；响应中的 `next_offset` 指向下一页第一条可见任务，避免前端重复或跳过被过滤的旧行。前端仍以 `has_more` 决定能否继续，并对旧版响应缺少 `next_offset` 的情况按页长回退，不能根据 owner 原始行数推断。
 
 `GET /api/product/v1/data-capabilities` 供已登录页面在打开删除确认前发现当前宿主支持的范围。它同样受上述 `data_jobs.enabled` 开关控制，关闭时返回 404；未认证返回 401，扩展 store 缺失返回 503。响应只包含 `api_version: 1` 和封闭的 `deletion_scopes` 布尔白名单：`preferences`、`memory`、`files`、`threads`、`projects`、`agents`、`scheduled_tasks`。偏好删除由扩展实现，其余范围复用 store 当前同步 `can_delete_*` 属性；缺少能力、属性异常或非布尔投影都视为不支持，不返回内部原因、路径或配置。接口不会执行宿主读取/删除、排队任务或写入数据库。能力发现只是当前实现的可用性提示，不保证任务服务已就绪、操作者对每项资源已有权限或提交后仍然支持；创建任务和 worker 继续执行原有最终能力检查、身份校验及逐资源 owner 保护。
 

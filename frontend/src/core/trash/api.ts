@@ -65,7 +65,7 @@ function trashUrl(suffix = ""): string {
 }
 
 export async function listTrashDocuments(
-  params: { limit?: number; offset?: number } = {},
+  params: { limit?: number; offset?: number; signal?: AbortSignal } = {},
 ): Promise<TrashListResponse> {
   const search = new URLSearchParams();
   if (params.limit !== undefined) {
@@ -77,6 +77,7 @@ export async function listTrashDocuments(
   const query = search.size > 0 ? `?${search.toString()}` : "";
   const response = await fetchWithAuth(trashUrl(`/documents${query}`), {
     method: "GET",
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   if (!response.ok) {

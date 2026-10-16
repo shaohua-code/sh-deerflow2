@@ -27,3 +27,6 @@ action combinations, missing or broader tenant/org scopes, local owner mismatch,
 and the absence of manager calls after denial for both synchronous tools and
 middleware hooks. Never place access tokens in serialized runtime context or
 memory queue payloads.
+
+
+For retry scheduling assertions, distinguish injected run-start time from actual I/O completion time. When retries intentionally schedule from failure completion, assert the expected interval within captured start/finish bounds instead of exact equality to run start.

@@ -11,7 +11,7 @@ import {
   SaveIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -100,6 +100,10 @@ export default function NewAgentPage() {
       PERMISSIONS.AGENTS_WRITE,
       PERMISSIONS.RUNS_CREATE,
     ])[0] ?? null;
+  // 保存本次渲染的权限结果，查名异步返回时用它阻止撤权后的旧回调继续启动 Agent。
+  const missingPermissionRef = useRef(missingPermission);
+  missingPermissionRef.current = missingPermission;
+  const nameCheckAbortControllerRef = useRef<AbortController | null>(null);
 
   const [step, setStep] = useState<Step>("name");
   const [nameInput, setNameInput] = useState("");
@@ -116,6 +120,15 @@ export default function NewAgentPage() {
 
   // 初始化失败后的重试要使用新会话；旧请求可能已被 Gateway 接收，但页面无法确认结果。
   const [threadId, setThreadId] = useState(() => uuid());
+
+  useEffect(() => {
+    if (missingPermission) {
+      nameCheckAbortControllerRef.current?.abort();
+    }
+    return () => {
+      nameCheckAbortControllerRef.current?.abort();
+    };
+  }, [missingPermission]);
 
   const readSavedAgent = useCallback(async (name: string) => {
     // setup_agent 已成功后只重试读取；再次发送保存命令可能重复创建或覆盖智能体。
@@ -236,10 +249,17 @@ export default function NewAgentPage() {
     }
 
     setNameError("");
+    const controller = new AbortController();
+    nameCheckAbortControllerRef.current?.abort();
+    nameCheckAbortControllerRef.current = controller;
     setIsCheckingName(true);
     let normalizedName = trimmed.toLowerCase();
     try {
-      const result = await checkAgentName(trimmed);
+      const result = await checkAgentName(trimmed, {
+        signal: controller.signal,
+      });
+      // Gateway 是最终授权边界；这次复核避免已知撤权后的客户端继续发起新运行。
+      if (controller.signal.aborted || missingPermissionRef.current) return;
       if (!result.available) {
         setNameError(t.agents.nameStepAlreadyExistsError);
         return;
@@ -251,6 +271,7 @@ export default function NewAgentPage() {
       }
       normalizedName = result.name;
     } catch (err) {
+      if (controller.signal.aborted) return;
       if (err instanceof AgentsApiDisabledError) {
         setNameError(t.agents.nameStepApiDisabledError);
       } else if (
@@ -269,8 +290,13 @@ export default function NewAgentPage() {
       }
       return;
     } finally {
+      if (nameCheckAbortControllerRef.current === controller) {
+        nameCheckAbortControllerRef.current = null;
+      }
       setIsCheckingName(false);
     }
+
+    if (controller.signal.aborted || missingPermissionRef.current) return;
 
     setNameInput(normalizedName);
     setAgentName(normalizedName);

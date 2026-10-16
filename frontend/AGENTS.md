@@ -40,6 +40,19 @@ Unit tests live under `tests/unit/` and mirror the `src/` layout (e.g., `tests/u
 
 Webpack is the default development bundler. Use `DEER_FLOW_DEV_BUNDLER=turbo` with `pnpm dev` to opt in to Turbopack when diagnosing a local Next.js bundler issue.
 
+The root public-brand provider imports the small anonymous
+`product/public-brand-api.ts` client directly. Keep that path independent of the
+authenticated `product/api.ts` fetcher and its workspace dependencies; the
+provider is part of every route's initial client graph. `product/api.ts`
+re-exports the public helper for existing callers. The anonymous path checks
+the public static-demo flag directly so it does not load the client env schema.
+
+`core/auth/AuthProvider.tsx` refreshes the server-owned user and permission
+snapshot when an authenticated tab becomes visible or its window regains focus,
+with both events sharing a 60-second throttle. Preserve both listeners when
+changing auth recovery; API/Gateway authorization remains authoritative if a
+permission changes between refreshes.
+
 Rstest runs them as two projects (`rstest.config.ts`). `*.test.ts` / `*.test.tsx` run in a plain **node** environment — that is nearly the whole suite, and it is the default for anything that is pure logic. `*.dom.test.ts` / `*.dom.test.tsx` run in **happy-dom**, for tests that need a document: hooks driven through `renderHook` from `@testing-library/react`, and components. Keep the split — a DOM environment costs roughly 3x the runtime of the node suite, so tests that do not render should not opt into it. A hook whose behavior only exists under real React (effect ordering, cleanup on unmount, re-render on store change) belongs in a `.dom.test.*` file rather than a node test that mocks `react` itself.
 
 E2E tests use Playwright/Chromium, mock APIs through page.route, and cover real interactions. Configuration is playwright.config.ts; Windows server startup gets five minutes. Set PLAYWRIGHT_SKIP_WEB_SERVER=1 only for an existing server. Update tests/e2e-real-backend/auth-disabled-contract.spec.ts and backend/tests/test_auth_me_permissions.py whenever route permissions change.
@@ -98,7 +111,7 @@ do not use HTML `maxLength`, which counts UTF-16 code units instead.
 - **Components**: `ui/` and `ai-elements/` are generated from registries (Shadcn, MagicUI, React Bits, Vercel AI SDK) — don't manually edit these.
 - **ESLint + PNPM**: Next.js 16 uses native Flat Config from `eslint-config-next/core-web-vitals`; keep `eslint-config-next` aligned with the installed Next.js major/minor line and combine the exported config array directly. Do not reintroduce `FlatCompat`, resolve private plugin files manually, pin a `.pnpm` virtual-store path, or add a hoisting requirement. If the local dependency tree does not match the lockfile, avoid repairing it by deleting/recreating `node_modules`; report that runtime lint validation needs a safe dependency sync.
 - **Product boundary**: keep brand/product pages in src/product and compose core flows. Feature flags never authorize. Admin account status uses the session-aware Gateway API; disabled accounts invalidate cached browser credentials. Keep the status DTO, validator, locales and alerts aligned with stopped, cross-Gateway-pending and unconfirmed-run states.
-- **Theme ownership**: `src/components/theme-provider.tsx` owns the product theme context, `theme` localStorage preference, system preference listener, and the root `dark` class. `src/app/layout.tsx` runs the small `next/script` `beforeInteractive` bootstrap from the Server Component so the initial paint is correct; do not reintroduce `next-themes`' client-rendered script. Theme consumers import `useTheme` from the local provider. The public homepage remains forced dark while the saved preference is preserved for other routes.
+- **Theme ownership**: `src/components/theme-provider.tsx` owns the product theme context, `theme` localStorage preference, system preference listener, and the root `dark` class. `src/components/theme-bootstrap.tsx` is mounted by the root Server Component layout and uses Next `Script` with `strategy="beforeInteractive"` to load the same-origin static `public/theme-bootstrap.js` before first paint. Keep executable code in that external file; inline script children in a React tree trigger React's client-rendering warning. Theme consumers import `useTheme` from the local provider. The public homepage remains forced dark while the saved preference is preserved for other routes.
 
 - **工作台查询缓存隔离**：`product/workspace-query-boundary.tsx` 按当前认证用户 ID 重挂载工作台 QueryClient；`components/query-client-provider.tsx` 每个 Provider 实例单独创建缓存。新增 owner 数据查询仍应把用户 ID 放入 key；切换账号时旧缓存、在途页面和未提交草稿必须先卸载，不能依赖只清空可见列表。公开预览与独立文件查看器保持各自的 Provider 实例。
 - **产物面板浏览器状态**：`components/workspace/artifacts/context.tsx` 的 v2 sessionStorage 键包含用户 ID 和路径。旧 v1 键没有账号归属，不自动迁移或读取；切换账号/路径时须避免旧一帧状态写入新键。文件正文和编辑草稿仍不得写入浏览器持久存储。
@@ -167,6 +180,16 @@ Chat archive is a thread metadata flag (`deerflow_archived === true`), independe
 of run status. Sidebar and Chats explicitly request the Gateway's optional
 `archived` filter through `searchThreadsByArchive`; the SDK drops this extension,
 so use the authenticated REST fetcher. Static demos retain SDK fixture queries.
+Both thread lists require `threads:read`; metadata actions such as rename, pin,
+archive/restore, and project move require `threads:write`; export reads thread
+state and therefore requires `threads:read`. Keep the Chats page query disabled
+and hide stale cached rows when read permission is revoked. The existing-thread
+chat route also gates metadata, usage, history, and stream subscriptions on
+`threads:read`; a brand-new chat still uses the separate `runs:create` check.
+An Agent chat needs both `agents:read` for the Agent and `threads:read` for its
+conversation; gate Agent details and thread data separately because neither
+permission implies the other.
+Gateway route guards remain the final authorization boundary.
 `core/threads/archive.ts` waits for the write, cancels stale reads, merges only the
 owned flag into metadata snapshots, then restarts metadata reads and resets list
 pagination. Keep both default and Custom Agent header restore controls in sync.

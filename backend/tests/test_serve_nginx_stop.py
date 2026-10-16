@@ -13,6 +13,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVE_SH = REPO_ROOT / "scripts" / "serve.sh"
 
 
+def _to_bash_path(path: Path) -> str:
+    """Return an absolute path that Git Bash can consume on Windows."""
+    posix = path.resolve().as_posix()
+    if len(posix) > 1 and posix[1] == ":":
+        return "/" + posix[0].lower() + posix[2:]
+    return posix
+
+
 def _extract_shell_function(name: str) -> str:
     text = SERVE_SH.read_text(encoding="utf-8")
     marker = f"{name}() {{"
@@ -31,6 +39,7 @@ def _extract_shell_function(name: str) -> str:
 
 def _is_repo_nginx_pid(
     *,
+    tmp_path: Path,
     command: str,
     args: str,
     repo_root: Path | str,
@@ -39,9 +48,10 @@ def _is_repo_nginx_pid(
     bash = require_script_bash()
 
     function = _extract_shell_function("_is_repo_nginx_pid")
+    repo_root_text = _to_bash_path(Path(repo_root))
     script = f"""
-REPO_ROOT={shlex.quote(str(repo_root))}
-DEERFLOW_ROOTS={shlex.quote(str(repo_root))}
+REPO_ROOT={shlex.quote(repo_root_text)}
+DEERFLOW_ROOTS={shlex.quote(repo_root_text)}
 FAKE_COMMAND={shlex.quote(command)}
 FAKE_ARGS={shlex.quote(args)}
 FAKE_DEERFLOW_PID={1 if deerflow_pid else 0}
@@ -62,7 +72,9 @@ ps() {{
 
 _is_repo_nginx_pid 12345
 """
-    result = subprocess.run([bash, "-c", script], check=False)
+    script_path = tmp_path / "nginx-pid-check.sh"
+    script_path.write_text(script, encoding="utf-8")
+    result = subprocess.run([bash, _to_bash_path(script_path)], check=False)
     return result.returncode == 0
 
 
@@ -71,13 +83,15 @@ def test_repo_nginx_pid_accepts_macos_rewritten_master_command(tmp_path):
     # runs this test, so build the fixture with forward slashes explicitly;
     # on Windows a Path would render with backslashes and never match the
     # "$root"/docker/nginx/... pattern the shell function greps for.
-    repo_root = (tmp_path / "deer-flow").as_posix()
+    repo_root_path = tmp_path / "deer-flow"
+    repo_root = _to_bash_path(repo_root_path)
     nginx_conf = f"{repo_root}/docker/nginx/nginx.local.conf"
 
     assert _is_repo_nginx_pid(
+        tmp_path=tmp_path,
         command=f"nginx: master process /opt/homebrew/bin/nginx -c {nginx_conf}",
         args=f"nginx: master process /opt/homebrew/bin/nginx -c {nginx_conf} -p {repo_root}",
-        repo_root=repo_root,
+        repo_root=repo_root_path,
     )
 
 
@@ -85,6 +99,7 @@ def test_repo_nginx_pid_accepts_macos_rewritten_worker_after_repo_check(tmp_path
     repo_root = tmp_path / "deer-flow"
 
     assert _is_repo_nginx_pid(
+        tmp_path=tmp_path,
         command="nginx: worker process",
         args="nginx: worker process",
         repo_root=repo_root,
@@ -106,6 +121,7 @@ def test_repo_nginx_pid_rejects_unowned_or_non_nginx_processes(
     deerflow_pid: bool,
 ):
     assert not _is_repo_nginx_pid(
+        tmp_path=tmp_path,
         command=command,
         args=args,
         repo_root=tmp_path / "deer-flow",

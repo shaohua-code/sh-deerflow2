@@ -185,10 +185,12 @@ export async function uploadFiles(
 /**
  * Load the upload limits enforced by the gateway for a thread
  */
-export async function getUploadLimits(threadId: string): Promise<UploadLimits> {
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${threadId}/uploads/limits`,
-  );
+export async function getUploadLimits(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<UploadLimits> {
+  const url = `${getBackendBaseURL()}/api/threads/${threadId}/uploads/limits`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
 
   if (!response.ok) {
     throw new Error(
@@ -204,10 +206,10 @@ export async function getUploadLimits(threadId: string): Promise<UploadLimits> {
  */
 export async function listUploadedFiles(
   threadId: string,
+  signal?: AbortSignal,
 ): Promise<ListFilesResponse> {
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${threadId}/uploads/list`,
-  );
+  const url = `${getBackendBaseURL()}/api/threads/${threadId}/uploads/list`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
 
   if (!response.ok) {
     throw new Error(
@@ -225,11 +227,11 @@ export async function listUploadedFiles(
 export async function listThreadOutputFiles(
   threadId: string,
   limit = 200,
+  signal?: AbortSignal,
 ): Promise<ThreadOutputFileListResponse> {
   const query = new URLSearchParams({ limit: String(limit) });
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/uploads/outputs?${query.toString()}`,
-  );
+  const url = `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/uploads/outputs?${query.toString()}`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to list generated files (${response.status})`);
   }

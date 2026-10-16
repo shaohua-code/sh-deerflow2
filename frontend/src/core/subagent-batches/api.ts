@@ -15,9 +15,11 @@ async function json<T>(response: Response, fallback: string): Promise<T> {
 
 export async function fetchSubagentBatches(
   threadId: string,
+  signal?: AbortSignal,
 ): Promise<SubagentBatch[]> {
+  const url = `${batchUrl(threadId)}?limit=20`;
   return json(
-    await fetch(`${batchUrl(threadId)}?limit=20`),
+    signal ? await fetch(url, { signal }) : await fetch(url),
     "Failed to load subagent batches",
   );
 }
@@ -29,6 +31,7 @@ export async function fetchSubagentBatchItems(
     offset?: number;
     limit?: number;
     status?: SubagentBatchItem["status"];
+    signal?: AbortSignal;
   } = {},
 ): Promise<SubagentBatchItem[]> {
   const params = new URLSearchParams({
@@ -36,10 +39,14 @@ export async function fetchSubagentBatchItems(
     limit: String(options.limit ?? 100),
   });
   if (options.status) params.set("status", options.status);
+  const url = batchUrl(
+    threadId,
+    `/${encodeURIComponent(batchId)}/items?${params}`,
+  );
   return json(
-    await fetch(
-      batchUrl(threadId, `/${encodeURIComponent(batchId)}/items?${params}`),
-    ),
+    options.signal
+      ? await fetch(url, { signal: options.signal })
+      : await fetch(url),
     "Failed to load batch items",
   );
 }

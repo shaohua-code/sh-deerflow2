@@ -21,6 +21,14 @@ from deerflow.tools.builtins.invoke_acp_agent_tool import (
 from deerflow.tools.tools import get_available_tools
 
 
+@pytest.fixture
+def anyio_backend():
+    """Use a subprocess-capable event loop for ACP tests on Windows."""
+    if sys.platform == "win32":
+        return "asyncio", {"loop_factory": asyncio.ProactorEventLoop}
+    return "asyncio"
+
+
 def test_build_mcp_servers_filters_disabled_and_maps_transports():
     set_extensions_config(ExtensionsConfig(mcp_servers={"stale": McpServerConfig(enabled=True, type="stdio", command="echo")}, skills={}))
     fresh_config = ExtensionsConfig(

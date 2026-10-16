@@ -2,11 +2,19 @@
 
 For the current Flow Desk implementation, verification gaps, and ordered next steps, read [改造进度与后续计划 (progress and model handoff)](docs/改造进度与后续计划.md). Update it after each related work turn; older implementation logs retain their original verification scope.
 
+**2026-10-14 Central IAM B04 update:** The second ordered 104-file slice now reports **2,368 passed, 2 failed, 86 skipped** before a follow-up notification-budget race fix. The notification lifecycle/extension manager/API pin targeted selection passed **126** with **40** uv-dependent skips; Ruff check/format passed. One remaining known environment mismatch is installed `deerflow-extension-api` metadata **0.2.16** vs source/lock **0.2.18**. The full suite and post-fix slice remain unverified; the user-reported IAM readiness page says the database is pending migration, and no migration was run.
+
+**2026-10-14 Central IAM B04 follow-up:** Windows Git Bash sync tests now run a temporary script file instead of passing the full block through `sh -c`; tests requiring missing GNU make/`uv` report explicit skips. Three focused modules: **44 passed, 13 skipped**; Ruff and `git diff --check` passed. The second 104-file slice and complete suite remain unrerun; no production runtime or IAM database changed.
+
+**2026-10-14 Central IAM B04:** The second 104-file offline slice originally reported **2,339 passed, 82 failed, 35 skipped**; failures are not fully triaged and the slice was not rerun after targeted fixes. DeltaChannel passed **35/35**, detector/deploy passed **56**, and one extension path test passed; these remain targeted partial checks. No production runtime, IAM database, or quota setting changed.
+
 The [中文文档导航](docs/文档导航.md) groups the current guides, design records, upgrade history, and experiment materials.
+
+**2026-10-14 Central IAM B04:** Fixed Windows timeout and live-policy test fixtures, restored the frontend guidance budget, and explicitly skipped four Makefile dry-run tests when GNU make is absent. The ordered first-104-file offline slice passed **3,099 tests, 67 skipped, 3 deselected, 0 failed** (476.57s); this is not the full suite. Latest complete snapshot remains 17,062 passed / 142 failed / 349 skipped / 3 deselected / 0 errors. See [改造进度与后续计划](docs/改造进度与后续计划.md).
 
 **2026-10-12 Central IAM Provider-path audit:** Static review of the in-repository built-in production sources (`backend/app` and `backend/packages/harness/deerflow`) found shared-factory models and Gateway one-shot endpoints using LangChain usage callback scopes; DeerMem's direct `init_chat_model()` is covered by its Gateway hook. The Codex Responses custom provider is constructed through the shared factory, inherits `BaseChatModel`, and returns response usage metadata. Dynamically loaded third-party extension providers were not exhaustively enumerated. The idempotency `request_id` is per LangChain invocation, so Codex internal HTTP retries remain one metered invocation pending provider billing semantics. Read-only audit only; no tests or live calls ran.
 
-**2026-10-13 Central IAM B04 focused verification:** The latest full Windows Python 3.12 offline result remains the pre-fix 17,004 passed / 186 failed / 349 skipped / 3 deselected / 5 errors snapshot. Independent focused results: migration/bootstrap five modules 62; Studio 6; Gateway startup/checkpoint/regenerate 45; FastCRW/thread routes 142; PAT auth/repository/vault 63; extension task runtime 15; context compaction + Gateway services 212 passed. Legacy migration fixtures now create only `_BASELINE_TABLE_NAMES`; Ruff check/format passed. This turn changed test fixtures/docs only; production runtime behavior is unchanged. Full suite not rerun; `uv`, `WinError 10106`, and remaining failures stay open. No target migration/live IAM/provider/quota checks ran.
+**2026-10-13 Central IAM B04 follow-up:** Latest complete Windows Python 3.12 offline snapshot: 17,062 passed / 142 failed / 349 skipped / 3 deselected / 0 errors (82 warnings, 44:15), before the latest three test-fixture fixes. Agent API, Crawl4AI SSRF and Windows MCP URI focused tests: **171 passed, 1 skipped**; Ruff check/format passed on three Python files. The fixes use a scoped test identity/grants, deterministic public DNS and the actual temporary drive letter; no production runtime changed. Full suite has not been rerun after these fixes. Missing `uv`/`make`, `WinError 10106`, stale extension API venv metadata and remaining failures are unresolved. No target DB migration, live IAM/provider, or quota enforcement ran.
 
 **2026-10-12 Central IAM background memory usage:** DeerMem's timer-driven model path now creates a one-call usage callback from the active user and matching OIDC vault at dispatch, attaches it only to the LangChain invocation, then removes and closes it on completion. The queue stores no IAM credential/capability. The two focused memory/usage suites passed 20/20 and the Harness boundary check passed 1/1 in an isolated Windows Python 3.12 run; Ruff check/format passed on the six changed Python files, and the test directory was removed. Full-suite, database migration, and live IAM/Provider checks were not run; quota enforcement remains disabled.
 
@@ -471,6 +479,12 @@ such a checkout, use `bash ./scripts/<name>.sh ...`.
    ```
 
 6. **Access**: http://localhost:2026
+
+Local `make dev` waits for the homepage HTML through nginx before printing its
+ready banner. This places Next.js's first `/` compilation in startup rather than
+the first browser visit; other routes still compile when opened. If startup
+reports a homepage readiness failure, inspect `logs/frontend.log` and
+`logs/nginx.log`.
 
 Local services always use their internal ports (`8001`, `3000`, and `2026`).
 The root `.env` variable `PORT` configures only the published Docker ingress;

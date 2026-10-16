@@ -19,6 +19,8 @@ async def test_migration_interrupts_legacy_queue_and_adds_claim_fields(tmp_path:
     try:
         Base.metadata.create_all(sync)
         with sync.begin() as conn:
+            # Keep the post-0028 outbox table absent during historical replay.
+            conn.execute(sa.text("DROP TABLE IF EXISTS iam_model_usage_outbox"))
             conn.execute(sa.text("DROP INDEX uq_scheduled_task_run_active"))
             conn.execute(sa.text("ALTER TABLE scheduled_task_runs DROP COLUMN attempt_count"))
             conn.execute(sa.text("ALTER TABLE scheduled_task_runs DROP COLUMN lease_expires_at"))

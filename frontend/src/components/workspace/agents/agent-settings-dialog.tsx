@@ -39,6 +39,7 @@ import {
   selectionToAllowedSubagents,
   selectionToThinkingEnabled,
   type SubagentAccessSelection,
+  type ThinkingSelection,
   thinkingEnabledToSelection,
 } from "./agent-settings-dialog-helpers";
 
@@ -56,7 +57,7 @@ type AgentSettingsDraft = {
   model: string;
   temperature: string;
   maxTokens: string;
-  thinking: string;
+  thinking: ThinkingSelection;
   reasoningEffort: string;
   subagentAccess: SubagentAccessSelection;
   selectedSubagents: string[];

@@ -10,7 +10,7 @@ rs.mock("next/navigation", () => ({
   usePathname: () => mocks.pathname,
 }));
 
-rs.mock("@/product/api", () => ({
+rs.mock("@/product/public-brand-api", () => ({
   fetchPublicProductBrand: mocks.fetchPublicProductBrand,
 }));
 

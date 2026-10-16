@@ -16,6 +16,9 @@ import { toast } from "sonner";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 
 import { getAPIClient } from "../api";
+import { useAuth } from "../auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "../auth/permissions";
+import type { FeedbackData } from "../api/feedback";
 import { fetch } from "../api/fetcher";
 import { getBackendBaseURL } from "../config";
 import { useI18n } from "../i18n/hooks";
@@ -87,6 +90,10 @@ export type ThreadStreamOptions = {
   displayThreadId?: string | null | undefined;
   context: LocalSettings["context"];
   isMock?: boolean;
+  /** 对已有会话按权限启停历史查询和实时流订阅。 */
+  enabled?: boolean;
+  /** 历史消息路由需要 runs:read；拒绝此权限不应停止当前实时流。 */
+  historyPermissionDenied?: boolean;
   onSend?: (threadId: string) => void;
   onStart?: (threadId: string, runId: string) => void;
   onFinish?: (state: AgentThreadState) => void;
@@ -394,6 +401,24 @@ export function buildVisibleHistoryMessages(
   const visibleRows = messageRows.filter(
     (message) => !supersededRunIds.has(message.run_id),
   );
+  // Gateway 的评分只属于每轮最后一条可见 AI 消息。历史 API 为兼容旧
+  // 客户端会给其它行也返回 null；在压平 wrapper 时把资格收窄到该消息，
+  // 这样消息行不会在一轮的中间回答上重复显示点赞按钮。
+  const lastAiRowByRun = new Map<string, RunMessage>();
+  for (const row of visibleRows) {
+    if (row.content.type !== "ai" || isHiddenFromUIMessage(row.content)) {
+      continue;
+    }
+    const previous = lastAiRowByRun.get(row.run_id);
+    if (
+      !previous ||
+      !isValidMessageSeq(previous.seq) ||
+      !isValidMessageSeq(row.seq) ||
+      row.seq >= previous.seq
+    ) {
+      lastAiRowByRun.set(row.run_id, row);
+    }
+  }
   // Content and position converge separately for a repeated identity: the
   // newest visible row supplies the content, but the position stays the
   // earliest trusted feed row — mirroring the backend `get_message_seqs`
@@ -429,6 +454,10 @@ export function buildVisibleHistoryMessages(
     ...visibleRows.map((message) => ({
       ...message.content,
       run_id: message.run_id,
+      ...(lastAiRowByRun.get(message.run_id) === message &&
+      message.feedback !== undefined
+        ? { feedback: message.feedback as FeedbackData | null }
+        : {}),
       additional_kwargs: {
         ...message.content.additional_kwargs,
         [MESSAGE_SEQ_KEY]: message.seq,
@@ -528,6 +557,24 @@ export function getThreadHistoryNextPageParam(
 
 export const threadHistoryQueryKey = (threadId: string) =>
   ["thread-messages", threadId] as const;
+
+/** 清理被撤销读取权限的会话数据，避免其它页面复用旧缓存。 */
+export function clearThreadReadCache(
+  queryClient: QueryClient,
+  threadId: string,
+  userId?: string | null,
+) {
+  const queryKeys = [
+    ["thread", threadId],
+    ["thread", "metadata", threadId],
+    threadHistoryQueryKey(threadId),
+    threadTokenUsageQueryKey(threadId, userId),
+  ] as const;
+  for (const queryKey of queryKeys) {
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }
+}
 
 export function buildThreadMessagesPageUrl(
   baseUrl: string,
@@ -1629,6 +1676,15 @@ export function invalidateStoppedThreadCaches(
     queryKey: ["thread", "metadata", threadId, isMock],
   });
   void queryClient.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === "thread-runs" && query.queryKey[2] === threadId,
+  });
+  void queryClient.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === "thread-run-detail" &&
+      query.queryKey[2] === threadId,
+  });
+  void queryClient.invalidateQueries({
     queryKey: threadTokenUsageQueryKey(threadId),
   });
 }
@@ -1710,12 +1766,18 @@ export function useThreadStream({
   displayThreadId,
   context,
   isMock,
+  enabled = true,
+  historyPermissionDenied = false,
   onSend,
   onStart,
   onFinish,
 }: ThreadStreamOptions) {
   const { t } = useI18n();
-  const currentViewThreadId = displayThreadId ?? threadId ?? null;
+  // 权限撤销在渲染阶段立即生效，不能等到清理 effect 才停止旧订阅。
+  const activeThreadId = enabled ? threadId : undefined;
+  const currentViewThreadId = enabled
+    ? (displayThreadId ?? threadId ?? null)
+    : null;
   const currentViewThreadIdRef = useRef(currentViewThreadId);
   currentViewThreadIdRef.current = currentViewThreadId;
   // Optimistic messages shown before the server stream responds.
@@ -1733,10 +1795,13 @@ export function useThreadStream({
     useState<ReadonlySet<string>>(() => new Set());
   const [isUploading, setIsUploading] = useState(false);
   // Track the thread ID that is currently streaming to handle thread changes during streaming
-  const [onStreamThreadId, setOnStreamThreadId] = useState(() => threadId);
+  const [onStreamThreadId, setOnStreamThreadId] = useState(
+    () => activeThreadId,
+  );
   // Ref to track current thread ID across async callbacks without causing re-renders,
   // and to allow access to the current thread id in onUpdateEvent
-  const threadIdRef = useRef<string | null>(threadId ?? null);
+  const threadIdRef = useRef<string | null>(activeThreadId ?? null);
+  threadIdRef.current = activeThreadId ?? null;
   const startedRef = useRef(false);
   const pendingUsageBaselineMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingPreparedReplayRef = useRef<PendingPreparedReplayMask | null>(
@@ -1753,8 +1818,10 @@ export function useThreadStream({
     hasMore: hasMoreHistory,
     loadMore: loadMoreHistory,
     loading: isHistoryLoading,
+    permissionDenied: isHistoryPermissionDenied,
   } = useThreadHistory(onStreamThreadId ?? "", {
-    enabled: !isMock,
+    enabled: enabled && !isMock,
+    permissionDenied: historyPermissionDenied,
     pendingSupersededRunIds,
   });
 
@@ -1764,7 +1831,7 @@ export function useThreadStream({
   }, [onSend, onStart, onFinish]);
 
   useEffect(() => {
-    const normalizedThreadId = threadId ?? null;
+    const normalizedThreadId = enabled ? (threadId ?? null) : null;
     if (!normalizedThreadId) {
       // Reset when the UI moves back to a brand new unsaved thread.
       startedRef.current = false;
@@ -1773,38 +1840,44 @@ export function useThreadStream({
       setOnStreamThreadId(normalizedThreadId);
     }
     threadIdRef.current = normalizedThreadId;
-  }, [threadId]);
+  }, [enabled, threadId]);
 
-  const handleStreamStart = useCallback((_threadId: string, _runId: string) => {
-    threadIdRef.current = _threadId;
-    setOptimisticThreadId((currentOptimisticThreadId) => {
-      const currentView = currentViewThreadIdRef.current;
-      if (
-        currentOptimisticThreadId &&
-        (currentOptimisticThreadId === currentView ||
-          currentOptimisticThreadId === _threadId)
-      ) {
-        return _threadId;
+  const handleStreamStart = useCallback(
+    (_threadId: string, _runId: string) => {
+      if (!enabled) {
+        return;
       }
-      return currentOptimisticThreadId;
-    });
-    setLiveMessagesThreadId((currentLiveMessagesThreadId) => {
-      const currentView = currentViewThreadIdRef.current;
-      if (
-        currentLiveMessagesThreadId &&
-        (currentLiveMessagesThreadId === currentView ||
-          currentLiveMessagesThreadId === _threadId)
-      ) {
-        return _threadId;
+      threadIdRef.current = _threadId;
+      setOptimisticThreadId((currentOptimisticThreadId) => {
+        const currentView = currentViewThreadIdRef.current;
+        if (
+          currentOptimisticThreadId &&
+          (currentOptimisticThreadId === currentView ||
+            currentOptimisticThreadId === _threadId)
+        ) {
+          return _threadId;
+        }
+        return currentOptimisticThreadId;
+      });
+      setLiveMessagesThreadId((currentLiveMessagesThreadId) => {
+        const currentView = currentViewThreadIdRef.current;
+        if (
+          currentLiveMessagesThreadId &&
+          (currentLiveMessagesThreadId === currentView ||
+            currentLiveMessagesThreadId === _threadId)
+        ) {
+          return _threadId;
+        }
+        return currentLiveMessagesThreadId;
+      });
+      if (!startedRef.current) {
+        listeners.current.onStart?.(_threadId, _runId);
+        startedRef.current = true;
       }
-      return currentLiveMessagesThreadId;
-    });
-    if (!startedRef.current) {
-      listeners.current.onStart?.(_threadId, _runId);
-      startedRef.current = true;
-    }
-    setOnStreamThreadId(_threadId);
-  }, []);
+      setOnStreamThreadId(_threadId);
+    },
+    [enabled],
+  );
 
   const queryClient = useQueryClient();
   const { tasksRef, setTasks } = useSubtaskContext();
@@ -1831,8 +1904,10 @@ export function useThreadStream({
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
     assistantId: "lead_agent",
-    threadId: onStreamThreadId,
-    reconnectOnMount: true,
+    threadId: enabled ? onStreamThreadId : undefined,
+    // The persisted stream key routes through runs.get/joinStream, both of
+    // which require runs:read; don't create a reconnect 403 for denied users.
+    reconnectOnMount: !historyPermissionDenied,
     fetchStateHistory: { limit: 1 },
     // Batch stream updates received in the same macrotask without adding a
     // fixed debounce interval that could delay a continuously active stream.
@@ -2869,6 +2944,7 @@ export function useThreadStream({
     editAndRegenerateMessage,
     isUploading,
     isHistoryLoading,
+    historyPermissionDenied: isHistoryPermissionDenied,
     hasMoreHistory,
     loadMoreHistory,
   } as const;
@@ -2876,6 +2952,7 @@ export function useThreadStream({
 
 type ThreadHistoryOptions = {
   enabled?: boolean;
+  permissionDenied?: boolean;
   pendingSupersededRunIds?: ReadonlySet<string>;
 };
 
@@ -2886,8 +2963,27 @@ export const THREAD_HISTORY_QUERY_POLICY = {
 
 export function useThreadHistory(
   threadId: string,
-  { enabled = true, pendingSupersededRunIds }: ThreadHistoryOptions = {},
+  {
+    enabled = true,
+    permissionDenied = false,
+    pendingSupersededRunIds,
+  }: ThreadHistoryOptions = {},
 ) {
+  const queryClient = useQueryClient();
+  const historyPermissionDenied =
+    enabled && Boolean(threadId) && permissionDenied;
+  const readEnabled = enabled && Boolean(threadId) && !historyPermissionDenied;
+
+  useEffect(() => {
+    if (!historyPermissionDenied) return;
+
+    // Workspaces use an owner-scoped QueryClient; revoke every saved history
+    // page for this account so another open thread cannot reuse it later.
+    const historyQueries = { queryKey: ["thread-messages"] } as const;
+    void queryClient.cancelQueries(historyQueries);
+    queryClient.removeQueries(historyQueries);
+  }, [historyPermissionDenied, queryClient]);
+
   const historyQuery = useInfiniteQuery<
     ThreadMessagesPageResponse,
     Error,
@@ -2897,7 +2993,7 @@ export function useThreadHistory(
   >({
     ...THREAD_HISTORY_QUERY_POLICY,
     queryKey: threadHistoryQueryKey(threadId),
-    enabled: enabled && Boolean(threadId),
+    enabled: readEnabled,
     initialPageParam: null,
     queryFn: async ({ pageParam, signal }) => {
       const url = buildThreadMessagesPageUrl(
@@ -2927,19 +3023,23 @@ export function useThreadHistory(
   });
 
   const currentMessageRows = useMemo(
-    () => flattenThreadHistoryPages(historyQuery.data?.pages ?? []),
-    [historyQuery.data?.pages],
+    () =>
+      readEnabled
+        ? flattenThreadHistoryPages(historyQuery.data?.pages ?? [])
+        : EMPTY_RUN_MESSAGES,
+    [readEnabled, historyQuery.data?.pages],
   );
   const [retainedHistory, setRetainedHistory] = useState<{
     threadId: string;
     rows: RunMessage[];
   }>({ threadId, rows: EMPTY_RUN_MESSAGES });
   const previousRows =
-    retainedHistory.threadId === threadId
+    readEnabled && retainedHistory.threadId === threadId
       ? retainedHistory.rows
       : EMPTY_RUN_MESSAGES;
   const pages = historyQuery.data?.pages ?? [];
   const isAuthoritativeComplete =
+    readEnabled &&
     historyQuery.isSuccess &&
     !historyQuery.isFetching &&
     pages.length > 0 &&
@@ -2955,35 +3055,51 @@ export function useThreadHistory(
   );
 
   useEffect(() => {
+    if (!readEnabled) {
+      setRetainedHistory({ threadId, rows: EMPTY_RUN_MESSAGES });
+      return;
+    }
     setRetainedHistory((current) => {
       if (current.threadId === threadId && current.rows === messageRows) {
         return current;
       }
       return { threadId, rows: messageRows };
     });
-  }, [messageRows, threadId]);
+  }, [readEnabled, messageRows, threadId]);
 
   const messages = useMemo(() => {
+    if (!readEnabled) {
+      return [];
+    }
     return buildVisibleHistoryMessages(
       messageRows,
       pendingSupersededRunIds ?? new Set<string>(),
     );
-  }, [messageRows, pendingSupersededRunIds]);
+  }, [readEnabled, messageRows, pendingSupersededRunIds]);
 
   useEffect(() => {
-    if (historyQuery.error) {
+    if (readEnabled && historyQuery.error) {
       console.error(historyQuery.error);
       toast.error("Failed to load thread history.");
     }
-  }, [historyQuery.error]);
+  }, [readEnabled, historyQuery.error]);
+
+  const loadMore = useCallback(() => {
+    if (!readEnabled || !threadId) {
+      return;
+    }
+    void historyQuery.fetchNextPage();
+  }, [historyQuery.fetchNextPage, readEnabled, threadId]);
 
   return {
     messages,
+    permissionDenied: historyPermissionDenied,
     loading:
-      historyQuery.isLoading === true ||
-      historyQuery.isFetchingNextPage === true,
-    hasMore: Boolean(historyQuery.hasNextPage),
-    loadMore: historyQuery.fetchNextPage,
+      readEnabled &&
+      (historyQuery.isLoading === true ||
+        historyQuery.isFetchingNextPage === true),
+    hasMore: readEnabled && Boolean(historyQuery.hasNextPage),
+    loadMore,
   };
 }
 
@@ -3261,20 +3377,40 @@ export function useThreadRuns(
   threadId?: string,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.RUNS_READ) === "denied";
+  const queryClient = useQueryClient();
   const apiClient = getAPIClient();
-  return useQuery<Run[]>({
-    queryKey: ["thread", threadId],
-    queryFn: async () => {
+  const queryKey = threadRunsQueryKey(threadId, userId);
+  const readEnabled = enabled && Boolean(threadId) && !accessDenied;
+
+  useEffect(() => {
+    if (!accessDenied || userId === null) return;
+    const ownerQueries = { queryKey: ["thread-runs", userId] } as const;
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
+  const query = useQuery<Run[]>({
+    queryKey,
+    queryFn: async ({ signal }) => {
       if (!threadId) {
         return [];
       }
-      const response = await apiClient.runs.list(threadId);
+      const response = await apiClient.runs.list(threadId, { signal });
       return response;
     },
-    enabled: enabled && Boolean(threadId),
+    enabled: readEnabled,
     refetchOnWindowFocus: false,
   });
+
+  return readEnabled ? query : { ...query, data: undefined };
 }
+
+export const threadRunsQueryKey = (threadId?: string, userId?: string | null) =>
+  ["thread-runs", userId ?? null, threadId] as const;
 
 export function useThreadMetadata(
   threadId?: string | null,
@@ -3284,7 +3420,7 @@ export function useThreadMetadata(
   }: { enabled?: boolean; isMock?: boolean } = {},
 ) {
   const apiClient = getAPIClient(isMock);
-  return useQuery<AgentThread | null>({
+  const query = useQuery<AgentThread | null>({
     queryKey: ["thread", "metadata", threadId, isMock],
     queryFn: async () => {
       if (!threadId) {
@@ -3304,28 +3440,71 @@ export function useThreadMetadata(
     retry: false,
     refetchOnWindowFocus: false,
   });
+  // TanStack 会保留 disabled query 的缓存；撤权时不向调用方暴露旧快照。
+  return enabled ? query : { ...query, data: undefined };
 }
 
 export function useThreadTokenUsage(
   threadId?: string | null,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
-  return useQuery<ThreadTokenUsageResponse | null>({
-    queryKey: threadTokenUsageQueryKey(threadId),
-    queryFn: async () => {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => threadTokenUsageQueryKey(threadId, userId),
+    [threadId, userId],
+  );
+  const readEnabled =
+    !accessDenied && userId !== null && enabled && Boolean(threadId);
+
+  useEffect(() => {
+    if (!accessDenied || userId === null) return;
+
+    // 撤销 threads:read 后停止当前账号的所有用量读取并清除旧快照。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        query.queryKey[0] === "thread-token-usage" &&
+        query.queryKey[2] === userId,
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
+  const query = useQuery<ThreadTokenUsageResponse | null>({
+    queryKey,
+    queryFn: async ({ signal }) => {
       if (!threadId) {
         return null;
       }
-      return fetchThreadTokenUsage(threadId);
+      return fetchThreadTokenUsage(threadId, signal);
     },
-    enabled: enabled && Boolean(threadId),
+    enabled: readEnabled,
     retry: false,
     refetchOnWindowFocus: false,
     // Keep same-thread data visible during refetches without carrying usage
-    // from the previous route into a newly selected thread.
-    placeholderData: (previous) =>
-      retainThreadTokenUsagePlaceholder(previous, threadId),
+    // from another thread or account into the active route.
+    placeholderData: (previous, previousQuery) =>
+      retainThreadTokenUsagePlaceholder(
+        previous,
+        threadId,
+        typeof previousQuery?.queryKey[2] === "string"
+          ? previousQuery.queryKey[2]
+          : null,
+        userId,
+      ),
   });
+
+  return {
+    ...query,
+    // Disabled queries retain TanStack cache entries; never expose a revoked
+    // snapshot while the cleanup effect cancels and removes owner data.
+    data: readEnabled ? query.data : undefined,
+    isLoading: readEnabled && query.isLoading,
+    error: readEnabled ? query.error : null,
+  };
 }
 
 export function useBranchThread() {
@@ -3436,16 +3615,45 @@ export function useMoveThreadToProject(options?: {
   });
 }
 
-export function useRunDetail(threadId: string, runId: string) {
+export const threadRunDetailQueryKey = (
+  threadId: string,
+  runId: string,
+  userId?: string | null,
+) => ["thread-run-detail", userId ?? null, threadId, runId] as const;
+
+export function useRunDetail(
+  threadId: string,
+  runId: string,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.RUNS_READ) === "denied";
+  const queryClient = useQueryClient();
   const apiClient = getAPIClient();
-  return useQuery<Run>({
-    queryKey: ["thread", threadId, "run", runId],
-    queryFn: async () => {
-      const response = await apiClient.runs.get(threadId, runId);
+  const queryKey = threadRunDetailQueryKey(threadId, runId, userId);
+  const readEnabled =
+    enabled && Boolean(threadId) && Boolean(runId) && !accessDenied;
+
+  useEffect(() => {
+    if (!accessDenied || userId === null) return;
+    const ownerQueries = { queryKey: ["thread-run-detail", userId] } as const;
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
+  const query = useQuery<Run>({
+    queryKey,
+    queryFn: async ({ signal }) => {
+      const response = await apiClient.runs.get(threadId, runId, { signal });
       return response;
     },
+    enabled: readEnabled,
     refetchOnWindowFocus: false,
   });
+
+  return readEnabled ? query : { ...query, data: undefined };
 }
 
 async function deleteLocalThreadData(threadId: string) {

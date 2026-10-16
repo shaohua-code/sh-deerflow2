@@ -71,10 +71,12 @@ def _run_pick_python(tmp_path: Path, *, env_mock: str = "") -> subprocess.Comple
     bash = require_script_bash()
 
     script = _SCRIPT_TEMPLATE.replace("__BIN__", shlex.quote(_to_bash_path(tmp_path / "bin"))).replace("__STUBS__", "python3 python py").replace("__ENV_MOCK__", env_mock).replace("__FUNCTION__", _extract_shell_function("_pick_python"))
+    script_path = tmp_path / "pick-python.sh"
+    script_path.write_text(script, encoding="utf-8")
     # errors="replace": bash's diagnostics may arrive in the console's code
     # page (GBK on a Chinese Windows host) while the selection output is ASCII.
     return subprocess.run(
-        [bash, "-c", script],
+        [bash, _to_bash_path(script_path)],
         capture_output=True,
         encoding="utf-8",
         errors="replace",

@@ -7,9 +7,10 @@ import asyncio
 import pytest
 import sqlalchemy as sa
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from deerflow.persistence.bootstrap import _get_alembic_config, _get_head_revision
+from deerflow.persistence.bootstrap import _MIGRATIONS_DIR, _get_alembic_config
 
 pytestmark = pytest.mark.asyncio
 
@@ -17,8 +18,12 @@ REVISION = "0026_iam_oidc_token_vault"
 PREVIOUS = "0025_user_active"
 
 
-async def test_0026_remains_in_chain_before_later_repair():
-    assert _get_head_revision() == "fd_0027_repair_run_change_seq"
+async def test_0026_remains_in_the_single_head_chain():
+    script = ScriptDirectory(str(_MIGRATIONS_DIR))
+
+    assert script.get_revision(REVISION).down_revision == PREVIOUS
+    assert len(script.get_heads()) == 1
+    assert REVISION in {revision.revision for revision in script.walk_revisions()}
 
 
 async def test_0026_creates_user_cascaded_encrypted_token_storage(tmp_path):

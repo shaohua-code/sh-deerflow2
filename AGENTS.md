@@ -152,6 +152,11 @@ make up / down   # Build/stop the production Docker stack (browser at localhost:
 make docker-start / docker-stop / docker-logs   # Docker development environment
 ```
 
+Local `make dev` probes the public `/` page through nginx after the three ports
+open, so the success banner follows Next.js's first homepage compilation and
+HTML response. The bounded probe lives in `scripts/wait_for_http.py`; failures
+show recent frontend and nginx logs. Production startup does not prewarm `/`.
+
 Production startup uses the image's pre-built Python environment with `uv run
 --no-sync`, gives the Gateway a real `/health` probe, and makes `make up` wait
 for that probe before printing its success banner. A readiness failure must

@@ -62,6 +62,22 @@ test("fetchThreadTokenUsage returns null for unavailable token usage", async () 
   await expect(fetchThreadTokenUsage("thread-1")).resolves.toBeNull();
 });
 
+test("fetchThreadTokenUsage forwards the React Query abort signal", async () => {
+  fetchWithAuth.mockResolvedValue({
+    ok: true,
+    json: async () => ({ thread_id: "thread-1" }),
+  });
+  const controller = new AbortController();
+
+  const { fetchThreadTokenUsage } = await import("@/core/threads/api");
+  await fetchThreadTokenUsage("thread-1", controller.signal);
+
+  expect(fetchWithAuth).toHaveBeenCalledWith(
+    expect.stringContaining("/api/threads/thread-1/token-usage"),
+    { method: "GET", signal: controller.signal },
+  );
+});
+
 test("searchThreads can inventory active and archived conversations together", async () => {
   fetchWithAuth.mockResolvedValue({ ok: true, json: async () => [] });
 

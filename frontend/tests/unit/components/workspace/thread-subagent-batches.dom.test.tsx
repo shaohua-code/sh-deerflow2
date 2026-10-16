@@ -5,6 +5,9 @@ const featureState = rs.hoisted(() => ({
   repositoryAvailable: true,
   workerRunning: false,
 }));
+const authState = rs.hoisted(() => ({
+  user: { id: "user-1", permissions: ["threads:read"] as string[] },
+}));
 const batchState = rs.hoisted(() => ({
   batches: [] as Array<Record<string, unknown>>,
   control: rs.fn(),
@@ -15,6 +18,8 @@ const batchState = rs.hoisted(() => ({
   isError: false,
   itemError: undefined as Error | undefined,
   itemsIsError: false,
+  readEnabled: true,
+  cacheScope: undefined as string | undefined,
 }));
 
 rs.mock("@/core/features", () => ({
@@ -62,6 +67,9 @@ rs.mock("@/core/i18n/hooks", () => ({
     },
   }),
 }));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: authState.user }),
+}));
 
 rs.mock("@/core/subagent-batches", () => ({
   completedSubagentBatchItems: () => 1,
@@ -88,12 +96,19 @@ rs.mock("@/core/subagent-batches", () => ({
     isFetchingNextPage: false,
     fetchNextPage: batchState.fetchNextPage,
   }),
-  useSubagentBatches: () => ({
-    data: batchState.batches,
-    isLoading: false,
-    isError: batchState.isError,
-    error: batchState.error,
-  }),
+  useSubagentBatches: (
+    _threadId: string,
+    options: { enabled: boolean; cacheScope?: string },
+  ) => {
+    batchState.readEnabled = options.enabled;
+    batchState.cacheScope = options.cacheScope;
+    return {
+      data: batchState.batches,
+      isLoading: false,
+      isError: batchState.isError,
+      error: batchState.error,
+    };
+  },
 }));
 
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
@@ -125,6 +140,7 @@ afterEach(() => {
   cleanup();
   featureState.repositoryAvailable = true;
   featureState.workerRunning = false;
+  authState.user.permissions = ["threads:read"];
   batchState.batches = [];
   batchState.control.mockReset();
   batchState.itemPages = [];
@@ -134,9 +150,17 @@ afterEach(() => {
   batchState.isError = false;
   batchState.itemError = undefined;
   batchState.itemsIsError = false;
+  batchState.readEnabled = true;
+  batchState.cacheScope = undefined;
 });
 
 describe("ThreadSubagentBatches capability gating", () => {
+  it("scopes batch history to the authenticated user", () => {
+    render(<ThreadSubagentBatches threadId="thread-1" />);
+
+    expect(batchState.cacheScope).toBe("user-1");
+  });
+
   it("keeps historical batches readable when the worker is stopped", async () => {
     batchState.batches = [HISTORICAL_BATCH];
     render(<ThreadSubagentBatches threadId="thread-1" />);
@@ -164,6 +188,48 @@ describe("ThreadSubagentBatches capability gating", () => {
   it("hides an unused batch surface when neither worker nor history exists", () => {
     render(<ThreadSubagentBatches threadId="thread-1" />);
     expect(screen.queryByRole("button", { name: "Batches" })).toBeNull();
+  });
+
+  it("does not request or show batch data without threads:read", () => {
+    authState.user.permissions = ["threads:write"];
+    batchState.batches = [HISTORICAL_BATCH];
+    render(<ThreadSubagentBatches threadId="thread-1" />);
+
+    expect(batchState.readEnabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Batches" })).toBeNull();
+  });
+
+  it("keeps history and export available while disabling all write actions", async () => {
+    featureState.workerRunning = true;
+    batchState.batches = [HISTORICAL_BATCH];
+    batchState.itemPages = [
+      [
+        {
+          id: "failed-item",
+          item_key: "record-1",
+          status: "failed",
+          result_preview: null,
+        },
+      ],
+    ];
+    render(<ThreadSubagentBatches threadId="thread-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Batches" }));
+    expect(screen.getByRole("button", { name: "Pause" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("link", { name: "Export JSONL" })).toBeDefined();
+
+    fireEvent.click(await screen.findByRole("button", { name: "View items" }));
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 
   it("loads the next page of batch items", async () => {

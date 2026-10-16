@@ -45,7 +45,11 @@ def test_backend_dockerfile_expands_multiple_uv_extras(tmp_path):
 
     env = os.environ.copy()
     env["CAPTURE_UV_ARGS"] = str(capture)
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    # The test process may be launched by an absolute venv path while that venv
+    # is absent from PATH (notably in Windows automation). Keep the fake Docker
+    # first, then expose the same Python interpreter so deploy.sh can run the
+    # standard-library extra detector.
+    env["PATH"] = os.pathsep.join([str(bin_dir), str(Path(sys.executable).parent), env["PATH"]])
     env["UV_EXTRAS"] = "discord,postgres"
 
     subprocess.run(
@@ -122,13 +126,19 @@ def test_deploy_build_auto_detects_postgres_extra_when_other_extras_are_enabled(
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    python3 = bin_dir / "python3"
+    python3.write_text(
+        f'#!/usr/bin/env sh\nexec {shlex.quote(sys.executable)} "$@"\n',
+        encoding="utf-8",
+    )
+    python3.chmod(0o755)
 
     env = os.environ.copy()
     env.pop("UV_EXTRAS", None)
     env["CAPTURE_UV_EXTRAS"] = str(capture)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
-    subprocess.run(
+    result = subprocess.run(
         [BASH, str(worktree / "scripts" / "deploy.sh"), "build"],
         cwd=worktree,
         env=env,
@@ -137,7 +147,7 @@ def test_deploy_build_auto_detects_postgres_extra_when_other_extras_are_enabled(
         capture_output=True,
     )
 
-    assert capture.read_text(encoding="utf-8") == "discord,postgres"
+    assert capture.read_text(encoding="utf-8") == "discord,postgres", f"stdout={result.stdout!r}; stderr={result.stderr!r}"
 
 
 def test_deploy_uses_dotenv_without_sourcing_shell_syntax(tmp_path):

@@ -23,6 +23,8 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import { useSubagentBatchesCapability } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -40,23 +42,31 @@ import {
 
 export function ThreadSubagentBatches({ threadId }: { threadId: string }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const cacheScope = user?.id;
+  const canReadBatches = hasPermission(user, PERMISSIONS.THREADS_READ);
+  const canWriteBatches = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   const { repositoryAvailable, workerRunning } = useSubagentBatchesCapability();
   const batchesQuery = useSubagentBatches(threadId, {
-    enabled: repositoryAvailable,
+    enabled: repositoryAvailable && canReadBatches,
     polling: workerRunning,
+    cacheScope,
   });
-  const control = useControlSubagentBatch(threadId);
+  const control = useControlSubagentBatch(threadId, {
+    enabled: canWriteBatches,
+  });
   const batches = batchesQuery.data ?? [];
   const activeCount = batches.filter(isActiveSubagentBatch).length;
 
   const hasVisibleSurface =
+    canReadBatches &&
     repositoryAvailable &&
     (workerRunning ||
       batchesQuery.isLoading ||
       batchesQuery.isError ||
       batches.length > 0);
 
-  if (!hasVisibleSurface) return null;
+  if (!canReadBatches || !hasVisibleSurface) return null;
 
   return (
     <Sheet>
@@ -120,13 +130,18 @@ export function ThreadSubagentBatches({ threadId }: { threadId: string }) {
                 <BatchCard
                   key={batch.id}
                   threadId={threadId}
+                  cacheScope={cacheScope}
                   batch={batch}
                   workerRunning={workerRunning}
+                  canReadBatches={canReadBatches}
+                  canWriteBatches={canWriteBatches}
                   controlling={
                     control.isPending && control.variables?.batchId === batch.id
                   }
                   onControl={(action) =>
-                    control.mutate({ batchId: batch.id, action })
+                    canWriteBatches &&
+                    workerRunning &&
+                    control.mutate({ batchId: batch.id, action, cacheScope })
                   }
                 />
               ))}
@@ -140,14 +155,20 @@ export function ThreadSubagentBatches({ threadId }: { threadId: string }) {
 
 function BatchCard({
   threadId,
+  cacheScope,
   batch,
   workerRunning,
+  canReadBatches,
+  canWriteBatches,
   controlling,
   onControl,
 }: {
   threadId: string;
+  cacheScope?: string;
   batch: SubagentBatch;
   workerRunning: boolean;
+  canReadBatches: boolean;
+  canWriteBatches: boolean;
   controlling: boolean;
   onControl: (action: "pause" | "resume" | "cancel") => void;
 }) {
@@ -203,7 +224,7 @@ function BatchCard({
             type="button"
             size="sm"
             variant="outline"
-            disabled={!workerRunning || controlling}
+            disabled={!canWriteBatches || !workerRunning || controlling}
             onClick={() => onControl("pause")}
           >
             <CirclePauseIcon /> {t.subagentBatches.pause}
@@ -213,7 +234,7 @@ function BatchCard({
             type="button"
             size="sm"
             variant="outline"
-            disabled={!workerRunning || controlling}
+            disabled={!canWriteBatches || !workerRunning || controlling}
             onClick={() => onControl("resume")}
           >
             <CirclePlayIcon /> {t.subagentBatches.resume}
@@ -224,7 +245,7 @@ function BatchCard({
             type="button"
             size="sm"
             variant="outline"
-            disabled={!workerRunning || controlling}
+            disabled={!canWriteBatches || !workerRunning || controlling}
             onClick={() => onControl("cancel")}
           >
             <CircleStopIcon /> {t.subagentBatches.cancel}
@@ -239,8 +260,11 @@ function BatchCard({
       {open && (
         <BatchItems
           threadId={threadId}
+          cacheScope={cacheScope}
           batch={batch}
           workerRunning={workerRunning}
+          canReadBatches={canReadBatches}
+          canWriteBatches={canWriteBatches}
         />
       )}
     </article>
@@ -249,18 +273,28 @@ function BatchCard({
 
 function BatchItems({
   threadId,
+  cacheScope,
   batch,
   workerRunning,
+  canReadBatches,
+  canWriteBatches,
 }: {
   threadId: string;
+  cacheScope?: string;
   batch: SubagentBatch;
   workerRunning: boolean;
+  canReadBatches: boolean;
+  canWriteBatches: boolean;
 }) {
   const { t } = useI18n();
   const query = useSubagentBatchItems(threadId, batch.id, {
+    enabled: canReadBatches,
     polling: workerRunning,
+    cacheScope,
   });
-  const retry = useRetrySubagentBatchItem(threadId, batch.id);
+  const retry = useRetrySubagentBatchItem(threadId, batch.id, {
+    enabled: canWriteBatches,
+  });
   if (query.isLoading) {
     return (
       <div className="text-muted-foreground mt-3 border-t pt-3 text-xs">
@@ -282,8 +316,9 @@ function BatchItems({
           key={item.id}
           item={item}
           workerRunning={workerRunning}
-          retrying={retry.isPending && retry.variables === item.id}
-          onRetry={() => retry.mutate(item.id)}
+          canWriteBatches={canWriteBatches}
+          retrying={retry.isPending && retry.variables?.itemId === item.id}
+          onRetry={() => retry.mutate({ itemId: item.id, cacheScope })}
         />
       ))}
       {query.hasNextPage && (
@@ -308,11 +343,13 @@ function BatchItems({
 function BatchItemRow({
   item,
   workerRunning,
+  canWriteBatches,
   retrying,
   onRetry,
 }: {
   item: SubagentBatchItem;
   workerRunning: boolean;
+  canWriteBatches: boolean;
   retrying: boolean;
   onRetry: () => void;
 }) {
@@ -338,7 +375,7 @@ function BatchItemRow({
           type="button"
           size="sm"
           variant="ghost"
-          disabled={!workerRunning || retrying}
+          disabled={!canWriteBatches || !workerRunning || retrying}
           className="mt-1"
           onClick={onRetry}
         >

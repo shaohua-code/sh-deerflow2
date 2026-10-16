@@ -10,11 +10,17 @@ import {
 
 const mocks = rs.hoisted(() => ({
   userId: "alice",
+  canReadProjects: true,
   fetchOwnerData: rs.fn(),
 }));
 
 rs.mock("@/core/auth/AuthProvider", () => ({
-  useAuth: () => ({ user: { id: mocks.userId } }),
+  useAuth: () => ({
+    user: {
+      id: mocks.userId,
+      permissions: mocks.canReadProjects ? ["projects:read"] : [],
+    },
+  }),
 }));
 
 import { WorkspaceQueryBoundary } from "@/product/workspace-query-boundary";
@@ -38,6 +44,7 @@ afterEach(() => {
   cleanup();
   mocks.fetchOwnerData.mockReset();
   mocks.userId = "alice";
+  mocks.canReadProjects = true;
 });
 
 describe("WorkspaceQueryBoundary", () => {
@@ -84,5 +91,57 @@ describe("WorkspaceQueryBoundary", () => {
       </WorkspaceQueryBoundary>,
     );
     await waitFor(() => expect(mocks.fetchOwnerData).toHaveBeenCalledTimes(3));
+  });
+
+  it("clears project and trash query caches when project read permission is revoked", async () => {
+    mocks.fetchOwnerData.mockImplementation((scope: string) =>
+      Promise.resolve(`private ${scope}`),
+    );
+
+    function ProjectAndTrashData() {
+      const project = useQuery({
+        queryKey: ["projects", { status: "active" }],
+        queryFn: () => mocks.fetchOwnerData("projects"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      const trash = useQuery({
+        queryKey: ["trash", "documents"],
+        queryFn: () => mocks.fetchOwnerData("trash"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      return (
+        <>
+          {mocks.canReadProjects ? <p>{project.data}</p> : null}
+          {mocks.canReadProjects ? <p>{trash.data}</p> : null}
+        </>
+      );
+    }
+
+    const view = render(
+      <WorkspaceQueryBoundary>
+        <ProjectAndTrashData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(await screen.findByText("private projects")).toBeDefined();
+    expect(await screen.findByText("private trash")).toBeDefined();
+
+    mocks.canReadProjects = false;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectAndTrashData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(screen.queryByText("private projects")).toBeNull();
+    expect(screen.queryByText("private trash")).toBeNull();
+
+    mocks.canReadProjects = true;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectAndTrashData />
+      </WorkspaceQueryBoundary>,
+    );
+    await waitFor(() => expect(mocks.fetchOwnerData).toHaveBeenCalledTimes(4));
   });
 });

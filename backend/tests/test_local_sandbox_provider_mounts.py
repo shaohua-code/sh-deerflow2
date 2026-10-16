@@ -1,4 +1,6 @@
 import errno
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -170,7 +172,16 @@ class TestReadOnlyPath:
                 PathMapping(container_path="/mnt/skills/public/demo", local_path=str(view.parent), read_only=True),
             ],
         )
-        sandbox.execute_command("python -c \"from pathlib import Path; Path(r'/mnt/skills/public/demo/SKILL.md').write_text('MUTATED\\n', encoding='utf-8')\"")
+        if os.name == "nt":
+            # PowerShell does not collapse the backslash escaping that Bash
+            # applies inside double-quoted Python source.
+            python_code = "from pathlib import Path; Path(r'/mnt/skills/public/demo/SKILL.md').write_text('MUTATED\\n', encoding='utf-8')"
+            executable = sys.executable.replace("'", "''")
+            command = f"& '{executable}' -c \"{python_code}\""
+        else:
+            command = "python -c \"from pathlib import Path; Path(r'/mnt/skills/public/demo/SKILL.md').write_text('MUTATED\\\\n', encoding='utf-8')\""
+        result = sandbox.execute_command(command)
+        assert "Exit Code:" not in result, result
         assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
         assert view.read_text(encoding="utf-8") == "MUTATED\n"
 
@@ -534,25 +545,32 @@ class TestMultipleMounts:
             ],
         )
 
-        # Mock subprocess to capture the resolved command. The POSIX path runs
-        # commands via subprocess.Popen, so wrap that and still execute the real
-        # command.
         captured = {}
-        original_popen = __import__("subprocess").Popen
-
-        def mock_popen(*args, **kwargs):
-            if len(args) > 0:
-                captured["command"] = args[0]
-            return original_popen(*args, **kwargs)
-
-        monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.subprocess.Popen", mock_popen)
         monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.LocalSandbox._get_shell", lambda self: "/bin/sh")
+        if os.name == "nt":
+
+            def mock_windows_command(args, timeout, env=None, *, encoding=None):
+                captured["command"] = args
+                return "", "", 0, False
+
+            monkeypatch.setattr(
+                "deerflow.sandbox.local.local_sandbox.LocalSandbox._run_windows_command",
+                staticmethod(mock_windows_command),
+            )
+        else:
+            original_popen = __import__("subprocess").Popen
+
+            def mock_popen(*args, **kwargs):
+                captured["command"] = args[0]
+                return original_popen(*args, **kwargs)
+
+            monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.subprocess.Popen", mock_popen)
 
         sandbox.execute_command("cat /mnt/data/test.txt")
-        # Verify the command received the resolved local path
+        # Both platform runners receive the path-resolved command.
         command = captured.get("command", [])
         assert isinstance(command, list) and len(command) >= 3
-        assert str(data_dir) in command[2]
+        assert str(data_dir).replace("\\", "/") in command[2].replace("\\", "/")
 
     def test_reverse_resolve_path_does_not_match_partial_prefix(self, tmp_path):
         foo_dir = tmp_path / "foo"
@@ -708,7 +726,14 @@ class TestLocalSandboxProviderMounts:
             sandbox=sandbox_config,
         )
 
-        with patch("deerflow.config.get_app_config", return_value=config):
+        with (
+            patch("deerflow.config.get_app_config", return_value=config),
+            patch.object(
+                LocalSandboxProvider,
+                "_ensure_skills_projection",
+                return_value=SimpleNamespace(public=public_dir),
+            ),
+        ):
             provider = LocalSandboxProvider()
 
         # Public skills are the only static skills mount; custom skills are
@@ -736,7 +761,14 @@ class TestLocalSandboxProviderMounts:
             sandbox=sandbox_config,
         )
 
-        with patch("deerflow.config.get_app_config", return_value=config):
+        with (
+            patch("deerflow.config.get_app_config", return_value=config),
+            patch.object(
+                LocalSandboxProvider,
+                "_ensure_skills_projection",
+                return_value=SimpleNamespace(public=public_dir),
+            ),
+        ):
             provider = LocalSandboxProvider()
 
         # Public skills mount is static; custom skills are per-thread.
@@ -763,7 +795,14 @@ class TestLocalSandboxProviderMounts:
             sandbox=sandbox_config,
         )
 
-        with patch("deerflow.config.get_app_config", return_value=config):
+        with (
+            patch("deerflow.config.get_app_config", return_value=config),
+            patch.object(
+                LocalSandboxProvider,
+                "_ensure_skills_projection",
+                return_value=SimpleNamespace(public=public_dir),
+            ),
+        ):
             provider = LocalSandboxProvider()
 
         assert [m.container_path for m in provider._path_mappings] == ["/mnt/skills/public"]
@@ -798,7 +837,14 @@ class TestLocalSandboxProviderMounts:
         )
 
         with caplog.at_level("ERROR", logger="deerflow.sandbox.local.local_sandbox_provider"):
-            with patch("deerflow.config.get_app_config", return_value=config):
+            with (
+                patch("deerflow.config.get_app_config", return_value=config),
+                patch.object(
+                    LocalSandboxProvider,
+                    "_ensure_skills_projection",
+                    return_value=SimpleNamespace(public=public_dir),
+                ),
+            ):
                 provider = LocalSandboxProvider()
 
         # Silent-skip behaviour is preserved (no breaking change for existing deployments).
@@ -1003,10 +1049,43 @@ class TestLocalSandboxProviderMounts:
             sandbox=sandbox_config,
         )
 
-        with patch("deerflow.config.get_app_config", return_value=config):
+        with (
+            patch("deerflow.config.get_app_config", return_value=config),
+            patch.object(
+                LocalSandboxProvider,
+                "_ensure_skills_projection",
+                return_value=SimpleNamespace(public=public_dir),
+            ),
+        ):
             provider = LocalSandboxProvider()
 
         assert [m.container_path for m in provider._path_mappings] == ["/mnt/skills/public", "/mnt/data"]
+
+    def test_custom_mounts_survive_skills_projection_failure(self, tmp_path):
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+
+        from deerflow.config.sandbox_config import SandboxConfig, VolumeMountConfig
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(container_path="/mnt/skills"),
+            sandbox=SandboxConfig(
+                use="deerflow.sandbox.local:LocalSandboxProvider",
+                mounts=[VolumeMountConfig(host_path=str(custom_dir), container_path="/mnt/data", read_only=False)],
+            ),
+        )
+
+        with (
+            patch("deerflow.config.get_app_config", return_value=config),
+            patch.object(
+                LocalSandboxProvider,
+                "_ensure_skills_projection",
+                return_value=None,
+            ),
+        ):
+            provider = LocalSandboxProvider()
+
+        assert [mapping.container_path for mapping in provider._path_mappings] == ["/mnt/data"]
 
 
 class TestLocalSandboxProviderResetClearsSingleton:

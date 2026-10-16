@@ -21,12 +21,13 @@ from deerflow_extension_api import (
     OwnerFileEntry,
     OwnerFilePage,
 )
-from sqlalchemy import delete, insert, select, text, update
+from sqlalchemy import delete, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from flow_desk_product_extension.data_job_authorization import data_job_authorization_key
 from flow_desk_product_extension.models import (
     audit_events,
     data_job_rate_limits,
@@ -299,6 +300,7 @@ class ProductSettingsStore:
             "job_id": job_id,
             "owner_user_id": owner_user_id,
             "kind": kind,
+            "authorization_key": data_job_authorization_key(kind, normalized_scope[0]),
             "idempotency_key": idempotency_key,
             "request_id": request_id,
             "scope": normalized_scope,
@@ -619,19 +621,30 @@ class ProductSettingsStore:
         *,
         limit: int = 50,
         offset: int = 0,
+        authorization_keys: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """按可信 owner 分页读取任务，避免向客户端暴露其他用户的作业。"""
+        """按可信 owner 和当前授权键过滤后分页读取任务。"""
         # API 对外最多每页 100 条；多出的第 101 条仅供 Router 判断 has_more，
         # 不会包含在返回给浏览器的数据页中。
         if not 1 <= limit <= 101 or offset < 0:
             raise ValueError("Invalid data job page")
         session_factory = self._require_session_factory()
         async with session_factory() as session:
+            filters = [data_jobs.c.owner_user_id == owner_user_id]
+            if authorization_keys is not None:
+                # NULL 只会出现在滚动升级时由旧进程写入的新任务；API 会逐条重新授权。
+                visible_key_filter = data_jobs.c.authorization_key.is_(None)
+                if authorization_keys:
+                    visible_key_filter = or_(
+                        visible_key_filter,
+                        data_jobs.c.authorization_key.in_(set(authorization_keys)),
+                    )
+                filters.append(visible_key_filter)
             rows = (
                 (
                     await session.execute(
                         select(data_jobs)
-                        .where(data_jobs.c.owner_user_id == owner_user_id)
+                        .where(*filters)
                         .order_by(data_jobs.c.created_at.desc(), data_jobs.c.job_id.desc())
                         .limit(limit)
                         .offset(offset)
@@ -641,6 +654,21 @@ class ProductSettingsStore:
                 .all()
             )
         return [self._public_data_job(row) for row in rows]
+
+    async def list_data_job_authorization_keys(self, owner_user_id: str) -> list[str]:
+        """读取当前 owner 实际存在的授权类别，不加载任务正文或任务历史。"""
+        session_factory = self._require_session_factory()
+        async with session_factory() as session:
+            rows = await session.execute(
+                select(data_jobs.c.authorization_key)
+                .where(
+                    data_jobs.c.owner_user_id == owner_user_id,
+                    data_jobs.c.authorization_key.is_not(None),
+                )
+                .distinct()
+                .order_by(data_jobs.c.authorization_key)
+            )
+            return [str(key) for key in rows.scalars().all()]
 
     async def claim_data_job(
         self,

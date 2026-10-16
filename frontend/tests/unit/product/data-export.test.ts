@@ -110,7 +110,10 @@ describe("account data export", () => {
     });
 
     const progress = rs.fn();
-    const result = await createUserDataExport("owner-1", progress);
+    const controller = new AbortController();
+    const result = await createUserDataExport("owner-1", progress, {
+      signal: controller.signal,
+    });
 
     expect(result.format).toBe("flow-desk-user-data-v1");
     expect(result.owner_user_id).toBe("owner-1");
@@ -122,13 +125,34 @@ describe("account data export", () => {
     expect(
       result.resources.conversations[0]?.messages.map((message) => message.seq),
     ).toEqual([1, 2]);
-    expect(searchThreads).toHaveBeenCalledWith({ limit: 1000, offset: 0 });
+    expect(searchThreads).toHaveBeenCalledWith({
+      limit: 1000,
+      offset: 0,
+      signal: controller.signal,
+    });
     expect(fetchThreadHistoryPage).toHaveBeenCalledWith("thread-1", {
       beforeSeq: undefined,
+      signal: controller.signal,
     });
     expect(fetchThreadHistoryPage).toHaveBeenCalledWith("thread-1", {
       beforeSeq: 2,
+      signal: controller.signal,
     });
+    expect(listProjects).toHaveBeenCalledWith("active", {
+      signal: controller.signal,
+    });
+    expect(listProjects).toHaveBeenCalledWith("archived", {
+      signal: controller.signal,
+    });
+    expect(listAgents).toHaveBeenCalledWith({ signal: controller.signal });
+    expect(fetchScheduledTasks).toHaveBeenCalledWith(controller.signal);
+    expect(exportMemory).toHaveBeenCalledWith("owner-1", controller.signal);
+    expect(fetchProductSettings).toHaveBeenCalledWith(controller.signal);
+    expect(loadProjectFilePage).toHaveBeenCalledWith([], 3, {
+      signal: controller.signal,
+    });
+    expect(loadThreadFilePage.mock.calls[0]?.[4]).toBe(controller.signal);
+    expect(fetchProductFiles.mock.calls[0]?.[3]).toBe(controller.signal);
     expect(progress.mock.calls.map(([event]) => event.stage)).toEqual(
       expect.arrayContaining(["inventory", "history", "files", "package"]),
     );

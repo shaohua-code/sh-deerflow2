@@ -1,4 +1,5 @@
 import { createGatewayApiError, GatewayApiError } from "@/core/api/errors";
+import { PERMISSIONS } from "@/core/auth/permissions";
 import { RESERVED_SLASH_SKILL_NAMES, type Skill } from "@/core/skills";
 export {
   SUGGESTION_TEMPLATE_PLACEHOLDER_PATTERN,
@@ -63,6 +64,15 @@ export type GoalCommand =
   | { kind: "status" }
   | { kind: "clear" }
   | { kind: "set"; objective: string };
+
+/** 将内置命令映射到 Gateway 对应路由的线程读取或写入权限。 */
+export function getComposerCommandRequiredPermission(
+  command: GoalCommand | { kind: "compact" },
+): typeof PERMISSIONS.THREADS_READ | typeof PERMISSIONS.THREADS_WRITE {
+  return command.kind === "status"
+    ? PERMISSIONS.THREADS_READ
+    : PERMISSIONS.THREADS_WRITE;
+}
 
 export type InputSubmitAction =
   | { kind: "goal"; command: GoalCommand }

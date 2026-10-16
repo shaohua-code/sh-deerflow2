@@ -103,13 +103,17 @@ export async function deleteAgent(name: string): Promise<void> {
 
 export async function checkAgentName(
   name: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ available: boolean; name: string }> {
   let res: Response;
   try {
     res = await fetch(
       `${getBackendBaseURL()}/api/agents/check?name=${encodeURIComponent(name)}`,
+      { signal: options.signal },
     );
-  } catch {
+  } catch (error) {
+    // 账号权限变更会主动取消查名；不要把主动取消误报成 Gateway 离线。
+    if (options.signal?.aborted) throw error;
     throw new AgentNameCheckError(
       "Could not reach the application server.",
       "backend_unreachable",

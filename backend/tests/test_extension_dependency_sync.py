@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tomllib
 import zipfile
@@ -13,6 +14,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = REPO_ROOT / "backend"
+requires_make = pytest.mark.skipif(
+    shutil.which("make") is None,
+    reason="GNU make is required to exercise Makefile command-line handling",
+)
+requires_uv = pytest.mark.skipif(
+    shutil.which("uv") is None,
+    reason="uv is required to create an isolated frozen-lock test environment",
+)
 
 
 def _make_recipe(path: Path, target: str) -> str:
@@ -121,6 +130,7 @@ def test_extension_management_bootstrap_does_not_resolve_a_broken_extension_sour
         assert "--locked" not in recipe, target
 
 
+@requires_uv
 def test_frozen_management_bootstrap_installs_core_without_reading_a_missing_extension(
     tmp_path: Path,
 ) -> None:
@@ -202,6 +212,7 @@ def test_root_extension_shortcuts_are_cross_platform_and_keep_trust_confirmation
     assert "--yes" not in _make_recipe(makefile, "extension-upgrade")
 
 
+@requires_make
 def test_root_extension_shortcuts_reject_ambient_environment_arguments() -> None:
     environment = os.environ.copy()
 
@@ -233,6 +244,7 @@ def test_root_extension_shortcuts_reject_ambient_environment_arguments() -> None
         ("extension-remove", "NAME", "--name-env __deerflow_extension_name__"),
     ],
 )
+@requires_make
 def test_root_extension_shortcuts_keep_command_line_arguments_out_of_the_shell_recipe(
     target: str,
     variable: str,
@@ -266,6 +278,7 @@ def test_root_extension_shortcuts_keep_command_line_arguments_out_of_the_shell_r
         ("extension-remove", "NAME", "--name-env __deerflow_extension_name__"),
     ],
 )
+@requires_make
 def test_root_extension_shortcuts_keep_values_out_of_the_cmd_recipe_on_windows(
     target: str,
     variable: str,

@@ -122,9 +122,10 @@ function ChannelProviderItem({
 }) {
   const { t } = useI18n();
   const { user } = useAuth();
+  const canRead = canReadChannels(user);
   const canWrite = canWriteChannels(user);
   const canManageRuntime = canManageChannelRuntime(user);
-  const connectMutation = useConnectChannelProvider();
+  const connectMutation = useConnectChannelProvider(canRead);
   const configureMutation = useConfigureChannelProvider();
   const disconnectProviderMutation = useDisconnectChannelProvider();
   const disconnectConnectionMutation = useDisconnectChannelConnection();

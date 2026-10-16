@@ -26,7 +26,10 @@ from fastapi import APIRouter, Header, HTTPException, Path, Query, Request, Resp
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from flow_desk_product_extension.data_job_authorization import required_data_job_permissions
+from flow_desk_product_extension.data_job_authorization import (
+    data_job_authorization_key,
+    required_data_job_permissions,
+)
 from flow_desk_product_extension.settings import (
     DataJobIdempotencyConflict,
     DataJobInProgressConflict,
@@ -660,30 +663,84 @@ def build_router(
         _require_data_jobs_enabled(data_jobs_enabled)
         user_id = _authenticated_user_id(request)
         store = _require_settings_store(settings_store)
+
+        async def can_view_scope(kind: str, scope: str) -> bool:
+            authorization_key = data_job_authorization_key(kind, scope)
+            if authorization_key in permission_cache:
+                return permission_cache[authorization_key]
+            try:
+                await _require_data_job_permissions(request, kind, scope)
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                permission_cache[authorization_key] = False
+                return False
+            permission_cache[authorization_key] = True
+            return True
+
+        permission_cache: dict[str, bool] = {}
         try:
-            # 多取一行作为游标哨兵；响应只返回请求页大小，额外一行只用于判断
-            # 是否应显示“下一页”，这样恰好 20 条时也不会隐藏后续历史。
-            jobs = await store.list_data_jobs(user_id, limit=limit + 1, offset=offset)
+            # 先读取当前 owner 实际存在的授权类别并逐类验证，再让数据库过滤后分页。
+            # 这样正常路径不会把多年历史逐行加载到 Gateway，也不会对每个任务反复查 IAM。
+            existing_keys = await store.list_data_job_authorization_keys(user_id)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail="Product data jobs are not ready") from exc
-        has_more = len(jobs) > limit
-        visible_jobs: list[dict[str, Any]] = []
-        for job in jobs[:limit]:
+
+        authorized_keys: list[str] = []
+        for key in existing_keys:
+            kind, separator, scope = key.partition(":")
+            if separator and await can_view_scope(kind, scope):
+                authorized_keys.append(key)
+
+        async def can_view_job(job: dict[str, Any]) -> bool:
             try:
-                await _require_data_job_permissions(request, job["kind"], job["scope"][0])
-            except HTTPException as exc:
-                if exc.status_code == 403:
-                    # A revoked route grant or row scope must also hide the old
-                    # task summary; the owner check alone is not a current grant.
-                    continue
-                raise
-            visible_jobs.append(job)
+                return await can_view_scope(job["kind"], job["scope"][0])
+            except (KeyError, IndexError, TypeError):
+                # 旧进程滚动升级期间产生的 NULL key 行仍需按当前任务范围逐条检查。
+                return False
+
+        visible_jobs: list[dict[str, Any]] = []
+        has_more = False
+        next_offset: int | None = None
+        scan_offset = offset
+        batch_size = limit + 1
+        # 新数据都带 authorization_key，过滤在 SQL 中完成后 offset 才生效。
+        # NULL 行仅是旧进程的短期兼容路径，继续扫描它们以填满页并准确计算 has_more。
+        while True:
+            try:
+                candidates = await store.list_data_jobs(
+                    user_id,
+                    limit=batch_size,
+                    offset=scan_offset,
+                    authorization_keys=authorized_keys,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Product data jobs are not ready",
+                ) from exc
+            for candidate_index, job in enumerate(candidates):
+                if await can_view_job(job):
+                    if len(visible_jobs) == limit:
+                        has_more = True
+                        # 旧进程的 NULL 键会占数据库 offset；哨兵位置避免下一页重读或跳过。
+                        next_offset = scan_offset + candidate_index
+                        break
+                    visible_jobs.append(job)
+            if has_more or len(candidates) < batch_size:
+                break
+
+            # 只有 NULL 旧行被撤权时才会出现未填满的哨兵页；每批最多 100 行。
+            scan_offset += len(candidates)
+            batch_size = 100
+
         return {
             "api_version": API_VERSION,
             "jobs": visible_jobs,
             "limit": limit,
             "offset": offset,
             "has_more": has_more,
+            "next_offset": next_offset,
         }
 
     @router.get("/data-jobs/{job_id}")

@@ -26,6 +26,8 @@ rs.mock("sonner", () => ({
   toast: toastMocks,
 }));
 
+// The real Streamdown renderer and its optional code-highlighting package are
+// irrelevant to composer permission tests and may be unavailable in unit CI.
 rs.mock("@/core/input-polish/api", () => ({
   polishInputDraft: polishMocks.polishInputDraft,
 }));
@@ -446,5 +448,105 @@ describe("InputBox stop gating (runs:cancel)", () => {
     );
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByText("notes.txt")).toBeDefined();
+  });
+});
+
+describe("InputBox built-in command permission gating", () => {
+  it("does not read the goal when threads:read is denied", async () => {
+    const fetchSpy = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const { container } = renderComposer({
+      onStop: rs.fn(),
+      permissions: ["runs:create", "threads:write"],
+      status: "ready",
+    });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "You do not have permission to view this conversation's goal. Ask your administrator for threads:read.",
+      ),
+    );
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+    ).toBe(false);
+    expect(input.value).toBe("/goal");
+  });
+
+  it("does not clear the goal when threads:write is denied", async () => {
+    const fetchSpy = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const { container } = renderComposer({
+      onStop: rs.fn(),
+      permissions: ["runs:create", "threads:read"],
+      status: "ready",
+    });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/goal clear" } });
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "You do not have permission to change this conversation's goal. Ask your administrator for threads:write.",
+      ),
+    );
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+    ).toBe(false);
+    expect(input.value).toBe("/goal clear");
+  });
+
+  it("requires threads:write before saving a goal, even when runs:create is granted", async () => {
+    const fetchSpy = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const { container } = renderComposer({
+      onStop: rs.fn(),
+      permissions: ["runs:create", "threads:read"],
+      status: "ready",
+    });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, {
+      target: { value: "/goal finish the product review" },
+    });
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "You do not have permission to change this conversation's goal. Ask your administrator for threads:write.",
+      ),
+    );
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+    ).toBe(false);
+    expect(input.value).toBe("/goal finish the product review");
+  });
+
+  it("does not compact the conversation when threads:write is denied", async () => {
+    const fetchSpy = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const { container } = renderComposer({
+      onStop: rs.fn(),
+      permissions: ["runs:create", "threads:read"],
+      status: "ready",
+    });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "You do not have permission to compact this conversation. Ask your administrator for threads:write.",
+      ),
+    );
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).includes("/compact")),
+    ).toBe(false);
+    expect(input.value).toBe("/compact");
   });
 });

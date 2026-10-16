@@ -8,6 +8,7 @@ import {
   findSuggestionTemplatePlaceholder,
   filterSkillsForAgent,
   finishGoalRequest,
+  getComposerCommandRequiredPermission,
   getGoalObjectiveCounter,
   getComposerOperationErrorMessage,
   getInputSubmitAction,
@@ -24,6 +25,7 @@ import {
   type SlashSuggestion,
 } from "@/components/workspace/input-box-helpers";
 import { GatewayApiError } from "@/core/api/errors";
+import { PERMISSIONS } from "@/core/auth/permissions";
 import { RESERVED_SLASH_SKILL_NAMES, type Skill } from "@/core/skills";
 
 function makeSkill(name: string, enabled = true): Skill {
@@ -68,6 +70,26 @@ describe("parseGoalCommand", () => {
     expect(parseGoalCommand("/goalkeeper do thing")).toBeNull();
     expect(parseGoalCommand("hello")).toBeNull();
     expect(parseGoalCommand("/new")).toBeNull();
+  });
+});
+
+describe("getComposerCommandRequiredPermission", () => {
+  it("uses thread read for status and thread write for mutations", () => {
+    expect(getComposerCommandRequiredPermission({ kind: "status" })).toBe(
+      PERMISSIONS.THREADS_READ,
+    );
+    expect(getComposerCommandRequiredPermission({ kind: "clear" })).toBe(
+      PERMISSIONS.THREADS_WRITE,
+    );
+    expect(
+      getComposerCommandRequiredPermission({
+        kind: "set",
+        objective: "Ship it",
+      }),
+    ).toBe(PERMISSIONS.THREADS_WRITE);
+    expect(getComposerCommandRequiredPermission({ kind: "compact" })).toBe(
+      PERMISSIONS.THREADS_WRITE,
+    );
   });
 });
 

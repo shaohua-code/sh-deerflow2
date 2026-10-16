@@ -127,6 +127,15 @@ export interface Translations {
     separator: string;
   };
 
+  messageFeedback: {
+    groupLabel: string;
+    positive: string;
+    negative: string;
+    removePositive: string;
+    removeNegative: string;
+    removePermissionRequired: string;
+  };
+
   home: {
     docs: string;
     blog: string;
@@ -310,11 +319,14 @@ export interface Translations {
     goalFailed: string;
     goalConflict: string;
     goalTooLong: string;
+    goalReadPermissionRequired: string;
+    goalWritePermissionRequired: string;
     goalLengthCounter: string;
     compactSuccess: string;
     compactSkipped: string;
     compactConflict: string;
     compactFailed: string;
+    compactPermissionRequired: string;
     suggestions: {
       suggestion: string;
       prompt: string;
@@ -426,12 +438,14 @@ export interface Translations {
     deleteDocumentFailed: string;
     contentMissing: string;
     previewUnsupported: string;
+    documentPreviewDialogHint: string;
     archivedDocumentsBanner: string;
     conversationFiles: string;
     conversationFilesEmpty: string;
     threadFilesTruncated: (count: number) => string;
     threadFilesBrowseInThread: string;
     saveToProject: string;
+    saveToProjectDialogHint: string;
     saveToProjectFailed: string;
     savedToProject: (name: string) => string;
     shelfNameLabel: string;
@@ -798,6 +812,8 @@ export interface Translations {
     logout: string;
     gatewayUnavailable: string;
     gatewayUnavailableRetrying: string;
+    gatewayRetry: string;
+    gatewayRetrying: string;
     modelLoadFailed: string;
     modelLoadRetry: string;
     modelLoadRetrying: string;
@@ -812,6 +828,7 @@ export interface Translations {
     streamFailed: string;
     streamRetrying: string;
     streamReplayGap: string;
+    historyUnavailable: string;
     outlineLabel: string;
     outlineAttachmentFallback: string;
   };
@@ -822,6 +839,8 @@ export interface Translations {
     deleteConfirm: (title: string) => string;
     deleteFailed: string;
     noActiveChats: string;
+    readPermissionRequired: string;
+    writePermissionRequired: string;
     activeChats: string;
     archivedChats: string;
     archiveChat: string;
@@ -983,6 +1002,7 @@ export interface Translations {
   // Subtasks
   subtasks: {
     subtask: string;
+    historyUnavailable: string;
     executing: (count: number) => string;
     in_progress: string;
     completed: string;
@@ -1294,6 +1314,7 @@ export interface Translations {
       unimplementedFeaturesNote: string;
       save: string;
       saving: string;
+      unsaved: string;
       saved: string;
       saveError: string;
       version: string;

@@ -350,7 +350,6 @@ def test_harness_pins_the_contract_package_exactly():
     implements the older contract. The pin makes pip reject that skew at
     install time."""
     import tomllib
-    from importlib.metadata import version
     from pathlib import Path
 
     from packaging.requirements import Requirement
@@ -359,7 +358,7 @@ def test_harness_pins_the_contract_package_exactly():
     dependencies = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
     requirement = next(Requirement(dep) for dep in dependencies if Requirement(dep).name == "deerflow-extension-api")
 
-    expected = f"=={version('deerflow-extension-api')}"
+    expected = f"=={API_VERSION}"
     assert str(requirement.specifier) == expected, f"the host must pin deerflow-extension-api exactly ({expected}); a range lets pip resolve a contract newer than the host implements"
 
 

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+
 import {
   createAgent,
   deleteAgent,
@@ -16,6 +18,20 @@ import {
   writeCachedAgentsApiEnabled,
 } from "./feature-cache";
 import type { CreateAgentRequest, UpdateAgentRequest } from "./types";
+
+export const AGENTS_QUERY_KEY = ["agents"] as const;
+
+/** Gateway 按 owner 隔离自建 Agent，浏览器缓存也要按登录用户分区。 */
+export function agentsQueryKey(userId: string | null | undefined) {
+  return [...AGENTS_QUERY_KEY, userId ?? null] as const;
+}
+
+export function agentQueryKey(
+  userId: string | null | undefined,
+  name: string | null | undefined,
+) {
+  return [...agentsQueryKey(userId), name ?? null] as const;
+}
 
 export function useAgentsApiEnabled() {
   const { data, isPending, isError, isFetching, refetch } = useQuery({
@@ -59,53 +75,77 @@ export function useAgentsApiEnabled() {
 }
 
 export function useAgents(enabled = true) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   useEffect(() => {
     if (enabled) return;
-    const queryKey = ["agents"] as const;
-    // Disabled queries keep their last successful result by default. Remove
-    // the list when agents:read is denied so a later render cannot revive it.
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [enabled, queryClient]);
+    const queryKey = agentsQueryKey(userId);
+    // React Query 默认会保留禁用查询的成功结果；撤销 agents:read 时，
+    // 清除当前账号的目录和详情缓存，避免后续重新挂载时复用旧数据。
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }, [enabled, queryClient, userId]);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ["agents"],
+    queryKey: agentsQueryKey(userId),
     queryFn: ({ signal }) => listAgents({ signal }),
     enabled,
   });
-  return { agents: data ?? [], isLoading, isFetching, error, refetch };
+  return {
+    agents: enabled ? (data ?? []) : [],
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+  };
 }
 
 export function useAgent(name: string | null | undefined, enabled = true) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (enabled || !name) return;
-    const queryKey = ["agents", name] as const;
-    // Keep an old detail response out of the cache after agents:read revocation.
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [enabled, name, queryClient]);
+    if (enabled) return;
+    const queryKey = agentsQueryKey(userId);
+    // 详情页也负责清理当前账号的目录缓存，避免列表数据在其它入口残留。
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }, [enabled, queryClient, userId]);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ["agents", name],
+    queryKey: agentQueryKey(userId, name),
     queryFn: ({ signal }) => getAgent(name!, { signal }),
     enabled: Boolean(name) && enabled,
   });
-  return { agent: data ?? null, isLoading, isFetching, error, refetch };
+  return {
+    agent: enabled ? (data ?? null) : null,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+  };
 }
 
 export function useCreateAgent() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (request: CreateAgentRequest) => createAgent(request),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+    // 保存请求开始时的账号，避免切号后的迟到响应使新账号缓存失效。
+    onMutate: () => ({ userId }),
+    onSuccess: (_data, _request, mutationContext) => {
+      void queryClient.invalidateQueries({
+        queryKey: agentsQueryKey(mutationContext?.userId),
+      });
     },
   });
 }
 
 export function useUpdateAgent() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
@@ -115,19 +155,28 @@ export function useUpdateAgent() {
       name: string;
       request: UpdateAgentRequest;
     }) => updateAgent(name, request),
-    onSuccess: (_data, { name }) => {
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    // 保存请求开始时的账号，避免切号后的迟到响应使新账号缓存失效。
+    onMutate: () => ({ userId }),
+    onSuccess: (_data, _variables, mutationContext) => {
+      void queryClient.invalidateQueries({
+        queryKey: agentsQueryKey(mutationContext?.userId),
+      });
     },
   });
 }
 
 export function useDeleteAgent() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (name: string) => deleteAgent(name),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+    // 保存请求开始时的账号，避免切号后的迟到响应使新账号缓存失效。
+    onMutate: () => ({ userId }),
+    onSuccess: (_data, _name, mutationContext) => {
+      void queryClient.invalidateQueries({
+        queryKey: agentsQueryKey(mutationContext?.userId),
+      });
     },
   });
 }

@@ -508,6 +508,24 @@ run_service "Nginx" \
     "nginx -g 'daemon off;' -c '$REPO_ROOT/docker/nginx/nginx.local.conf' -p '$REPO_ROOT' > logs/nginx.log 2>&1" \
     2026 10
 
+# `next dev` opens port 3000 before it has compiled `/`. Probe through the
+# browser's actual nginx entry point so the dev success banner means the first
+# homepage HTML request has completed. Python is already required for the pnpm
+# runner and works on Windows/Git Bash without curl executable differences.
+if $DEV_MODE; then
+    if ! "$DEERFLOW_PNPM_PYTHON" "$REPO_ROOT/scripts/wait_for_http.py" \
+        "http://127.0.0.1:2026/" --timeout-seconds 300; then
+        echo "✗ Development homepage did not become ready. Recent frontend and nginx logs:"
+        for logfile in logs/frontend.log logs/nginx.log; do
+            if [ -f "$logfile" ]; then
+                echo "  $logfile"
+                tail -n 20 "$logfile"
+            fi
+        done
+        cleanup 1
+    fi
+fi
+
 # ── Ready ────────────────────────────────────────────────────────────────────
 
 echo ""

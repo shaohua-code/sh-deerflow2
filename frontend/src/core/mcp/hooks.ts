@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { toast } from "sonner";
 
 import { useI18n } from "@/core/i18n/hooks";
@@ -18,14 +19,28 @@ import {
 } from "./api";
 import type { MCPServerConfig } from "./types";
 
-export function useMCPConfig() {
+export function useMCPConfig(enabled = true) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (enabled) return;
+
+    // mcp:admin 被撤销后终止配置读取并移除旧响应，避免旧配置继续显示。
+    void queryClient.cancelQueries({ queryKey: ["mcpConfig"], exact: true });
+    queryClient.removeQueries({ queryKey: ["mcpConfig"], exact: true });
+  }, [enabled, queryClient]);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ["mcpConfig"],
-    queryFn: () => loadMCPConfig(),
+    queryFn: ({ signal }) => loadMCPConfig(signal),
+    enabled,
     retry: (count, error) =>
       !(error instanceof MCPConfigRequestError) && count < 3,
   });
-  return { config: data, isLoading, error };
+  return {
+    config: enabled ? data : undefined,
+    isLoading: enabled && isLoading,
+    error: enabled ? error : null,
+  };
 }
 
 interface EnableMCPServerVariables {

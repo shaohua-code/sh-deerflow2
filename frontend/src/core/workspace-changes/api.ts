@@ -8,11 +8,13 @@ export async function fetchWorkspaceChanges({
   runId,
   includeFiles = true,
   includeDiff = true,
+  signal,
 }: {
   threadId: string;
   runId: string;
   includeFiles?: boolean;
   includeDiff?: boolean;
+  signal?: AbortSignal;
 }): Promise<WorkspaceChangesResponse> {
   const query = new URLSearchParams({
     include_files: includeFiles ? "true" : "false",
@@ -22,6 +24,7 @@ export async function fetchWorkspaceChanges({
     `${getBackendBaseURL()}/api/threads/${encodeURIComponent(
       threadId,
     )}/runs/${encodeURIComponent(runId)}/workspace-changes?${query}`,
+    { signal },
   );
 
   if (!response.ok) {

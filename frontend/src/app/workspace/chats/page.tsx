@@ -19,6 +19,8 @@ import {
   WorkspaceContainer,
   WorkspaceHeader,
 } from "@/components/workspace/workspace-container";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { useInfiniteThreads } from "@/core/threads/hooks";
 import { buildThreadListModel } from "@/core/threads/thread-list-model";
@@ -32,6 +34,8 @@ import { env } from "@/env";
 
 export default function ChatsPage() {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const canReadThreads = hasPermission(user, PERMISSIONS.THREADS_READ);
   const [view, setView] = useState("active");
   const archived = view === "archived";
   const staticWebsite = env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true";
@@ -44,7 +48,10 @@ export default function ChatsPage() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteThreads({ archived: staticWebsite ? undefined : archived });
+  } = useInfiniteThreads(
+    { archived: staticWebsite ? undefined : archived },
+    { enabled: canReadThreads },
+  );
   const threadListModel = useMemo(
     () => buildThreadListModel(infiniteThreads?.pages ?? []),
     [infiniteThreads?.pages],
@@ -85,6 +92,22 @@ export default function ChatsPage() {
     observer.observe(element);
     return () => observer.disconnect();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, isSearching, view]);
+
+  if (!canReadThreads) {
+    return (
+      <WorkspaceContainer>
+        <WorkspaceHeader></WorkspaceHeader>
+        <WorkspaceBody>
+          <div
+            role="alert"
+            className="text-muted-foreground mx-auto mt-8 w-full max-w-(--container-width-md) rounded-xl border p-6 text-center"
+          >
+            {t.chats.readPermissionRequired}
+          </div>
+        </WorkspaceBody>
+      </WorkspaceContainer>
+    );
+  }
 
   return (
     <WorkspaceContainer>
@@ -171,7 +194,7 @@ export default function ChatsPage() {
                               )}
                             </div>
                           </Link>
-                          {archived && (
+                          {archived && archiveAction.canWriteThreads && (
                             <Button
                               className="mr-4 shrink-0"
                               variant="outline"

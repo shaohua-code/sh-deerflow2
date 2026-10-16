@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DownloadIcon, LoaderIcon, PackageIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
 } from "@/core/artifacts/api";
 import { urlOfArtifact } from "@/core/artifacts/utils";
 import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { installSkill, SkillRequestError } from "@/core/skills/api";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
@@ -75,21 +76,78 @@ export function ArtifactFileList({
   threadId: string;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const canReadRunHistory =
+    getPermissionState(user, PERMISSIONS.RUNS_READ) !== "denied";
   const isAdmin = user?.system_role === "admin";
   const { select: selectArtifact, setOpen } = useArtifacts();
   const [downloadingArchive, setDownloadingArchive] = useState(false);
+  const archiveRequestRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const [installingFile, setInstallingFile] = useState<string | null>(null);
   const staticWebsiteOnly = isStaticWebsiteOnly();
+  const archiveManifestQueryKey = [
+    "artifact-archive-manifest",
+    userId,
+    threadId,
+    runId,
+  ] as const;
+  const archiveQueryEnabled =
+    archiveDownloadsEnabled &&
+    canReadRunHistory &&
+    userId !== null &&
+    runId !== undefined &&
+    !staticWebsiteOnly;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      archiveRequestRef.current?.abort();
+      archiveRequestRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = archiveRequestRef.current;
+    if (!controller) return;
+
+    // A shared cookie can switch owners without changing this mounted list.
+    controller.abort();
+    archiveRequestRef.current = null;
+    setDownloadingArchive(false);
+  }, [userId]);
+
+  useEffect(() => {
+    if (canReadRunHistory) return;
+
+    // History permission is account-wide; revoke all cached manifests for it.
+    const ownerQueries = {
+      queryKey: ["artifact-archive-manifest", userId],
+    } as const;
+    const controller = archiveRequestRef.current;
+    controller?.abort();
+    archiveRequestRef.current = null;
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+    if (controller && mountedRef.current) {
+      setDownloadingArchive(false);
+    }
+  }, [canReadRunHistory, queryClient, userId]);
+
   const { data: archiveManifest } = useQuery({
-    queryKey: ["artifact-archive-manifest", threadId, runId],
-    queryFn: () => getArtifactArchiveManifest({ threadId, runId: runId! }),
-    enabled:
-      archiveDownloadsEnabled && runId !== undefined && !staticWebsiteOnly,
+    queryKey: archiveManifestQueryKey,
+    queryFn: ({ signal }) =>
+      getArtifactArchiveManifest({ threadId, runId: runId!, signal }),
+    enabled: archiveQueryEnabled,
     retry: false,
     staleTime: Infinity,
   });
-  const archiveCount = archiveManifest?.fileCount;
+  const archiveCount = archiveQueryEnabled
+    ? archiveManifest?.fileCount
+    : undefined;
 
   const handleClick = useCallback(
     (filepath: string) => {
@@ -134,15 +192,19 @@ export function ArtifactFileList({
   );
 
   const handleDownloadArchive = useCallback(async () => {
-    if (!runId || downloadingArchive) return;
+    if (!runId || downloadingArchive || !canReadRunHistory) return;
 
     setDownloadingArchive(true);
+    const controller = new AbortController();
+    archiveRequestRef.current = controller;
     let objectUrl: string | undefined;
     try {
       const { blob, filename } = await downloadArtifactArchive({
         threadId,
         runId,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
@@ -151,17 +213,24 @@ export function ArtifactFileList({
       link.click();
       link.remove();
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error("Failed to download artifact archive:", error);
       // Gateway detail 只用于诊断；页面按稳定状态码显示本地化产品提示。
       toast.error(artifactArchiveErrorCopy(error, t.artifactArchive));
     } finally {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
-      setDownloadingArchive(false);
+      if (archiveRequestRef.current === controller) {
+        archiveRequestRef.current = null;
+        if (mountedRef.current) {
+          setDownloadingArchive(false);
+        }
+      }
     }
-  }, [downloadingArchive, runId, t, threadId]);
+  }, [canReadRunHistory, downloadingArchive, runId, t, threadId]);
 
   const canDownloadArchive =
     archiveDownloadsEnabled &&
+    canReadRunHistory &&
     archiveCount !== undefined &&
     archiveCount > 1 &&
     archiveCount <= MAX_ARTIFACT_ARCHIVE_FILES &&

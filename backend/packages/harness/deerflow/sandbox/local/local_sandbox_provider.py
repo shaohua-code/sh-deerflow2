@@ -124,15 +124,20 @@ class LocalSandboxProvider(SandboxProvider):
             projection = self._ensure_skills_projection()
 
             # Public skills: global, read-only — static, shared by all threads
-            public_skills_path = projection.public
-            if public_skills_path.exists():
-                mappings.append(
-                    PathMapping(
-                        container_path=f"{container_path}/public",
-                        local_path=str(public_skills_path),
-                        read_only=True,
+            # A projection can be temporarily unavailable (for example, an
+            # unreadable extension config). Skip only the managed skills
+            # mounts in that case; unrelated operator mounts must still be
+            # evaluated below instead of being lost with the projection.
+            if projection is not None:
+                public_skills_path = projection.public
+                if public_skills_path.exists():
+                    mappings.append(
+                        PathMapping(
+                            container_path=f"{container_path}/public",
+                            local_path=str(public_skills_path),
+                            read_only=True,
+                        )
                     )
-                )
 
             # NOTE: Legacy skills mount is NOT included here because it must
             # only be exposed to users who have no per-user custom skills yet

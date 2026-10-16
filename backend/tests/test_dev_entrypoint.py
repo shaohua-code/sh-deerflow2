@@ -276,11 +276,25 @@ def _run_sync_block(tmp_path: Path, stub_uv: str) -> subprocess.CompletedProcess
     # `cd` is shadowed because /app/backend does not exist outside the
     # container; everything else in the block runs verbatim.
     script = f'set -e\ncd() {{ :; }}\nEXTRAS_FLAGS=""\n{_sync_block()}\necho "REACHED_HANDOFF"\n'
+    # Pass a file to Git Bash instead of a large ``sh -c`` argument. Windows
+    # command-line quoting can otherwise reinterpret backticks and dollar
+    # expressions from the script's comments before Bash receives the block.
+    script_path = tmp_path / "sync-block.sh"
+    script_path.write_text(script, encoding="utf-8", newline="\n")
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["STUB_UV_STATE"] = str(state_dir)
-    return subprocess.run([require_posix_sh(), "-c", script], capture_output=True, text=True, check=False, env=env, cwd=tmp_path)
+    return subprocess.run(
+        [require_posix_sh(), str(script_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        env=env,
+        cwd=tmp_path,
+    )
 
 
 def test_successful_sync_reaches_the_uvicorn_handoff(tmp_path: Path):

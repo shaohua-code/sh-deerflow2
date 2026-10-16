@@ -32,6 +32,11 @@ from deerflow.extensions.manager import (
 )
 from deerflow.tui.cli import main as deerflow_main
 
+requires_uv = pytest.mark.skipif(
+    shutil.which("uv") is None,
+    reason="uv is required to exercise extension install, upgrade, and remove integration flows",
+)
+
 
 def _write_local_extension(
     source: Path,
@@ -189,6 +194,7 @@ def _write_demo_wheel(directory: Path, *, version: str = "1.0.0", marker: str | 
     return wheel
 
 
+@requires_uv
 def test_install_local_directory_makes_it_deployable_and_enabled(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -244,6 +250,7 @@ def test_local_snapshot_ignores_generated_test_and_lint_caches(tmp_path: Path) -
     assert not (destination / ".ruff_cache").exists()
 
 
+@requires_uv
 def test_install_rejects_an_already_snapshotted_local_directory(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -258,6 +265,7 @@ def test_install_rejects_an_already_snapshotted_local_directory(tmp_path: Path) 
         manager.install(str(source), yes=True)
 
 
+@requires_uv
 def test_upgrade_replaces_local_snapshot_and_preserves_private_config(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -298,6 +306,7 @@ def test_upgrade_replaces_local_snapshot_and_preserves_private_config(tmp_path: 
     _assert_demo_entry_point_loads(root / "backend")
 
 
+@requires_uv
 def test_failed_upgrade_restores_the_previous_snapshot_and_config(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -330,6 +339,7 @@ def test_failed_upgrade_restores_the_previous_snapshot_and_config(tmp_path: Path
     assert leftover == []
 
 
+@requires_uv
 def test_deerflow_extensions_upgrade_exposes_the_local_replace_flow(
     tmp_path: Path,
     monkeypatch,
@@ -398,6 +408,7 @@ def test_upgrade_rejects_a_git_source_that_is_not_installed(tmp_path: Path) -> N
     assert yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")).get("plugins") is None
 
 
+@requires_uv
 def test_upgrade_repins_an_installed_git_source_and_preserves_private_config(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-git-source"
@@ -473,6 +484,7 @@ def test_upgrade_repins_an_installed_git_source_and_preserves_private_config(tmp
     ]
 
 
+@requires_uv
 def test_upgrade_repins_an_installed_requirement_and_preserves_private_config(
     tmp_path: Path,
     monkeypatch,
@@ -546,6 +558,7 @@ def test_upgrade_repins_an_installed_requirement_and_preserves_private_config(
     ]
 
 
+@requires_uv
 def test_failed_upgrade_leaves_snapshot_when_staging_rename_fails(tmp_path: Path, monkeypatch) -> None:
     """A snapshot that cannot be moved must stay the live tree.
 
@@ -589,6 +602,7 @@ def test_failed_upgrade_leaves_snapshot_when_staging_rename_fails(tmp_path: Path
     assert list((root / "backend" / "extensions" / "sources").glob(".*.upgrade-*")) == []
 
 
+@requires_uv
 def test_failed_upgrade_restores_snapshot_when_a_concurrent_dependency_edit_blocks_lock_rollback(
     tmp_path: Path,
     monkeypatch,
@@ -627,6 +641,7 @@ def test_failed_upgrade_restores_snapshot_when_a_concurrent_dependency_edit_bloc
     assert list((root / "backend" / "extensions" / "sources").glob(".*.upgrade-*")) == []
 
 
+@requires_uv
 def test_install_defaults_to_a_fail_open_plugin_record(tmp_path: Path) -> None:
     """A managed install must not silently choose the fail-closed side: with
     `required: true`, a later broken extension aborts Gateway startup entirely,
@@ -644,6 +659,7 @@ def test_install_defaults_to_a_fail_open_plugin_record(tmp_path: Path) -> None:
     assert config["plugins"][0]["required"] is False
 
 
+@requires_uv
 def test_install_records_required_when_the_operator_opts_in(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -658,6 +674,7 @@ def test_install_records_required_when_the_operator_opts_in(tmp_path: Path) -> N
     assert config["plugins"][0]["required"] is True
 
 
+@requires_uv
 def test_cli_install_exposes_the_required_opt_in(tmp_path: Path, monkeypatch, capsys) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -724,6 +741,7 @@ def test_mutating_operations_are_serialized_for_one_checkout(tmp_path: Path, mon
     assert second_entered.is_set()
 
 
+@requires_uv
 def test_deerflow_extensions_install_exposes_the_local_install_flow(
     tmp_path: Path,
     monkeypatch,
@@ -745,6 +763,7 @@ def test_deerflow_extensions_install_exposes_the_local_install_flow(
     assert config["plugins"][0]["use"] == "demo_extension:install"
 
 
+@requires_uv
 def test_hidden_source_env_option_reads_the_install_source_outside_the_shell_recipe(
     tmp_path: Path,
     monkeypatch,
@@ -784,6 +803,7 @@ def test_explicit_invalid_project_root_does_not_fall_back_to_current_checkout(
         find_project_root()
 
 
+@requires_uv
 def test_install_git_source_discovers_and_enables_its_packaging_entry_point(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-git-source"
@@ -814,6 +834,7 @@ def test_install_git_source_discovers_and_enables_its_packaging_entry_point(tmp_
     assert config["plugins"][0]["name"] == "demo"
 
 
+@requires_uv
 def test_install_rejects_a_pypi_requirement_resolved_from_an_external_local_wheel(
     tmp_path: Path,
     monkeypatch,
@@ -837,6 +858,7 @@ def test_install_rejects_a_pypi_requirement_resolved_from_an_external_local_whee
 
 
 @pytest.mark.parametrize("relative_wheels", ["wheels", "packages/harness/wheels"])
+@requires_uv
 def test_install_rejects_a_local_wheel_directory_ignored_by_the_docker_context(
     tmp_path: Path,
     monkeypatch,
@@ -861,6 +883,7 @@ def test_install_rejects_a_local_wheel_directory_ignored_by_the_docker_context(
     assert not (root / "backend" / "uv.lock").exists()
 
 
+@requires_uv
 def test_install_rejects_a_relative_find_links_wheelhouse_outside_the_build_context(
     tmp_path: Path,
     monkeypatch,
@@ -1125,6 +1148,7 @@ def test_file_urls_are_rejected_because_they_cannot_enter_the_docker_build_conte
         ExtensionManager(root).install("git+file:///outside/demo.git@deadbeef", yes=True)
 
 
+@requires_uv
 def test_install_rolls_back_when_the_declared_entry_point_cannot_be_imported(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -1169,6 +1193,7 @@ def test_relative_or_absolute_direct_paths_must_use_the_managed_directory_snapsh
     assert not (root / "backend" / "uv.lock").exists()
 
 
+@requires_uv
 def test_install_preserves_unrelated_config_comments_and_layout(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -1433,6 +1458,7 @@ def test_deerflow_extensions_list_rejects_entries_the_runtime_schema_rejects(
     assert "Traceback" not in captured.err
 
 
+@requires_uv
 def test_deerflow_extensions_remove_uninstalls_dependency_source_and_activation(
     tmp_path: Path,
     monkeypatch,
@@ -1460,6 +1486,7 @@ def test_deerflow_extensions_remove_uninstalls_dependency_source_and_activation(
     assert "deerflow-extension-demo" not in pyproject
 
 
+@requires_uv
 def test_remove_one_configured_instance_keeps_its_shared_distribution_runnable(
     tmp_path: Path,
 ) -> None:
@@ -1497,6 +1524,7 @@ def test_remove_one_configured_instance_keeps_its_shared_distribution_runnable(
     _assert_demo_entry_point_loads(root / "backend")
 
 
+@requires_uv
 def test_install_prompts_for_trust_when_yes_is_not_supplied(
     tmp_path: Path,
     monkeypatch,
@@ -1517,6 +1545,7 @@ def test_install_prompts_for_trust_when_yes_is_not_supplied(
     assert "executes code with Gateway privileges" in capsys.readouterr().out
 
 
+@requires_uv
 def test_failed_entry_point_discovery_rolls_back_dependency_and_lock(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "broken-git-source"
@@ -1551,6 +1580,7 @@ def test_failed_entry_point_discovery_rolls_back_dependency_and_lock(tmp_path: P
     assert absent.returncode == 0
 
 
+@requires_uv
 def test_failed_install_does_not_overwrite_a_concurrent_operator_config_edit(
     tmp_path: Path,
     monkeypatch,
@@ -1584,6 +1614,7 @@ def test_failed_install_does_not_overwrite_a_concurrent_operator_config_edit(
     assert config_path.read_text(encoding="utf-8") == operator_edit
 
 
+@requires_uv
 def test_failed_install_preserves_a_concurrent_dependency_file_edit(
     tmp_path: Path,
     monkeypatch,
@@ -1612,6 +1643,7 @@ def test_failed_install_preserves_a_concurrent_dependency_file_edit(
     assert (root / "backend" / "extensions" / "sources" / "deerflow-extension-demo").is_dir()
 
 
+@requires_uv
 def test_uv_add_partial_writes_are_rolled_back_when_the_command_fails(
     tmp_path: Path,
     monkeypatch,
@@ -1724,6 +1756,7 @@ def test_local_install_rejects_distribution_names_that_escape_the_managed_root(
     assert not (root / "backend" / "extensions").exists()
 
 
+@requires_uv
 def test_install_adopts_an_existing_manual_plugin_instead_of_loading_it_twice(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -1779,6 +1812,7 @@ plugins:
         },
     ],
 )
+@requires_uv
 def test_install_rejects_identity_collisions_with_a_different_entry_point(
     tmp_path: Path,
     configured_plugin: dict[str, object],
@@ -1804,6 +1838,7 @@ def test_install_rejects_identity_collisions_with_a_different_entry_point(
     assert "deerflow-extension-demo" not in (root / "backend" / "pyproject.toml").read_text(encoding="utf-8")
 
 
+@requires_uv
 def test_install_replaces_inline_empty_plugins_with_one_schema_valid_block(tmp_path: Path) -> None:
     root = tmp_path / "deer-flow"
     source = tmp_path / "demo-source"
@@ -1984,6 +2019,7 @@ plugins:
     ]
 
 
+@requires_uv
 def test_cli_install_updates_the_runtime_selected_config_file(
     tmp_path: Path,
     monkeypatch,
@@ -2019,6 +2055,7 @@ def test_manager_falls_back_to_the_legacy_backend_config_path(tmp_path: Path) ->
     assert ExtensionManager(root).list_configured() == ()
 
 
+@requires_uv
 def test_remove_rolls_back_package_lock_config_source_and_environment_when_config_write_fails(
     tmp_path: Path,
     monkeypatch,
@@ -2062,6 +2099,7 @@ def test_remove_rolls_back_package_lock_config_source_and_environment_when_confi
     assert present.returncode == 0
 
 
+@requires_uv
 def test_failed_remove_preserves_a_concurrent_operator_config_edit(
     tmp_path: Path,
     monkeypatch,
@@ -2101,6 +2139,7 @@ def test_failed_remove_preserves_a_concurrent_operator_config_edit(
     assert (root / "backend" / "extensions" / "sources" / "deerflow-extension-demo").is_dir()
 
 
+@requires_uv
 def test_failed_remove_preserves_a_concurrent_dependency_file_edit(
     tmp_path: Path,
     monkeypatch,
@@ -2132,6 +2171,7 @@ def test_failed_remove_preserves_a_concurrent_dependency_file_edit(
     assert yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))["plugins"] == []
 
 
+@requires_uv
 def test_uv_remove_partial_writes_are_rolled_back_when_the_command_fails(
     tmp_path: Path,
     monkeypatch,
@@ -2423,7 +2463,8 @@ def test_install_uses_one_controlled_uv_project_and_deferred_sync(
     assert ["--project", backend] == add[add.index("--project") : add.index("--project") + 2]
     assert "--no-sync" in add
     assert "--no-workspace" in add
-    assert add[-2:] == ["--", "extensions/sources/deerflow-extension-demo"]
+    assert add[-2] == "--"
+    assert Path(add[-1]).as_posix() == "extensions/sources/deerflow-extension-demo"
     assert ["--project", backend] == sync[sync.index("--project") : sync.index("--project") + 2]
     assert "--locked" in sync
     assert "--no-sync" not in sync

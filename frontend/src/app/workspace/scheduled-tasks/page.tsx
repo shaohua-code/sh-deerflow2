@@ -1,6 +1,5 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { CopyIcon, TriangleAlertIcon } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -34,8 +33,7 @@ import {
   WorkspaceContainer,
   WorkspaceHeader,
 } from "@/components/workspace/workspace-container";
-import { listAgents } from "@/core/agents/api";
-import { useAgentsApiEnabled } from "@/core/agents/hooks";
+import { useAgents, useAgentsApiEnabled } from "@/core/agents/hooks";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { getMissingPermissions, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
@@ -122,16 +120,12 @@ export default function ScheduledTasksPage() {
   });
   const { enabled: agentsApiEnabled, isLoading: agentsApiLoading } =
     useAgentsApiEnabled();
-  const agentsQuery = useQuery({
-    queryKey: ["agents"],
-    queryFn: listAgents,
-    enabled: !agentsApiLoading && agentsApiEnabled && access.canReadAgents,
-    retry: false,
-  });
-  // React Query can retain the previous agent directory after read access is
-  // revoked; never reuse that cache to populate scheduled-task selectors.
+  const agentsQuery = useAgents(
+    !agentsApiLoading && agentsApiEnabled && access.canReadAgents,
+  );
+  // 复用 Agent 域 hook 的 signal 与撤权缓存清理，选择器只读已授权目录。
   const visibleAgents =
-    access.canReadAgents && agentsApiEnabled ? agentsQuery.data : undefined;
+    access.canReadAgents && agentsApiEnabled ? agentsQuery.agents : undefined;
   const tasksQuery = threadId ? threadTasksQuery : allTasksQuery;
   const data = tasksQuery.data;
   const [deleteOpen, setDeleteOpen] = useState(false);

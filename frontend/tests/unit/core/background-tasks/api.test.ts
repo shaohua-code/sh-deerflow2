@@ -74,6 +74,19 @@ describe("background task API", () => {
     );
   });
 
+  it("passes cancellation signals to list and detail reads", async () => {
+    const controller = new AbortController();
+    mockedFetch
+      .mockResolvedValueOnce(jsonResponse([TASK]))
+      .mockResolvedValueOnce(jsonResponse({ ...TASK, status: "completed" }));
+
+    await fetchBackgroundTasks("thread-1", controller.signal);
+    await fetchBackgroundTask("thread-1", "task-1", controller.signal);
+
+    expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(mockedFetch.mock.calls[1]?.[1]?.signal).toBe(controller.signal);
+  });
+
   it("posts cancellation through the local task id route", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse({ ...TASK, cancel_requested: true }),

@@ -318,9 +318,27 @@ def test_data_job_page_reports_whether_more_owner_jobs_exist() -> None:
         def __init__(self) -> None:
             self.calls = []
 
-        async def list_data_jobs(self, owner_user_id, *, limit, offset):
-            self.calls.append((owner_user_id, limit, offset))
-            rows = [{"job_id": f"job-{index}"} for index in range(3)]
+        async def list_data_job_authorization_keys(self, owner_user_id):
+            assert owner_user_id == "owner-1"
+            return ["export:preferences"]
+
+        async def list_data_jobs(
+            self,
+            owner_user_id,
+            *,
+            limit,
+            offset,
+            authorization_keys,
+        ):
+            self.calls.append((owner_user_id, limit, offset, tuple(authorization_keys)))
+            rows = [
+                {
+                    "job_id": f"job-{index}",
+                    "kind": "export",
+                    "scope": ["preferences"],
+                }
+                for index in range(3)
+            ]
             return rows[offset : offset + limit]
 
     store = PagedStore()
@@ -329,7 +347,10 @@ def test_data_job_page_reports_whether_more_owner_jobs_exist() -> None:
     setattr(
         app.state,
         EXTENSION_PRINCIPAL_RESOLVER_KEY,
-        lambda _request: ExtensionPrincipal(user_id="owner-1"),
+        lambda _request: ExtensionPrincipal(
+            user_id="owner-1",
+            permissions=("preferences:read",),
+        ),
     )
     app.include_router(build_router({"data_jobs": {"enabled": True}}, store))
 
@@ -343,7 +364,10 @@ def test_data_job_page_reports_whether_more_owner_jobs_exist() -> None:
     assert second.status_code == 200
     assert [job["job_id"] for job in second.json()["jobs"]] == ["job-2"]
     assert second.json()["has_more"] is False
-    assert store.calls == [("owner-1", 3, 0), ("owner-1", 3, 2)]
+    assert store.calls == [
+        ("owner-1", 3, 0, ("export:preferences",)),
+        ("owner-1", 3, 2, ("export:preferences",)),
+    ]
 
 
 def test_product_extension_registers_its_store_for_gateway_admin_audits() -> None:
@@ -436,7 +460,7 @@ def test_user_settings_are_persisted_and_scoped_to_server_identity(tmp_path) -> 
             )
             return result.scalar_one()
 
-    assert asyncio.run(read_product_revision()) == "fd_0007"
+    assert asyncio.run(read_product_revision()) == "fd_0008"
 
     app = FastAPI()
     _install_test_scope_checker(app)
@@ -734,8 +758,8 @@ def test_user_settings_routes_require_permissions_before_storage_access() -> Non
         assert client.delete("/api/product/v1/settings/workspace.display").status_code == 403
 
 
-def test_fd_0007_migrates_existing_fd_0001_settings_without_data_loss(tmp_path) -> None:
-    """旧用户设置库升级到文件目录 revision 时必须保留原行并创建目录表。"""
+def test_product_migrations_upgrade_existing_fd_0001_settings_without_data_loss(tmp_path) -> None:
+    """旧用户设置库升级到当前 product revision 时必须保留原行与产品表。"""
     database_path = tmp_path / "flow-desk-upgrade.sqlite"
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{database_path}",
@@ -780,7 +804,7 @@ def test_fd_0007_migrates_existing_fd_0001_settings_without_data_loss(tmp_path) 
                 )
                 return result.scalar_one()
 
-        assert asyncio.run(read_revision()) == "fd_0007"
+        assert asyncio.run(read_revision()) == "fd_0008"
 
         async def read_job_table() -> bool:
             async with engine.connect() as connection:
@@ -824,6 +848,55 @@ def test_fd_0007_migrates_existing_fd_0001_settings_without_data_loss(tmp_path) 
                 return result.scalar_one_or_none() == "flowdesk_data_job_rate_limits"
 
         assert asyncio.run(read_rate_limit_table())
+    finally:
+        asyncio.run(store.stop())
+        asyncio.run(engine.dispose())
+
+
+def test_fd_0008_backfills_data_job_authorization_keys(tmp_path) -> None:
+    database_path = tmp_path / "flow-desk-data-job-authorization-backfill.sqlite"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        poolclass=NullPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    store = ProductSettingsStore()
+
+    async def seed_fd_0007() -> None:
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "CREATE TABLE flowdesk_alembic_version "
+                "(version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO flowdesk_alembic_version (version_num) VALUES ('fd_0007')"
+            )
+            await connection.exec_driver_sql(
+                "CREATE TABLE flowdesk_data_jobs ("
+                "job_id VARCHAR(36) NOT NULL PRIMARY KEY, "
+                "owner_user_id VARCHAR(255) NOT NULL, kind VARCHAR(24) NOT NULL, "
+                "scope JSON NOT NULL, created_at DATETIME NOT NULL)"
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO flowdesk_data_jobs "
+                "(job_id, owner_user_id, kind, scope, created_at) "
+                "VALUES ('old-job', 'user-a', 'export', '[\"preferences\"]', CURRENT_TIMESTAMP)"
+            )
+
+    async def read_revision_and_backfill() -> tuple[str, str]:
+        async with engine.connect() as connection:
+            revision = await connection.exec_driver_sql(
+                "SELECT version_num FROM flowdesk_alembic_version"
+            )
+            authorization_key = await connection.exec_driver_sql(
+                "SELECT authorization_key FROM flowdesk_data_jobs WHERE job_id = 'old-job'"
+            )
+            return revision.scalar_one(), authorization_key.scalar_one()
+
+    try:
+        asyncio.run(seed_fd_0007())
+        asyncio.run(store.start(ExtensionRuntimeDeps(session_factory=session_factory)))
+        assert asyncio.run(read_revision_and_backfill()) == ("fd_0008", "export:preferences")
     finally:
         asyncio.run(store.stop())
         asyncio.run(engine.dispose())

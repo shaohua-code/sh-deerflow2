@@ -32,6 +32,8 @@ async def test_migration_0009_creates_composite_pk_table_and_is_idempotent(tmp_p
         sync = sa.create_engine(f"sqlite:///{db_path}")
         Base.metadata.create_all(sync)
         with sync.begin() as conn:
+            # Keep the post-0028 outbox table absent while replaying from 0004.
+            conn.execute(sa.text("DROP TABLE IF EXISTS iam_model_usage_outbox"))
             conn.execute(sa.text("DROP TABLE IF EXISTS webhook_deliveries"))
             conn.execute(sa.text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)"))
             conn.execute(sa.text("DELETE FROM alembic_version"))

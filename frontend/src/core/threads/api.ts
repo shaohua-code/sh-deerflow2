@@ -78,12 +78,15 @@ async function readThreadAPIError(
 
 export async function fetchThreadTokenUsage(
   threadId: string,
+  signal?: AbortSignal,
 ): Promise<ThreadTokenUsageResponse | null> {
+  const requestInit: RequestInit = { method: "GET" };
+  if (signal) {
+    requestInit.signal = signal;
+  }
   const response = await fetchWithAuth(
     `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/token-usage`,
-    {
-      method: "GET",
-    },
+    requestInit,
   );
 
   if (!response.ok) {

@@ -3,7 +3,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import {
   deleteUploadedFile,
@@ -16,19 +16,45 @@ import {
 
 /**
  * Hook to load the gateway-enforced upload limits.
- * Callers intentionally degrade to server-side validation if this request fails.
+ * Callers must pass the current threads:read grant. Validation still falls back
+ * to Gateway enforcement while loading or if the limits endpoint is unavailable.
  */
 export function useUploadLimits(
   threadId: string,
-  options: { enabled?: boolean } = {},
+  options: { enabled: boolean },
 ) {
-  return useQuery({
-    queryKey: ["uploads", "limits", threadId],
-    queryFn: () => getUploadLimits(threadId),
-    enabled: !!threadId && options.enabled !== false,
+  const queryClient = useQueryClient();
+  const active = Boolean(threadId) && options.enabled;
+  const queryKey = useMemo(
+    () => ["uploads", "limits", threadId] as const,
+    [threadId],
+  );
+
+  useEffect(() => {
+    if (active) return;
+
+    // 撤销 threads:read 后取消在途请求并清除旧额度，不能继续用授权前缓存校验附件。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [active, queryClient, queryKey]);
+
+  const query = useQuery({
+    queryKey,
+    queryFn: ({ signal }) => getUploadLimits(threadId, signal),
+    enabled: active,
     retry: false,
     staleTime: 60_000,
   });
+
+  return active
+    ? query
+    : {
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+      };
 }
 
 /**
@@ -49,14 +75,42 @@ export function useUploadFiles(threadId: string) {
 }
 
 /**
- * Hook to list uploaded files
+ * 读取当前线程的上传文件。调用方必须传入 threads:read 权限，撤权后会取消请求并清除旧目录缓存。
  */
-export function useUploadedFiles(threadId: string) {
-  return useQuery({
-    queryKey: ["uploads", "list", threadId],
-    queryFn: () => listUploadedFiles(threadId),
-    enabled: !!threadId,
+export function useUploadedFiles(
+  threadId: string,
+  { enabled }: { enabled: boolean },
+) {
+  const queryClient = useQueryClient();
+  const active = Boolean(threadId) && enabled;
+  const queryKey = useMemo(
+    () => ["uploads", "list", threadId] as const,
+    [threadId],
+  );
+
+  useEffect(() => {
+    if (active) return;
+
+    // 撤销 threads:read 后停止目录读取，并清除授权前缓存的文件名和路径。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [active, queryClient, queryKey]);
+
+  const query = useQuery({
+    queryKey,
+    queryFn: ({ signal }) => listUploadedFiles(threadId, signal),
+    enabled: active,
   });
+
+  return active
+    ? query
+    : {
+        ...query,
+        data: undefined,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+      };
 }
 
 /**

@@ -1,3 +1,9 @@
+## 2026-10-15 Central IAM B04 未分片 Windows 全量复跑与模型切换交接
+
+- Windows Python 3.12 离线后端套件运行 32:06，结果 **17,149 passed、404 skipped、3 deselected、1 failed、82 warnings**。唯一失败为 frontend/src/AGENTS.md UTF-8 归一化大小 49,630 bytes，超过 49,152-byte guidance 硬上限 478 bytes。
+- 此前本轮已压缩前端指导中的重复内容，并将 MCP retry 断言改为比较调用起止时间范围；9 项定向回归 **9 passed**。全量检查仍不通过，按用户要求本轮没有重跑；临时 pytest 目录已确认删除。
+- 下一次手动继续先再压缩 guidance 至少 1 KB，再根据用户指令决定是否验证。目标 IAM、Provider、浏览器和发布验收仍未完成；本轮未改运行时代码、数据库、migration、quota 或外部 Provider。
+
 ## 2026-10-13 Central IAM B04 context/Gateway services 聚焦核验
 
 - `test_context_compaction.py` 和 `test_gateway_services.py` 离线聚焦回归 **212 passed**；没有修改代码/测试，也未连接目标数据库、IAM 或 Provider。
@@ -2358,3 +2364,8 @@ DeerFlow 2.0 是围绕"超级智能体"框架的彻底重写，核心包含子�
 - `test_persistence_bootstrap.py` 与 `test_persistence_bootstrap_regression.py` 的旧 SQLite 库现在只创建 `_BASELINE_TABLE_NAMES`，让后续 Alembic revision 创建 `iam_model_usage_outbox` 等后加表；未改生产 bootstrap/runtime。
 - 迁移/bootstrap 相关五个聚焦模块 **62 passed**；两测试文件 Ruff check/format-check 通过。首次因隔离 basetemp 父目录不存在而有 22 个 setup errors，创建后完整复跑通过；临时 DB/pytest/cache 目录已删除。完整 suite 与目标数据库迁移仍未验证。
 
+## 2026-10-15 Central IAM B04 未分片 Windows 全量复跑与模型切换交接
+
+- 全量离线后端套件在 Windows Python 3.12 下运行 **32:06：17,149 passed、404 skipped、3 deselected、1 failed、82 warnings**。唯一失败为 frontend/src/AGENTS.md UTF-8 归一化大小 49,630 bytes，超过 49,152-byte guidance 硬上限 478 bytes。
+- 本轮已压缩前端指导中的重复对话引用/聊天面板说明，并将 MCP retry 断言改为比较调用起止时间范围；对应 9 项定向测试此前 **9 passed**。全量检查仍非绿色；按用户要求没有重跑。临时 pytest 目录已确认清理。
+- 下一次手动继续先再压缩 guidance 至少 1 KB，再根据用户指令决定是否验证；目标 IAM、Provider、浏览器和发布验收仍未完成。本轮未改运行时代码、数据库、migration、quota 或外部 Provider。

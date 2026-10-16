@@ -17,6 +17,8 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
@@ -57,6 +59,10 @@ export function SubtaskCard({
   isLoading: boolean;
 }) {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const canReadRunHistory =
+    getPermissionState(user, PERMISSIONS.RUNS_READ) !== "denied";
   const [collapsed, setCollapsed] = useState(true);
   const task = useSubtask(taskId)!;
   const { models, tokenUsageEnabled } = useModels();
@@ -81,26 +87,48 @@ export function SubtaskCard({
   // Backfill step history on expand for historical runs (#3779). Live runs
   // already have steps from SSE, so the `steps.length` guard skips the fetch.
   const stepsCount = task.steps?.length ?? 0;
+  const stepsCountRef = useRef(stepsCount);
+  stepsCountRef.current = stepsCount;
   const backfilledRef = useRef(false);
   useEffect(() => {
-    if (collapsed || backfilledRef.current || stepsCount > 0) {
+    if (collapsed || backfilledRef.current || stepsCountRef.current > 0) {
       return;
     }
-    if (!threadId || !runId) {
+    if (!canReadRunHistory || !threadId || !runId) {
       return;
     }
+    const controller = new AbortController();
+    let completed = false;
     backfilledRef.current = true;
-    fetchSubtaskSteps(threadId, runId, taskId)
+    fetchSubtaskSteps(threadId, runId, taskId, undefined, controller.signal)
       .then((steps) => {
+        completed = true;
+        if (controller.signal.aborted) return;
         if (steps.length > 0) {
           updateSubtask({ id: taskId, steps });
         }
       })
       .catch(() => {
         // Allow a retry on the next expand if the fetch failed.
-        backfilledRef.current = false;
+        if (!controller.signal.aborted) {
+          backfilledRef.current = false;
+        }
       });
-  }, [collapsed, stepsCount, threadId, runId, taskId, updateSubtask]);
+    return () => {
+      controller.abort();
+      if (!completed) {
+        backfilledRef.current = false;
+      }
+    };
+  }, [
+    canReadRunHistory,
+    collapsed,
+    userId,
+    threadId,
+    runId,
+    taskId,
+    updateSubtask,
+  ]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
       return <CheckCircleIcon className="size-3" />;
@@ -202,6 +230,11 @@ export function SubtaskCard({
           </Button>
         </div>
         <ChainOfThoughtContent className="px-4 pb-4">
+          {!canReadRunHistory && stepsCount === 0 && (
+            <p className="text-muted-foreground px-4 text-sm" role="status">
+              {t.subtasks.historyUnavailable}
+            </p>
+          )}
           {task.prompt && (
             <ChainOfThoughtStep
               label={

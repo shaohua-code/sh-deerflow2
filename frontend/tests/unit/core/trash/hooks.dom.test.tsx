@@ -89,6 +89,7 @@ test("useInfiniteTrashDocuments pages the trash list under the trash key", async
     expect(result.current.hasNextPage).toBe(true);
     const [firstUrl] = mocks.fetch.mock.calls[0] as [string];
     expect(firstUrl).toBe("/backend/api/trash/documents?limit=100&offset=0");
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     await act(async () => {
       await result.current.fetchNextPage();
     });
@@ -140,6 +141,41 @@ test("useInfiniteTrashDocuments masks cached data when disabled", () => {
   try {
     expect(result.current.data).toBeUndefined();
     expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("useInfiniteTrashDocuments aborts and clears its cache when access is revoked", async () => {
+  const client = makeClient();
+  let requestSignal: AbortSignal | null | undefined;
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  );
+  const { result, rerender, unmount } = renderHook(
+    ({ enabled }: { enabled: boolean }) =>
+      useInfiniteTrashDocuments({ enabled }),
+    { initialProps: { enabled: true }, wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    rerender({ enabled: false });
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    await waitFor(() =>
+      expect(client.getQueryData(["trash", "documents"])).toBeUndefined(),
+    );
   } finally {
     unmount();
     client.clear();

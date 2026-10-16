@@ -49,6 +49,11 @@ def required_data_job_permissions(kind: str, scope: str) -> tuple[str, ...] | No
     return None
 
 
+def data_job_authorization_key(kind: str, scope: str) -> str:
+    """Return the indexed route key for the first persisted job scope."""
+    return f"{kind}:{scope}"
+
+
 def required_data_job_scopes(kind: str, scope: str) -> tuple[OwnerDataScope, ...]:
     """Project route grants into framework-free Gateway authorization requests."""
     permissions = required_data_job_permissions(kind, scope)

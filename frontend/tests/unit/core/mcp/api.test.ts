@@ -51,6 +51,15 @@ describe("loadMCPConfig", () => {
     await expect(loadMCPConfig()).resolves.toEqual(config);
   });
 
+  test("passes a cancellation signal to the config read", async () => {
+    const signal = new AbortController().signal;
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, { mcp_servers: {} }));
+
+    await loadMCPConfig(signal);
+
+    expect(mockedFetch).toHaveBeenCalledWith("/api/mcp/config", { signal });
+  });
+
   test("throws MCPConfigRequestError with isAdminRequired on 403 (issue #3527)", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(403, {

@@ -41,8 +41,11 @@ type MCPPluginManagerProps = {
 
 export function MCPPluginManager(props: MCPPluginManagerProps) {
   const { t } = useI18n();
-  const { config, isLoading, error } = useMCPConfig();
-  if (isLoading || error) {
+  const { user } = useAuth();
+  const permissionDenied =
+    getPermissionState(user, PERMISSIONS.MCP_ADMIN) === "denied";
+  const { config, isLoading, error } = useMCPConfig(!permissionDenied);
+  if (permissionDenied || isLoading || error) {
     return (
       <div className="space-y-4">
         {props.toolbar}
@@ -52,7 +55,8 @@ export function MCPPluginManager(props: MCPPluginManagerProps) {
           </p>
         ) : (
           <p role="alert" className="text-muted-foreground text-sm">
-            {error instanceof MCPConfigRequestError && error.isAdminRequired
+            {permissionDenied ||
+            (error instanceof MCPConfigRequestError && error.isAdminRequired)
               ? t.settings.tools.adminRequired
               : t.settings.tools.loadFailed}
           </p>
@@ -85,7 +89,7 @@ function MCPServerList({
   const [definitionError, setDefinitionError] = useState<string | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
 
-  // MCP 配置和状态写入共用 Gateway 的 mcp:admin 守卫；拒绝时保留只读卡片。
+  // 保留第二层渲染保护：授权状态变化时不显示可写控件。
   const permissionDenied =
     getPermissionState(user, PERMISSIONS.MCP_ADMIN) === "denied";
   const readOnly =

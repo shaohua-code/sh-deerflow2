@@ -87,6 +87,7 @@ function installHookState() {
         logout: rs.fn(),
         refreshUser: rs.fn(),
         applyUser: rs.fn(),
+        authRefreshUnavailable: false,
       }) as ReturnType<typeof useAuth>,
   );
   mockedUseModelFavorites.mockImplementation((userId) => ({

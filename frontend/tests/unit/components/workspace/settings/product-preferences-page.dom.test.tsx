@@ -128,6 +128,9 @@ function renderWithClient(
     },
   }),
 ) {
+  // useI18n adopts the saved browser locale after mount, so give each case a
+  // matching cookie instead of letting another test's language leak in.
+  document.cookie = `locale=${locale}; path=/; SameSite=Lax`;
   const view = render(<ProductPreferencesPage />, {
     wrapper: ({ children }: PropsWithChildren) => (
       <QueryClientProvider client={client}>
@@ -157,6 +160,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  document.cookie = "locale=; max-age=0; path=/";
   auth.userId = "user-1";
   auth.permissions = null;
   rs.clearAllMocks();
@@ -164,6 +168,96 @@ afterEach(() => {
 });
 
 describe("ProductPreferencesPage data tasks", () => {
+  it("uses the server next offset and returns to the exact prior task page", async () => {
+    mocks.fetchJobs.mockImplementation(async (_limit, offset) =>
+      offset === 0
+        ? {
+            ...emptyJobs,
+            has_more: true,
+            next_offset: 22,
+            jobs: [{ ...queuedExport, job_id: "visible-job-one" }],
+          }
+        : {
+            ...emptyJobs,
+            offset,
+            next_offset: null,
+            jobs: [{ ...queuedExport, job_id: "visible-job-two" }],
+          },
+    );
+    render(<ProductPreferencesPage />, { wrapper: Wrapper });
+
+    await screen.findByRole("list", { name: "Recent personal data tasks" });
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
+
+    await waitFor(() =>
+      expect(
+        mocks.fetchJobs.mock.calls.some(
+          ([limit, offset]) => limit === 20 && offset === 22,
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText("Page 2")).toBeDefined();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Previous page" }),
+    );
+    await waitFor(() =>
+      expect(
+        mocks.fetchJobs.mock.calls.some(
+          ([limit, offset]) => limit === 20 && offset === 0,
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText("Page 1")).toBeDefined();
+  });
+
+  it("hides and clears cached task pages when a row permission is revoked", async () => {
+    auth.permissions = ["preferences:read", "preferences:write"];
+    mocks.fetchJobs.mockImplementation(async (_limit, offset) =>
+      auth.permissions?.includes("preferences:read")
+        ? { ...emptyJobs, jobs: [{ ...queuedExport, job_id: `job-${offset}` }] }
+        : { ...emptyJobs, offset },
+    );
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const view = renderWithClient("en-US", client);
+    const history = await screen.findByRole("list", {
+      name: "Recent personal data tasks",
+    });
+    expect(history.textContent).toContain("Preference export");
+
+    const firstPageQuery = client
+      .getQueryCache()
+      .findAll({ queryKey: ["product", "data-jobs", "user-1"] })[0];
+    const stalePermissionKey = firstPageQuery?.queryKey[3];
+    expect(stalePermissionKey).toBeDefined();
+    const staleNextPageKey = [
+      "product",
+      "data-jobs",
+      "user-1",
+      stalePermissionKey,
+      20,
+    ] as const;
+    client.setQueryData(staleNextPageKey, {
+      ...emptyJobs,
+      offset: 20,
+      jobs: [{ ...queuedExport, job_id: "stale-revoked-job" }],
+    });
+
+    auth.permissions = ["preferences:write"];
+    view.rerender(<ProductPreferencesPage />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("list", { name: "Recent personal data tasks" }),
+      ).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(staleNextPageKey)).toBeUndefined(),
+    );
+  });
+
   it("stops preference reads and hides cached values without preferences:read", async () => {
     auth.permissions = ["preferences:write"];
     const client = new QueryClient({
@@ -206,7 +300,7 @@ describe("ProductPreferencesPage data tasks", () => {
 
     expect(densitySelector.hasAttribute("disabled")).toBe(true);
     expect(saveButton.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText(/preferences:write/)).toBeDefined();
+    expect(screen.getAllByText(/preferences:write/).length).toBeGreaterThan(0);
     fireEvent.click(saveButton);
     expect(mocks.saveSetting).not.toHaveBeenCalled();
   });
@@ -579,10 +673,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() => expect(mocks.createExport).toHaveBeenCalled());
-    expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-      scope: "account",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createExport.mock.calls[0]).toEqual([
+      "account",
+      expect.any(String),
+    ]);
   });
 
   it("recovers a failed request with the same key after the page is remounted", async () => {
@@ -602,11 +696,8 @@ describe("ProductPreferencesPage data tasks", () => {
         "Unconfirmed export request: Export conversation history (partial)",
       ),
     ).toBeDefined();
-    const originalSubmission = mocks.createExport.mock.calls[0]?.[0];
-    expect(originalSubmission).toMatchObject({
-      scope: "threads",
-      idempotencyKey: expect.any(String),
-    });
+    const originalSubmission = mocks.createExport.mock.calls[0];
+    expect(originalSubmission).toEqual(["threads", expect.any(String)]);
 
     firstView.unmount();
     mocks.createExport.mockResolvedValueOnce({
@@ -620,7 +711,7 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(recoverButton);
 
     await waitFor(() => expect(mocks.createExport).toHaveBeenCalledTimes(2));
-    expect(mocks.createExport.mock.calls[1]?.[0]).toEqual(originalSubmission);
+    expect(mocks.createExport.mock.calls[1]).toEqual(originalSubmission);
     await waitFor(() => expect(window.sessionStorage.length).toBe(0));
   });
 
@@ -646,7 +737,7 @@ describe("ProductPreferencesPage data tasks", () => {
         "Unconfirmed deletion request: Delete saved preferences",
       ),
     ).toBeDefined();
-    const originalSubmission = mocks.createDeletion.mock.calls[0]?.[0];
+    const originalSubmission = mocks.createDeletion.mock.calls[0];
 
     firstView.unmount();
     mocks.createDeletion.mockResolvedValueOnce({
@@ -659,7 +750,7 @@ describe("ProductPreferencesPage data tasks", () => {
     );
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(2));
-    expect(mocks.createDeletion.mock.calls[1]?.[0]).toEqual(originalSubmission);
+    expect(mocks.createDeletion.mock.calls[1]).toEqual(originalSubmission);
     await waitFor(() => expect(window.sessionStorage.length).toBe(0));
   });
 
@@ -783,10 +874,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(retryButton);
 
     await waitFor(() => expect(mocks.createExport).toHaveBeenCalled());
-    expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-      scope: "threads",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createExport.mock.calls[0]).toEqual([
+      "threads",
+      expect.any(String),
+    ]);
     expect(
       screen.getByText(
         "The background task stopped repeatedly. Check the Gateway and storage services, then submit a new task.",
@@ -920,10 +1011,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "threads",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "threads",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -944,10 +1035,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "projects",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "projects",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -968,10 +1059,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "scheduled_tasks",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "scheduled_tasks",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -992,10 +1083,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "agents",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "agents",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -1016,10 +1107,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "memory",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "memory",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -1047,10 +1138,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(exportButton);
 
     await waitFor(() =>
-      expect(mocks.createExport.mock.calls[0]?.[0]).toMatchObject({
-        scope: "files",
-        idempotencyKey: expect.any(String),
-      }),
+      expect(mocks.createExport.mock.calls[0]).toEqual([
+        "files",
+        expect.any(String),
+      ]),
     );
   });
 
@@ -1371,10 +1462,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "preferences",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "preferences",
+      expect.any(String),
+    ]);
   });
 
   it("keeps the deletion confirmation busy and open while queuing", async () => {
@@ -1428,10 +1519,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "scheduled_tasks",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "scheduled_tasks",
+      expect.any(String),
+    ]);
   });
 
   it("requires a distinct phrase to delete custom Agent definitions", async () => {
@@ -1461,10 +1552,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "agents",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "agents",
+      expect.any(String),
+    ]);
   });
 
   it("requires a distinct phrase before clearing the configured memory backend", async () => {
@@ -1496,10 +1587,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "memory",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "memory",
+      expect.any(String),
+    ]);
   });
 
   it("requires a project-removal phrase and explains that documents stay in Trash", async () => {
@@ -1531,10 +1622,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "projects",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "projects",
+      expect.any(String),
+    ]);
   });
 
   it("requires an exact phrase and explains the limits of file deletion", async () => {
@@ -1566,10 +1657,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "files",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "files",
+      expect.any(String),
+    ]);
   });
 
   it("discards an open deletion confirmation when the account changes", async () => {
@@ -1630,10 +1721,10 @@ describe("ProductPreferencesPage data tasks", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => expect(mocks.createDeletion).toHaveBeenCalledTimes(1));
-    expect(mocks.createDeletion.mock.calls[0]?.[0]).toMatchObject({
-      scope: "threads",
-      idempotencyKey: expect.any(String),
-    });
+    expect(mocks.createDeletion.mock.calls[0]).toEqual([
+      "threads",
+      expect.any(String),
+    ]);
   });
 
   it("shows remaining and unconfirmed conversation deletion counts", async () => {
@@ -1832,10 +1923,12 @@ describe("ProductPreferencesPage data tasks", () => {
       expect(preferenceDeletion.hasAttribute("disabled")).toBe(false);
     });
     expect(
-      screen.getByText("Your account needs this permission: runs:read"),
-    ).toBeDefined();
+      screen.getAllByText("Your account needs this permission: runs:read")
+        .length,
+    ).toBeGreaterThan(0);
     expect(
-      screen.getByText("Your account needs this permission: threads:delete"),
-    ).toBeDefined();
+      screen.getAllByText("Your account needs this permission: threads:delete")
+        .length,
+    ).toBeGreaterThan(0);
   });
 });

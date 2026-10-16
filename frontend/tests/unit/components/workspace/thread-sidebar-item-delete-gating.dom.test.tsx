@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -99,7 +93,7 @@ beforeEach(() => {
   mocks.toastError.mockReset();
 });
 
-describe("ThreadSidebarItem delete-menu gating (threads:delete)", () => {
+describe("ThreadSidebarItem action permission gating", () => {
   it("exposes the rename field by its localized accessible name", async () => {
     renderItem(makeUser(["threads:read", "threads:write"]));
     await openRowMenu();
@@ -152,16 +146,15 @@ describe("ThreadSidebarItem delete-menu gating (threads:delete)", () => {
     expect(await screen.findByText("Delete")).not.toBeNull();
   });
 
-  it("omits Delete for a role denied threads:delete, keeping the other menu actions", async () => {
+  it("keeps read actions but hides write actions when the role only has threads:read", async () => {
     renderItem(makeUser(["threads:read"]));
     await openRowMenu();
-    // Other actions survive the gating…
-    expect(await screen.findByText("Rename")).not.toBeNull();
-    // …and Delete is gone. Anchor via waitFor on Rename first so the menu is
-    // provably open before asserting absence.
-    await waitFor(() => {
-      expect(screen.queryByText("Delete")).toBeNull();
-    });
+    expect(await screen.findByText("Share")).not.toBeNull();
+    expect(screen.queryByText("Export")).not.toBeNull();
+    expect(screen.queryByText("Rename")).toBeNull();
+    expect(screen.queryByText("Pin chat")).toBeNull();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Delete")).toBeNull();
   });
 
   it("offers Delete for an unresolved permission list (pre-Phase-4 backend)", async () => {

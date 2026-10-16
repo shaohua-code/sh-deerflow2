@@ -94,6 +94,31 @@ describe("channels api", () => {
     );
   });
 
+  test("passes cancellation signals to channel directory reads", async () => {
+    const signal = new AbortController().signal;
+    mockedFetch
+      .mockResolvedValueOnce(
+        jsonResponse(200, { enabled: true, providers: [] }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { connections: [] }));
+
+    await Promise.all([
+      listChannelProviders(signal),
+      listChannelConnections(signal),
+    ]);
+
+    expect(mockedFetch).toHaveBeenNthCalledWith(
+      1,
+      "/backend/api/channels/providers",
+      { signal },
+    );
+    expect(mockedFetch).toHaveBeenNthCalledWith(
+      2,
+      "/backend/api/channels/connections",
+      { signal },
+    );
+  });
+
   test("starts a provider connection flow", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(200, {

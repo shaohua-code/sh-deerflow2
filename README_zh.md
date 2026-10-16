@@ -364,6 +364,10 @@ make down   # 停止并移除容器
 
 5. **访问地址**：http://localhost:2026
 
+本地 `make dev` 会先通过 Nginx 完整读取首页 HTML，再打印启动完成提示。
+Next.js 对 `/` 的首次编译因此发生在启动期间；其它页面仍会在首次打开时编译。
+如果首页就绪探测失败，请查看 `logs/frontend.log` 和 `logs/nginx.log`。
+
 #### LangGraph Studio（可选）
 
 默认的 `make dev` 拓扑使用 DeerFlow 内嵌于 Gateway 的运行时，无需 LangGraph Studio。

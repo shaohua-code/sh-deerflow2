@@ -348,13 +348,13 @@ export async function createUserDataExport(
     settings,
   ] = await Promise.all([
     settledResource("threads", () => loadAllThreads(signal), failures),
-    settledResource("agents", listAgents, failures),
+    settledResource("agents", () => listAgents({ signal }), failures),
     settledResource(
       "projects",
       async () => {
         const [active, archived] = await Promise.all([
-          listProjects("active"),
-          listProjects("archived"),
+          listProjects("active", { signal }),
+          listProjects("archived", { signal }),
         ]);
         return Array.from(
           new Map(
@@ -364,13 +364,20 @@ export async function createUserDataExport(
       },
       failures,
     ),
-    settledResource("scheduled_tasks", fetchScheduledTasks, failures),
-    settledResource("memory", exportMemory, failures),
-    settledResource("product_settings", fetchProductSettings, failures),
+    settledResource(
+      "scheduled_tasks",
+      () => fetchScheduledTasks(signal),
+      failures,
+    ),
+    settledResource("memory", () => exportMemory(userId, signal), failures),
+    settledResource(
+      "product_settings",
+      () => fetchProductSettings(signal),
+      failures,
+    ),
   ]);
 
-  // 当前部分资源清单 API 还不支持 AbortSignal。先等已经发出的读取结束，
-  // 再停止后续体量更大的会话历史分页，避免取消后继续请求。
+  // 进入体量更大的会话历史分页前再次确认用户没有取消导出。
   throwIfAborted(signal);
   const threads = threadsResult ?? [];
   onProgress?.({ stage: "history", completed: 0, total: threads.length });
@@ -403,11 +410,13 @@ export async function createUserDataExport(
       threads,
       listUploadedFiles,
       FILE_CONCURRENCY,
-      listThreadOutputFiles,
+      (threadId, requestSignal) =>
+        listThreadOutputFiles(threadId, 200, requestSignal),
+      signal,
     ),
     settledResource(
       "project_files",
-      async () => loadProjectFilePage(projectsResult ?? []),
+      async () => loadProjectFilePage(projectsResult ?? [], 3, { signal }),
       failures,
     ),
     settledResource(

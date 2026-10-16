@@ -93,6 +93,7 @@ test("useInfiniteProjectDocuments pages the shelf under the documents key", asyn
     expect(firstUrl).toBe(
       "/backend/api/projects/proj-1/documents?limit=100&offset=0",
     );
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     await act(async () => {
       await result.current.fetchNextPage();
     });
@@ -228,6 +229,85 @@ test("project list and detail queries mask cached data when disabled", () => {
   }
 });
 
+test("useProject forwards its query cancellation signal to the Gateway", async () => {
+  const client = makeClient();
+  mocks.fetch.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        id: "proj-1",
+        name: "Project",
+        instructions: "",
+        presentation: {},
+        status: "active",
+        created_at: "2026-09-10T00:00:00Z",
+        updated_at: "2026-09-10T00:00:00Z",
+      }),
+    ),
+  );
+  const { result, unmount } = renderHook(() => useProject("proj-1"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("useProjects forwards its query cancellation signal to the Gateway", async () => {
+  const client = makeClient();
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ projects: [] })));
+  const { result, unmount } = renderHook(() => useProjects("active"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("project documents abort and clear their cache when read access is revoked", async () => {
+  const client = makeClient();
+  let requestSignal: AbortSignal | null | undefined;
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  );
+  const { result, rerender, unmount } = renderHook(
+    ({ enabled }: { enabled: boolean }) =>
+      useInfiniteProjectDocuments("proj-1", { enabled }),
+    { initialProps: { enabled: true }, wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    rerender({ enabled: false });
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    await waitFor(() =>
+      expect(
+        client.getQueryData(["projects", "documents", "proj-1"]),
+      ).toBeUndefined(),
+    );
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
 test("useInfiniteProjectThreadFiles pages the conversation-files view under its key", async () => {
   const client = makeClient();
   const body = { groups: [], next_offset: null, truncated: false };
@@ -246,6 +326,7 @@ test("useInfiniteProjectThreadFiles pages the conversation-files view under its 
     expect(url).toBe(
       "/backend/api/projects/proj-1/thread-files?offset=0&thread_limit=10&file_limit=25",
     );
+    expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(result.current.hasNextPage).toBe(false);
     expect(
       client.getQueryData([

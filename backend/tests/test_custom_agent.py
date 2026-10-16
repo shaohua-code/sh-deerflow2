@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
@@ -539,6 +539,16 @@ def _make_test_app(tmp_path: Path):
     return app
 
 
+def _authenticated_agents_test_context():
+    """Return a fixture identity with the permissions exercised by CRUD tests."""
+    from app.gateway.authz import AuthContext
+
+    return AuthContext(
+        user=SimpleNamespace(id="agents-api-test-user", system_role="user"),
+        permissions=["agents:read", "agents:write", "agents:delete", "agents:admin"],
+    )
+
+
 @pytest.fixture()
 def agent_client(tmp_path):
     """TestClient with agents router, using tmp_path as base_dir."""
@@ -551,6 +561,7 @@ def agent_client(tmp_path):
         patch("deerflow.config.agents_config.get_paths", return_value=paths_instance),
         patch.object(agents_router, "get_paths", return_value=paths_instance),
         patch.object(agents_router, "get_app_config", _stub_app_config),
+        patch("app.gateway.authz._authenticate", new=AsyncMock(return_value=_authenticated_agents_test_context())),
     ):
         set_agents_api_config(AgentsApiConfig(enabled=True))
         try:
@@ -570,7 +581,11 @@ def disabled_agent_client(tmp_path):
     paths_instance = _make_paths(tmp_path)
     previous_config = AgentsApiConfig(**get_agents_api_config().model_dump())
 
-    with patch("deerflow.config.agents_config.get_paths", return_value=paths_instance), patch.object(agents_router, "get_paths", return_value=paths_instance):
+    with (
+        patch("deerflow.config.agents_config.get_paths", return_value=paths_instance),
+        patch.object(agents_router, "get_paths", return_value=paths_instance),
+        patch("app.gateway.authz._authenticate", new=AsyncMock(return_value=_authenticated_agents_test_context())),
+    ):
         set_agents_api_config(AgentsApiConfig(enabled=False))
         try:
             app = _make_test_app(tmp_path)

@@ -7,18 +7,29 @@ const mocks = rs.hoisted(() => ({
   fetchEnabled: rs.fn(),
   getAgent: rs.fn(),
   listAgents: rs.fn(),
+  deleteAgent: rs.fn(),
+  user: { current: { id: "owner-a" } },
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: mocks.user.current }),
 }));
 
 rs.mock("@/core/agents/api", () => ({
   createAgent: rs.fn(),
-  deleteAgent: rs.fn(),
+  deleteAgent: mocks.deleteAgent,
   fetchAgentsApiEnabled: mocks.fetchEnabled,
   getAgent: mocks.getAgent,
   listAgents: mocks.listAgents,
   updateAgent: rs.fn(),
 }));
 
-import { useAgent, useAgents, useAgentsApiEnabled } from "@/core/agents/hooks";
+import {
+  useAgent,
+  useAgents,
+  useAgentsApiEnabled,
+  useDeleteAgent,
+} from "@/core/agents/hooks";
 
 const CACHE_KEY = "deerflow.features.agents_api";
 
@@ -40,6 +51,8 @@ afterEach(() => {
   mocks.fetchEnabled.mockReset();
   mocks.getAgent.mockReset();
   mocks.listAgents.mockReset();
+  mocks.deleteAgent.mockReset();
+  mocks.user.current = { id: "owner-a" };
 });
 
 describe("useAgentsApiEnabled cached browser snapshot", () => {
@@ -111,23 +124,105 @@ describe("useAgentsApiEnabled cached browser snapshot", () => {
 describe("agent read permission cache handling", () => {
   it("removes cached Agent lists and details when reads are disabled", async () => {
     const { client, Wrapper } = createWrapper();
-    const cachedAgent = { name: "private-agent" };
-    client.setQueryData(["agents"], [cachedAgent]);
-    client.setQueryData(["agents", "private-agent"], cachedAgent);
+    const ownerAgent = { name: "private-agent" };
+    const otherOwnerAgent = { name: "other-private-agent" };
+    client.setQueryData(["agents", "owner-a"], [ownerAgent]);
+    client.setQueryData(["agents", "owner-a", "private-agent"], ownerAgent);
+    client.setQueryData(["agents", "owner-b"], [otherOwnerAgent]);
 
     const list = renderHook(() => useAgents(false), { wrapper: Wrapper });
     const detail = renderHook(() => useAgent("private-agent", false), {
       wrapper: Wrapper,
     });
 
+    expect(list.result.current.agents).toEqual([]);
+    expect(detail.result.current.agent).toBeNull();
     await waitFor(() => {
-      expect(client.getQueryData(["agents"])).toBeUndefined();
-      expect(client.getQueryData(["agents", "private-agent"])).toBeUndefined();
+      expect(client.getQueryData(["agents", "owner-a"])).toBeUndefined();
+      expect(
+        client.getQueryData(["agents", "owner-a", "private-agent"]),
+      ).toBeUndefined();
     });
     expect(list.result.current.agents).toEqual([]);
     expect(detail.result.current.agent).toBeNull();
+    expect(client.getQueryData(["agents", "owner-b"])).toEqual([
+      otherOwnerAgent,
+    ]);
     expect(mocks.listAgents).not.toHaveBeenCalled();
     expect(mocks.getAgent).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it("switches list and detail reads to the new owner's cache", async () => {
+    const { client, Wrapper } = createWrapper();
+    const ownerAgent = { name: "shared-name", owner: "owner-a" };
+    const otherOwnerAgent = { name: "shared-name", owner: "owner-b" };
+    client.setQueryData(["agents", "owner-a"], [ownerAgent]);
+    client.setQueryData(["agents", "owner-a", "shared-name"], ownerAgent);
+    client.setQueryData(["agents", "owner-b"], [otherOwnerAgent]);
+    client.setQueryData(["agents", "owner-b", "shared-name"], otherOwnerAgent);
+    mocks.listAgents.mockImplementation(async () =>
+      mocks.user.current.id === "owner-a" ? [ownerAgent] : [otherOwnerAgent],
+    );
+    mocks.getAgent.mockImplementation(async () =>
+      mocks.user.current.id === "owner-a" ? ownerAgent : otherOwnerAgent,
+    );
+
+    const list = renderHook(() => useAgents(), { wrapper: Wrapper });
+    const detail = renderHook(() => useAgent("shared-name"), {
+      wrapper: Wrapper,
+    });
+    expect(list.result.current.agents).toEqual([ownerAgent]);
+    expect(detail.result.current.agent).toEqual(ownerAgent);
+
+    act(() => {
+      mocks.user.current = { id: "owner-b" };
+      list.rerender();
+      detail.rerender();
+    });
+
+    await waitFor(() => {
+      expect(list.result.current.agents).toEqual([otherOwnerAgent]);
+      expect(detail.result.current.agent).toEqual(otherOwnerAgent);
+    });
+    expect(client.getQueryData(["agents", "owner-a"])).toEqual([ownerAgent]);
+    client.clear();
+  });
+
+  it("invalidates only the owner cache captured when a mutation starts", async () => {
+    const { client, Wrapper } = createWrapper();
+    client.setQueryData(["agents", "owner-a"], [{ name: "owner-a-agent" }]);
+    client.setQueryData(["agents", "owner-b"], [{ name: "owner-b-agent" }]);
+    let markDeleteStarted: () => void = () => undefined;
+    const deleteStarted = new Promise<void>((resolve) => {
+      markDeleteStarted = resolve;
+    });
+    let finishDelete: () => void = () => undefined;
+    mocks.deleteAgent.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = resolve;
+          markDeleteStarted();
+        }),
+    );
+
+    const deletion = renderHook(() => useDeleteAgent(), { wrapper: Wrapper });
+    await act(async () => {
+      const mutationPromise =
+        deletion.result.current.mutateAsync("owner-a-agent");
+      await deleteStarted;
+      mocks.user.current = { id: "owner-b" };
+      deletion.rerender();
+      finishDelete();
+      await mutationPromise;
+    });
+
+    expect(client.getQueryState(["agents", "owner-a"])?.isInvalidated).toBe(
+      true,
+    );
+    expect(client.getQueryState(["agents", "owner-b"])?.isInvalidated).toBe(
+      false,
+    );
     client.clear();
   });
 });

@@ -15,8 +15,9 @@ import type { User } from "@/core/auth/types";
 export function shouldShowOfflineBanner(
   user: User | null,
   gatewayUnavailable: boolean,
+  authRefreshUnavailable = false,
 ): boolean {
-  return gatewayUnavailable && user === null;
+  return authRefreshUnavailable || (gatewayUnavailable && user === null);
 }
 
 /** Categorised outcome of a single /auth/me probe. */

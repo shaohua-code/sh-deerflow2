@@ -610,6 +610,9 @@ function DocumentPreviewDialog({
       <DialogContent className="flex h-[70vh] flex-col sm:max-w-[720px]">
         <DialogHeader>
           <DialogTitle className="truncate">{document?.name ?? ""}</DialogTitle>
+          <DialogDescription>
+            {t.projects.documentPreviewDialogHint}
+          </DialogDescription>
         </DialogHeader>
         {preview?.kind === "text" && preview.truncated && (
           <div
@@ -1035,6 +1038,9 @@ function ConversationFileGroup({
         >
           <DialogHeader>
             <DialogTitle>{t.projects.saveToProject}</DialogTitle>
+            <DialogDescription>
+              {t.projects.saveToProjectDialogHint}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 py-2">
             <label

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+
 import {
   configureChannelProvider,
   connectChannelProvider,
@@ -12,65 +14,133 @@ import {
 import { startConnectionPoll, type ConnectPollHandle } from "./connect-poll";
 import type { ChannelProviderId, ChannelRuntimeConfigValues } from "./types";
 
-export const channelProviderQueryKey = ["channelProviders"] as const;
-export const channelConnectionsQueryKey = ["channelConnections"] as const;
+const CHANNEL_PROVIDERS_QUERY_KEY = ["channelProviders"] as const;
+const CHANNEL_CONNECTIONS_QUERY_KEY = ["channelConnections"] as const;
+
+/** 渠道响应会带当前用户的连接状态，因此缓存必须按 owner 分区。 */
+export function channelProviderQueryKey(userId: string | null | undefined) {
+  return [...CHANNEL_PROVIDERS_QUERY_KEY, userId ?? null] as const;
+}
+
+export function channelConnectionsQueryKey(userId: string | null | undefined) {
+  return [...CHANNEL_CONNECTIONS_QUERY_KEY, userId ?? null] as const;
+}
+
+function invalidateOwnerChannelState(
+  queryClient: ReturnType<typeof useQueryClient>,
+  userId: string | null | undefined,
+) {
+  void queryClient.invalidateQueries({
+    queryKey: channelProviderQueryKey(userId),
+  });
+  void queryClient.invalidateQueries({
+    queryKey: channelConnectionsQueryKey(userId),
+  });
+}
+
+/** 管理员运行时设置影响部署中的所有账号，需刷新所有 owner 快照。 */
+function invalidateAllChannelState(
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
+  void queryClient.invalidateQueries({ queryKey: CHANNEL_PROVIDERS_QUERY_KEY });
+  void queryClient.invalidateQueries({
+    queryKey: CHANNEL_CONNECTIONS_QUERY_KEY,
+  });
+}
+
+function clearOwnerChannelState(
+  queryClient: ReturnType<typeof useQueryClient>,
+  userId: string | null | undefined,
+) {
+  const providerKey = channelProviderQueryKey(userId);
+  const connectionKey = channelConnectionsQueryKey(userId);
+  void queryClient.cancelQueries({ queryKey: providerKey });
+  void queryClient.cancelQueries({ queryKey: connectionKey });
+  queryClient.removeQueries({ queryKey: providerKey });
+  queryClient.removeQueries({ queryKey: connectionKey });
+}
 
 export function useChannelProviders(queryEnabled = true) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (queryEnabled) return;
+    clearOwnerChannelState(queryClient, userId);
+  }, [queryClient, queryEnabled, userId]);
+
   const query = useQuery({
-    queryKey: channelProviderQueryKey,
-    queryFn: () => listChannelProviders(),
+    queryKey: channelProviderQueryKey(userId),
+    queryFn: ({ signal }) => listChannelProviders(signal),
     enabled: queryEnabled,
   });
   return {
-    enabled: query.data?.enabled ?? false,
-    providers: query.data?.providers ?? [],
-    isLoading: query.isLoading,
-    isFetching: query.isFetching,
-    hasData: query.data !== undefined,
-    error: query.error,
+    enabled: queryEnabled ? (query.data?.enabled ?? false) : false,
+    providers: queryEnabled ? (query.data?.providers ?? []) : [],
+    isLoading: queryEnabled && query.isLoading,
+    isFetching: queryEnabled && query.isFetching,
+    hasData: queryEnabled && query.data !== undefined,
+    error: queryEnabled ? query.error : null,
     refetch: query.refetch,
   };
 }
 
 export function useChannelConnections(queryEnabled = true) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (queryEnabled) return;
+    clearOwnerChannelState(queryClient, userId);
+  }, [queryClient, queryEnabled, userId]);
+
   const query = useQuery({
-    queryKey: channelConnectionsQueryKey,
-    queryFn: () => listChannelConnections(),
+    queryKey: channelConnectionsQueryKey(userId),
+    queryFn: ({ signal }) => listChannelConnections(signal),
     enabled: queryEnabled,
   });
   return {
-    connections: query.data ?? [],
-    isLoading: query.isLoading,
-    isFetching: query.isFetching,
-    hasData: query.data !== undefined,
-    error: query.error,
+    connections: queryEnabled ? (query.data ?? []) : [],
+    isLoading: queryEnabled && query.isLoading,
+    isFetching: queryEnabled && query.isFetching,
+    hasData: queryEnabled && query.data !== undefined,
+    error: queryEnabled ? query.error : null,
     refetch: query.refetch,
   };
 }
 
-export function useConnectChannelProvider() {
+export function useConnectChannelProvider(readEnabled = true) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   const pollersRef = useRef<Map<ChannelProviderId, ConnectPollHandle>>(
     new Map(),
   );
 
-  // Cancel any in-flight polls when the component using this hook unmounts.
+  // Permission loss, account changes, and unmounts all stop owner-bound polls.
   useEffect(() => {
     const pollers = pollersRef.current;
+    if (!readEnabled) {
+      pollers.forEach((handle) => handle.cancel());
+      pollers.clear();
+    }
     return () => {
       pollers.forEach((handle) => handle.cancel());
       pollers.clear();
+      void queryClient.cancelQueries({
+        queryKey: channelConnectionsQueryKey(userId),
+      });
     };
-  }, []);
+  }, [queryClient, readEnabled, userId]);
 
   return useMutation({
     mutationFn: (provider: ChannelProviderId) =>
       connectChannelProvider(provider),
-    onSuccess: (result, provider) => {
-      void queryClient.invalidateQueries({ queryKey: channelProviderQueryKey });
-      void queryClient.invalidateQueries({
-        queryKey: channelConnectionsQueryKey,
-      });
+    onMutate: () => ({ userId }),
+    onSuccess: (result, provider, mutationContext) => {
+      const ownerId = mutationContext?.userId;
+      invalidateOwnerChannelState(queryClient, ownerId);
+      const connectionsKey = channelConnectionsQueryKey(ownerId);
 
       // Replace any existing poll for this provider so repeated Connect clicks
       // don't spawn parallel polling chains racing on the same query keys.
@@ -82,13 +152,13 @@ export function useConnectChannelProvider() {
           expiresInSeconds: result.expires_in,
           fetchConnections: () =>
             queryClient.fetchQuery({
-              queryKey: channelConnectionsQueryKey,
-              queryFn: () => listChannelConnections(),
+              queryKey: connectionsKey,
+              queryFn: ({ signal }) => listChannelConnections(signal),
             }),
           onConnected: () => {
             // Refresh derived provider state exactly once when the bind lands.
             void queryClient.invalidateQueries({
-              queryKey: channelProviderQueryKey,
+              queryKey: channelProviderQueryKey(ownerId),
             });
           },
         }),
@@ -108,24 +178,21 @@ export function useConfigureChannelProvider() {
       values: ChannelRuntimeConfigValues;
     }) => configureChannelProvider(provider, values),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: channelProviderQueryKey });
-      void queryClient.invalidateQueries({
-        queryKey: channelConnectionsQueryKey,
-      });
+      invalidateAllChannelState(queryClient);
     },
   });
 }
 
 export function useDisconnectChannelConnection() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (connectionId: string) =>
       disconnectChannelConnection(connectionId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: channelProviderQueryKey });
-      void queryClient.invalidateQueries({
-        queryKey: channelConnectionsQueryKey,
-      });
+    onMutate: () => ({ userId }),
+    onSuccess: (_data, _connectionId, mutationContext) => {
+      invalidateOwnerChannelState(queryClient, mutationContext?.userId);
     },
   });
 }
@@ -136,10 +203,7 @@ export function useDisconnectChannelProvider() {
     mutationFn: (provider: ChannelProviderId) =>
       disconnectChannelProvider(provider),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: channelProviderQueryKey });
-      void queryClient.invalidateQueries({
-        queryKey: channelConnectionsQueryKey,
-      });
+      invalidateAllChannelState(queryClient);
     },
   });
 }

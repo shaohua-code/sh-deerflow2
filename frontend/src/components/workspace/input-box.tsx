@@ -144,6 +144,7 @@ import {
   finishGoalRequest,
   filterSkillsForAgent,
   getComposerOperationErrorMessage,
+  getComposerCommandRequiredPermission,
   getGoalObjectiveCounter,
   getInputSubmitAction,
   getLeadingSlashSkillQuery,
@@ -1117,6 +1118,16 @@ export function InputBox({
       toast.info(t.inputBox.compactSkipped);
       return;
     }
+    // 压缩会写入当前会话的 checkpoint，Gateway 路由要求 threads:write。
+    if (
+      !hasPermission(
+        user,
+        getComposerCommandRequiredPermission({ kind: "compact" }),
+      )
+    ) {
+      toast.error(t.inputBox.compactPermissionRequired);
+      return Promise.reject(new Error("thread-write-permission-denied"));
+    }
     const request = beginGoalRequest(compactRequestStateRef.current, threadId);
     const signal = request.controller.signal;
     try {
@@ -1173,11 +1184,13 @@ export function InputBox({
     queryClient,
     t.inputBox.compactConflict,
     t.inputBox.compactFailed,
+    t.inputBox.compactPermissionRequired,
     t.inputBox.compactSkipped,
     t.inputBox.compactSuccess,
     isWelcomeMode,
     textInput,
     threadId,
+    user,
   ]);
 
   const submitThreadMessage = useCallback(
@@ -1356,6 +1369,24 @@ export function InputBox({
         status,
       });
       if (submitAction.kind === "goal") {
+        const goalPermission = getComposerCommandRequiredPermission(
+          submitAction.command,
+        );
+        if (!hasPermission(user, goalPermission)) {
+          const isReadCommand = goalPermission === PERMISSIONS.THREADS_READ;
+          toast.error(
+            isReadCommand
+              ? t.inputBox.goalReadPermissionRequired
+              : t.inputBox.goalWritePermissionRequired,
+          );
+          return Promise.reject(
+            new Error(
+              isReadCommand
+                ? "thread-read-permission-denied"
+                : "thread-write-permission-denied",
+            ),
+          );
+        }
         if (submitAction.command.kind === "set" && !canSubmit) {
           toast.error(t.inputBox.runPermissionRequired);
           return Promise.reject(new Error("run-permission-denied"));
@@ -1441,6 +1472,7 @@ export function InputBox({
       abortVoiceInput,
       canUploadFiles,
       canSubmit,
+      user,
       handleCompactCommand,
       handleGoalCommand,
       handleStopStreaming,
@@ -1450,6 +1482,8 @@ export function InputBox({
       status,
       submitThreadMessage,
       t.inputBox.goalTooLong,
+      t.inputBox.goalReadPermissionRequired,
+      t.inputBox.goalWritePermissionRequired,
       t.inputBox.pleaseWaitStreaming,
       t.inputBox.runPermissionRequired,
       t.inputBox.uploadPermissionRequired,
