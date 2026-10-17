@@ -534,8 +534,7 @@ export function MemorySettingsPage() {
     if (
       !canWriteMemory ||
       !memoryOwnerId ||
-      !pendingImport ||
-      pendingImport.ownerId !== memoryOwnerId
+      pendingImport?.ownerId !== memoryOwnerId
     ) {
       return;
     }

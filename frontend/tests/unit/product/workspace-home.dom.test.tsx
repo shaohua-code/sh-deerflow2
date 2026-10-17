@@ -73,7 +73,6 @@ rs.mock("@/core/i18n/hooks", () => ({
 }));
 rs.mock("@/core/threads/api", () => ({
   branchThreadFromTurn: rs.fn(),
-  fetchThreadSummary: rs.fn(),
   fetchThreadTokenUsage: rs.fn(),
   moveThreadToProject: rs.fn(),
   patchThreadMetadata: rs.fn(),

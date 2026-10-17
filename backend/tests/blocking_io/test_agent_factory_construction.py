@@ -39,12 +39,14 @@ async def _assert_factory_runs_off_the_event_loop(invoke) -> None:
         factory_started.set()
         # Leave enough room for a loaded Windows event loop to schedule the
         # heartbeat; a short deadline made this regression spuriously flaky.
-        release_factory.wait(timeout=5)
+        # 与 checkpointer 并发用例的 3s→10s 先例一致，阻塞 I/O 全套件同进程
+        # 积累的线程/GC 负载曾让 5s 内 ticker 得不到调度，故放宽到 10s。
+        release_factory.wait(timeout=10)
         return _Agent()
 
     def release_after_factory_starts() -> None:
-        factory_started.wait(timeout=5)
-        heartbeat_during_factory.wait(timeout=5)
+        factory_started.wait(timeout=10)
+        heartbeat_during_factory.wait(timeout=10)
         release_factory.set()
 
     async def ticker() -> None:

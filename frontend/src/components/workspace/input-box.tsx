@@ -171,6 +171,9 @@ import { Tooltip } from "./tooltip";
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
 
 const COMPOSER_DRAFT_SAVE_DELAY_MS = 300;
+// 权限撤销时替代内联 `[]` 的稳定空引用：内联空数组每次渲染新引用会击穿
+// 下方 useCallback（L1306 附近）的依赖同值跳过，回调身份每渲染重建。
+const NO_CONVERSATION_REFERENCES: ConversationReference[] = [];
 
 function focusContentEditableEnd(element: HTMLElement | null) {
   if (!element) {
@@ -438,7 +441,7 @@ export function InputBox({
   }
   const activeConversationReferences = canReadReferencedConversations
     ? conversationReferences
-    : [];
+    : NO_CONVERSATION_REFERENCES;
   const removeAttachment = attachments.remove;
   // Project documents attached from the shelf arrive already ingested
   // thread-side (spec §9): the composer shows them as completed attachments

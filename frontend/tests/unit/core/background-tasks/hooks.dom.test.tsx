@@ -8,9 +8,15 @@ const mocks = rs.hoisted(() => ({
   fetchTask: rs.fn(),
   fetchTasks: rs.fn(),
   toastError: rs.fn(),
+  user: {
+    current: { id: "user-1", permissions: null as string[] | null },
+  },
 }));
 
 rs.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: mocks.user.current }),
+}));
 rs.mock("@/core/background-tasks/api", () => ({
   cancelBackgroundTask: mocks.cancel,
   fetchBackgroundTask: mocks.fetchTask,
@@ -47,6 +53,7 @@ afterEach(() => {
   mocks.fetchTask.mockReset();
   mocks.fetchTasks.mockReset();
   mocks.toastError.mockReset();
+  mocks.user.current = { id: "user-1", permissions: null };
 });
 
 describe("background task mutation error copy", () => {
@@ -101,16 +108,23 @@ describe("background task mutation error copy", () => {
 });
 
 describe("background task read permissions", () => {
-  it("does not expose or retain cached task rows or details while a query is disabled", async () => {
+  it("hides a caller-disabled list and detail without removing the owner caches", () => {
     const { client, Wrapper } = createWrapper();
-    const privateTask = { task_id: "task-private" };
+    const ownerTask = { task_id: "task-private" };
+    const otherTask = { task_id: "task-other" };
     client.setQueryData(backgroundTasksQueryKey("thread-1", "user-1"), [
-      privateTask,
+      ownerTask,
+      otherTask,
     ]);
     client.setQueryData(
       backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
-      privateTask,
+      ownerTask,
     );
+    client.setQueryData(
+      backgroundTaskQueryKey("thread-1", "task-other", "user-1"),
+      otherTask,
+    );
+    mocks.user.current = { id: "user-1", permissions: ["threads:read"] };
 
     const list = renderHook(
       () =>
@@ -129,26 +143,154 @@ describe("background task read permissions", () => {
       { wrapper: Wrapper },
     );
 
+    // 功能开关或调用方停用只隐藏结果，不删该账号的列表或任何详情。
     expect(list.result.current.data).toBeUndefined();
+    expect(list.result.current.isLoading).toBe(false);
+    expect(list.result.current.isFetching).toBe(false);
+    expect(list.result.current.error).toBeNull();
     expect(detail.result.current.data).toBeUndefined();
+    expect(detail.result.current.isLoading).toBe(false);
+    expect(detail.result.current.isFetching).toBe(false);
+    expect(detail.result.current.error).toBeNull();
+    expect(
+      client.getQueryData(backgroundTasksQueryKey("thread-1", "user-1")),
+    ).toEqual([ownerTask, otherTask]);
+    expect(
+      client.getQueryData(
+        backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+      ),
+    ).toEqual(ownerTask);
+    expect(
+      client.getQueryData(
+        backgroundTaskQueryKey("thread-1", "task-other", "user-1"),
+      ),
+    ).toEqual(otherTask);
     expect(mocks.fetchTasks).not.toHaveBeenCalled();
     expect(mocks.fetchTask).not.toHaveBeenCalled();
-    await waitFor(() => {
+    list.unmount();
+    detail.unmount();
+    client.clear();
+  });
+
+  it("clears only this owner's list and details when threads:read is denied", async () => {
+    const { client, Wrapper } = createWrapper();
+    const ownerTask = { task_id: "task-private" };
+    const otherOwnerTask = { task_id: "other-owner-task" };
+    client.setQueryData(backgroundTasksQueryKey("thread-1", "user-1"), [
+      ownerTask,
+    ]);
+    client.setQueryData(
+      backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+      ownerTask,
+    );
+    client.setQueryData(backgroundTasksQueryKey("thread-1", "user-2"), [
+      otherOwnerTask,
+    ]);
+    client.setQueryData(
+      backgroundTaskQueryKey("thread-1", "other-owner-task", "user-2"),
+      otherOwnerTask,
+    );
+    client.setQueryData(backgroundTasksQueryKey("thread-2", "user-1"), []);
+    mocks.user.current = { id: "user-1", permissions: [] };
+
+    const list = renderHook(
+      () =>
+        useBackgroundTasks("thread-1", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    try {
+      expect(list.result.current.data).toBeUndefined();
+      expect(list.result.current.isLoading).toBe(false);
+      expect(list.result.current.error).toBeNull();
+      await waitFor(() => {
+        expect(
+          client.getQueryData(backgroundTasksQueryKey("thread-1", "user-1")),
+        ).toBeUndefined();
+        expect(
+          client.getQueryData(
+            backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+          ),
+        ).toBeUndefined();
+      });
+      // 其他账号和当前账号的其他线程缓存保持不动。
       expect(
-        client.getQueryData(backgroundTasksQueryKey("thread-1", "user-1")),
-      ).toBeUndefined();
+        client.getQueryData(backgroundTasksQueryKey("thread-1", "user-2")),
+      ).toEqual([otherOwnerTask]);
       expect(
         client.getQueryData(
-          backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+          backgroundTaskQueryKey("thread-1", "other-owner-task", "user-2"),
         ),
-      ).toBeUndefined();
-    });
-    cleanup();
-    client.clear();
+      ).toEqual(otherOwnerTask);
+      expect(
+        client.getQueryData(backgroundTasksQueryKey("thread-2", "user-1")),
+      ).toEqual([]);
+      expect(mocks.fetchTasks).not.toHaveBeenCalled();
+    } finally {
+      list.unmount();
+      client.clear();
+    }
+  });
+
+  it("hides a denied detail without removing the owner list", async () => {
+    const { client, Wrapper } = createWrapper();
+    const ownerTask = { task_id: "task-private" };
+    const otherTask = { task_id: "task-other" };
+    client.setQueryData(backgroundTasksQueryKey("thread-1", "user-1"), [
+      ownerTask,
+      otherTask,
+    ]);
+    client.setQueryData(
+      backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+      ownerTask,
+    );
+    client.setQueryData(
+      backgroundTaskQueryKey("thread-1", "task-other", "user-1"),
+      otherTask,
+    );
+    mocks.user.current = { id: "user-1", permissions: [] };
+
+    const detail = renderHook(
+      () =>
+        useBackgroundTask("thread-1", "task-private", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    try {
+      expect(detail.result.current.data).toBeUndefined();
+      expect(detail.result.current.isLoading).toBe(false);
+      expect(detail.result.current.error).toBeNull();
+      await waitFor(() => {
+        expect(
+          client.getQueryData(
+            backgroundTaskQueryKey("thread-1", "task-private", "user-1"),
+          ),
+        ).toBeUndefined();
+        expect(
+          client.getQueryData(
+            backgroundTaskQueryKey("thread-1", "task-other", "user-1"),
+          ),
+        ).toBeUndefined();
+      });
+      // 详情撤权只清理详情；列表由列表 hook 负责清理。
+      expect(
+        client.getQueryData(backgroundTasksQueryKey("thread-1", "user-1")),
+      ).toEqual([ownerTask, otherTask]);
+      expect(mocks.fetchTask).not.toHaveBeenCalled();
+    } finally {
+      detail.unmount();
+      client.clear();
+    }
   });
 
   it("passes cancellation signals to authorized list and detail reads", async () => {
     const { client, Wrapper } = createWrapper();
+    // 权限快照缺失时继续请求，保持旧 Gateway 兼容。
+    mocks.user.current = { id: "user-1", permissions: null };
     mocks.fetchTasks.mockResolvedValueOnce([]);
     mocks.fetchTask.mockResolvedValueOnce({
       task_id: "task-1",

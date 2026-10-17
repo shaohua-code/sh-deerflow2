@@ -14,6 +14,7 @@ import {
   type RoutePermission,
 } from "@/core/auth/permissions";
 import type { User } from "@/core/auth/types";
+
 import type { ProductFeatureKey } from "./api";
 import { isProductFeatureEnabled } from "./features";
 

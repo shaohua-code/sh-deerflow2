@@ -62,8 +62,8 @@ import {
   type ProjectThreadFile,
   type ProjectThreadFileGroup,
 } from "@/core/projects";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { stageProjectAttachment } from "@/core/projects/composer-attach";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useInfiniteThreads } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
 import {

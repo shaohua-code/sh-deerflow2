@@ -25,13 +25,13 @@ rs.mock("@/core/auth/AuthProvider", () => ({
   }),
 }));
 
+import { trashDocumentsQueryKey } from "@/core/trash/api";
 import {
   useEmptyTrash,
   useInfiniteTrashDocuments,
   usePurgeDocument,
   useRestoreDocument,
 } from "@/core/trash/hooks";
-import { trashDocumentsQueryKey } from "@/core/trash/api";
 
 const DOCUMENT = {
   id: "doc-1",

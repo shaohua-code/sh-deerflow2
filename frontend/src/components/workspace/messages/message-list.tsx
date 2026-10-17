@@ -25,8 +25,8 @@ import {
   type ConversationProps,
 } from "@/components/ai-elements/conversation";
 import { Button } from "@/components/ui/button";
-import { extractArtifactsFromThread } from "@/core/artifacts/utils";
 import type { FeedbackData } from "@/core/api/feedback";
+import { extractArtifactsFromThread } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import { getArtifactArchiveCandidatesByGroupIndex } from "@/core/messages/artifact-archive";
 import {
@@ -36,7 +36,6 @@ import {
 import {
   deriveAssistantTurnUsageState,
   deriveStableMessageGroups,
-  type AssistantTurnUsageState,
 } from "@/core/messages/derived-state";
 import {
   deriveHumanInputThreadState,
@@ -127,36 +126,47 @@ function sameStrings(previous: readonly string[], next: readonly string[]) {
 }
 
 function useStableArtifactPaths(paths: readonly string[] | undefined) {
-  const previousPathsRef = useRef<readonly string[]>(EMPTY_ARTIFACT_PATHS);
-  return useMemo(() => {
-    const nextPaths = paths ?? EMPTY_ARTIFACT_PATHS;
-    const previousPaths = previousPathsRef.current;
-    if (sameStrings(previousPaths, nextPaths)) {
-      return previousPaths;
-    }
-    previousPathsRef.current = nextPaths;
-    return nextPaths;
-  }, [paths]);
+  // 稳定引用缓存：保存上次接受的 paths；内容不变时复用旧引用，
+  // 避免"内容相同但引用变化"击穿下游 memo（官方 adjusting state
+  // when props change 模式，条件自灭，无渲染循环风险）。
+  const [acceptedPaths, setAcceptedPaths] =
+    useState<readonly string[]>(EMPTY_ARTIFACT_PATHS);
+  const nextPaths = paths ?? EMPTY_ARTIFACT_PATHS;
+  const same = sameStrings(acceptedPaths, nextPaths);
+  if (!same) {
+    setAcceptedPaths(nextPaths);
+  }
+  return same ? acceptedPaths : nextPaths;
 }
 
 function useStableMessageGroups(
   messages: Message[],
   isLoading: boolean,
 ): ThreadMessageGroup[] {
-  const previousGroupsRef = useRef<ThreadMessageGroup[]>([]);
-  const previousIsLoadingRef = useRef(false);
-  return useMemo(() => {
-    const previousGroups = previousGroupsRef.current;
-    const stableGroups = deriveStableMessageGroups(
+  // 增量稳定化缓存：保存上次输入（messages/isLoading 引用）与上次输出
+  // （稳定化后的分组数组）。输入引用未变时直接复用输出引用（等价旧
+  // useMemo 缓存语义）；输入变化时渲染期条件 setState 触发一次重渲染
+  // 重派生（官方 adjusting state when props change 模式，条件自灭），
+  // 上次输出作为 deriveStableMessageGroups 的增量基线，组对象引用
+  // 稳定语义与旧实现一致。
+  const [cache, setCache] = useState(() => ({
+    messages,
+    isLoading,
+    groups: deriveStableMessageGroups(messages, isLoading, [], false),
+  }));
+  if (cache.messages !== messages || cache.isLoading !== isLoading) {
+    setCache({
       messages,
       isLoading,
-      previousGroups,
-      previousIsLoadingRef.current,
-    );
-    previousGroupsRef.current = stableGroups;
-    previousIsLoadingRef.current = isLoading;
-    return stableGroups;
-  }, [isLoading, messages]);
+      groups: deriveStableMessageGroups(
+        messages,
+        isLoading,
+        cache.groups,
+        cache.isLoading,
+      ),
+    });
+  }
+  return cache.groups;
 }
 
 export const MESSAGE_LIST_DEFAULT_PADDING_BOTTOM = 24;
@@ -504,17 +514,25 @@ export function MessageList({
   }, [groupedMessages]);
   const updateSubtask = useUpdateSubtask();
   const lastGroupIndex = groupedMessages.length - 1;
-  const previousTurnUsageStateRef = useRef<AssistantTurnUsageState | undefined>(
-    undefined,
-  );
-  const turnUsageMessagesByGroupIndex = useMemo(() => {
-    const state = deriveAssistantTurnUsageState(
+  // 轮次用量增量派生缓存：保存上次输入（groupedMessages 引用）与上次
+  // 输出（AssistantTurnUsageState）。输入未变时复用旧输出（等价旧
+  // useMemo + ref 缓存语义）；输入变化时渲染期条件 setState 触发一次
+  // 重渲染重派生（adjusting state when props change 模式，条件自灭），
+  // 上次输出作为增量基线，避免全量重算。
+  const [turnUsageCache, setTurnUsageCache] = useState(() => ({
+    groupedMessages,
+    state: deriveAssistantTurnUsageState(groupedMessages, undefined),
+  }));
+  if (turnUsageCache.groupedMessages !== groupedMessages) {
+    setTurnUsageCache({
       groupedMessages,
-      previousTurnUsageStateRef.current,
-    );
-    previousTurnUsageStateRef.current = state;
-    return state.byGroupIndex;
-  }, [groupedMessages]);
+      state: deriveAssistantTurnUsageState(
+        groupedMessages,
+        turnUsageCache.state,
+      ),
+    });
+  }
+  const turnUsageMessagesByGroupIndex = turnUsageCache.state.byGroupIndex;
   const runDurationDisplaysByGroupIndex = useMemo(
     () => getRunDurationDisplaysByGroupIndex(groupedMessages),
     [groupedMessages],
@@ -527,6 +545,10 @@ export function MessageList({
     () => getWorkspaceChangeAnchorGroupIndices(groupedMessages),
     [groupedMessages],
   );
+  // 论证保留 effect 内 setState（react-hooks/set-state-in-effect）：清理型
+  // 操作依赖派生结果 runDurationDisplaysByGroupIndex，函数式 updater 以
+  // `next ?? current` 同值跳过，无变化不触发额外渲染；渲染期化需将删除
+  // 集合计算搬进渲染，收益小且增加误判风险。
   useEffect(() => {
     setClientDurationsByGroupId((current) => {
       let next: Map<string, number> | undefined;
@@ -590,6 +612,9 @@ export function MessageList({
   );
   const [settledStreamMetadataState, setSettledStreamMetadataState] =
     useState<SettledStreamMetadataState>();
+  // 论证保留 effect 内 setState（react-hooks/set-state-in-effect）：快照
+  // 来自 effect 内对 thread.getMessagesMetadata 的读取（commit 后才安全），
+  // 函数式 updater 以 areStreamMetadataSnapshotsEqual 同值跳过。
   useEffect(() => {
     if (thread.isLoading) {
       return;
@@ -637,6 +662,9 @@ export function MessageList({
     [messages],
   );
 
+  // 论证保留 effect 内 setState（react-hooks/set-state-in-effect）：清理型
+  // 操作依赖派生的 answeredResponses，函数式 updater 以集合大小同值跳过；
+  // 线程错误的乐观清空 effect（下方）同为防御时序语义，一并保留。
   useEffect(() => {
     if (pendingHumanInputRequestIds.size === 0) {
       return;

@@ -46,12 +46,14 @@ test("Next and its ESLint config stay on the same locked release", () => {
   expect(eslintConfigNext.version).toBe(next.version);
 });
 
-test("Next flat config uses an explicit ESM file extension", () => {
+test("Next flat config uses the exported core-web-vitals subpath", () => {
   const config = readFileSync(
     resolve(frontendRoot, "eslint.config.js"),
     "utf8",
   );
 
-  // Node 的 ESM 解析不会为包子路径自动补 .js；省略扩展名会让 pnpm lint 在启动时失败。
-  expect(config).toContain('from "eslint-config-next/core-web-vitals.js"');
+  // eslint-config-next 16 的 exports 只定义不带后缀的子路径：带 .js 的
+  // 导入会在 ESLint 9 启动时直接 ERR_PACKAGE_PATH_NOT_EXPORTED（P349 实
+  // 测），因此约定必须使用无后缀形式。
+  expect(config).toContain('from "eslint-config-next/core-web-vitals"');
 });

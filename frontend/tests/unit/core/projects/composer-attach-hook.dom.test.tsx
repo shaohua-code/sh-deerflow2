@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "@rstest/core";
 import { cleanup, render } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 
 import {
   stageProjectAttachment,
@@ -48,8 +48,12 @@ function ComposerProbe({
     userId,
     threadId,
   );
-  observed.current = attachments;
-  observed.set = setAttachments;
+  // commit 后同步探针（渲染期写模块级变量被编译器禁止）；testing-library
+  // 的 render/act 已 flush effects，断言时机不变。
+  useEffect(() => {
+    observed.current = attachments;
+    observed.set = setAttachments;
+  });
   return null;
 }
 

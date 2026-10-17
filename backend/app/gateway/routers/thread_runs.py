@@ -979,6 +979,10 @@ async def stream_run(
             request,
             run_mgr,
             emit_gap_on_missing_stream=record.idempotency_reused,
+            # 创建端点在连接建立时强制 runs:create 与其 data scope；运行中按同一
+            # 规则复查，撤权后在途 SSE 不会继续推流（终止的是该调用方的视图，不取消 run）。
+            permission_recheck=("runs", "create"),
+            data_scope_recheck=("runs:create", "create"),
         ),
         media_type="text/event-stream",
         headers={
@@ -1227,7 +1231,16 @@ async def join_run(thread_id: ThreadId, run_id: str, request: Request) -> Stream
     return StreamingResponse(
         # Joins are read-only observation: the creator's cancel-on-disconnect
         # policy must not fire because an observer closed their connection.
-        sse_consumer(bridge, record, request, run_mgr, apply_on_disconnect=False),
+        sse_consumer(
+            bridge,
+            record,
+            request,
+            run_mgr,
+            apply_on_disconnect=False,
+            # join 建立时强制 runs:read 与其 data scope；观察者撤权后终止其视图，不影响 run。
+            permission_recheck=("runs", "read"),
+            data_scope_recheck=("runs:read", "read"),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1315,7 +1328,16 @@ async def _stream_existing_run(
         # require_cancel_permission_when_action), and an action-less join is
         # read-only observation — the creator's cancel-on-disconnect policy
         # must not fire because a joiner closed their connection.
-        sse_consumer(bridge, record, request, run_mgr, apply_on_disconnect=False),
+        sse_consumer(
+            bridge,
+            record,
+            request,
+            run_mgr,
+            apply_on_disconnect=False,
+            # 既有 run 流建立时强制 runs:read 与其 data scope；撤权后终止该观察连接。
+            permission_recheck=("runs", "read"),
+            data_scope_recheck=("runs:read", "read"),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

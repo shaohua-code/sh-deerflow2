@@ -3,6 +3,7 @@
 Use a locally verified OIDC access token and tenant/user ids taken from the verified session.
 This client intentionally does not retain credentials or implement OIDC token validation.
 """
+
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -118,9 +119,7 @@ def _validate_data_scope(value: Any, expected_tenant_id: str, expected_subject_i
     discriminator and business field names here prevents malformed IAM responses from
     accidentally becoming an unscoped query in an adapter.
     """
-    if (not isinstance(expected_tenant_id, str) or not expected_tenant_id
-            or not isinstance(expected_subject_id, str) or not expected_subject_id
-            or not isinstance(value, dict) or value.get("mode") != "any_of"):
+    if not isinstance(expected_tenant_id, str) or not expected_tenant_id or not isinstance(expected_subject_id, str) or not expected_subject_id or not isinstance(value, dict) or value.get("mode") != "any_of":
         raise AuthorizationServiceError(502, "IAM returned an invalid data scope")
     constraints = value.get("constraints")
     if not isinstance(constraints, list) or not constraints:
@@ -129,27 +128,20 @@ def _validate_data_scope(value: Any, expected_tenant_id: str, expected_subject_i
     for constraint in constraints:
         kind = constraint.get("kind") if isinstance(constraint, dict) else None
         branch_tenant_id = constraint.get("tenant_id") if isinstance(constraint, dict) else None
-        if (not isinstance(constraint, dict) or not isinstance(kind, str)
-                or not isinstance(branch_tenant_id, str)
-                or branch_tenant_id.lower() != expected_tenant_id.lower()
-                or kind not in {"tenant", "owner", "organizations"}):
+        if not isinstance(constraint, dict) or not isinstance(kind, str) or not isinstance(branch_tenant_id, str) or branch_tenant_id.lower() != expected_tenant_id.lower() or kind not in {"tenant", "owner", "organizations"}:
             raise AuthorizationServiceError(502, "IAM returned a cross-tenant or unknown data constraint")
         if kind == "tenant":
             normalized.append({"kind": "tenant", "tenant_id": expected_tenant_id})
         elif kind == "owner":
             user_id = constraint.get("user_id")
-            if (constraint.get("field") != "owner_user_id" or not isinstance(user_id, str) or not user_id
-                    or user_id != expected_subject_id):
+            if constraint.get("field") != "owner_user_id" or not isinstance(user_id, str) or not user_id or user_id != expected_subject_id:
                 raise AuthorizationServiceError(502, "IAM returned an invalid owner constraint")
-            normalized.append({"kind": "owner", "field": "owner_user_id", "user_id": user_id,
-                               "tenant_id": expected_tenant_id})
+            normalized.append({"kind": "owner", "field": "owner_user_id", "user_id": user_id, "tenant_id": expected_tenant_id})
         else:
             organization_ids = constraint.get("organization_ids")
-            if (constraint.get("field") != "organization_id" or not isinstance(organization_ids, list)
-                    or any(not isinstance(item, str) or not item for item in organization_ids)):
+            if constraint.get("field") != "organization_id" or not isinstance(organization_ids, list) or any(not isinstance(item, str) or not item for item in organization_ids):
                 raise AuthorizationServiceError(502, "IAM returned an invalid organization constraint")
-            normalized.append({"kind": "organizations", "field": "organization_id",
-                               "organization_ids": list(organization_ids), "tenant_id": expected_tenant_id})
+            normalized.append({"kind": "organizations", "field": "organization_id", "organization_ids": list(organization_ids), "tenant_id": expected_tenant_id})
     return {"mode": "any_of", "constraints": normalized}
 
 
@@ -168,12 +160,11 @@ def compile_postgres_data_scope(
     IAM 字段永远不会成为 SQL 标识符；列名仅来自业务代码传入的白名单映射，
     每个 OR 分支都单独 AND 租户条件。本地用户主键不同时必须提供显式映射函数。
     """
+
     def fail(message: str) -> None:
         raise AuthorizationServiceError(502, message)
 
-    if (not isinstance(tenant_id, str) or not tenant_id.strip()
-            or not isinstance(subject_id, str) or not subject_id.strip()
-            or not isinstance(data_scope, Mapping) or data_scope.get("mode") != "any_of"):
+    if not isinstance(tenant_id, str) or not tenant_id.strip() or not isinstance(subject_id, str) or not subject_id.strip() or not isinstance(data_scope, Mapping) or data_scope.get("mode") != "any_of":
         fail("Cannot compile an empty or unverified IAM data scope")
     constraints = data_scope.get("constraints")
     if not isinstance(constraints, list) or not constraints:
@@ -181,9 +172,7 @@ def compile_postgres_data_scope(
 
     # 业务列只能使用开发者维护的简单列名或 table.column 标识符，并统一加引号。
     def quote_column(name: Any) -> str:
-        if not isinstance(name, str) or not name or not all(
-            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) for part in name.split(".")
-        ):
+        if not isinstance(name, str) or not name or not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) for part in name.split(".")):
             fail("IAM data-scope column mapping is missing or invalid")
         return ".".join(f'"{part}"' for part in name.split("."))
 
@@ -216,8 +205,7 @@ def compile_postgres_data_scope(
         if not isinstance(constraint, Mapping):
             fail("IAM data-scope branch is invalid")
         branch_tenant_id = constraint.get("tenant_id")
-        if (not isinstance(branch_tenant_id, str)
-                or branch_tenant_id.lower() != tenant_id.lower()):
+        if not isinstance(branch_tenant_id, str) or branch_tenant_id.lower() != tenant_id.lower():
             fail("IAM data-scope branch does not match the verified tenant")
         tenant_predicate = f"{tenant_column} = {bind(tenant_value)}"
         kind = constraint.get("kind")
@@ -229,14 +217,11 @@ def compile_postgres_data_scope(
             if constraint.get("field") != "owner_user_id" or owner_subject != subject_id:
                 fail("IAM owner scope does not match the verified subject")
             owner_value = mapped_scalar(map_owner_user_id, owner_subject, tenant_id)
-            branches.append(
-                f"({tenant_predicate} AND {quote_column(columns.get('owner_user_id'))} = {bind(owner_value)})"
-            )
+            branches.append(f"({tenant_predicate} AND {quote_column(columns.get('owner_user_id'))} = {bind(owner_value)})")
             continue
         if kind == "organizations":
             raw_ids = constraint.get("organization_ids")
-            if (constraint.get("field") != "organization_id" or not isinstance(raw_ids, list)
-                    or any(not isinstance(item, str) or not item.strip() for item in raw_ids)):
+            if constraint.get("field") != "organization_id" or not isinstance(raw_ids, list) or any(not isinstance(item, str) or not item.strip() for item in raw_ids):
                 fail("IAM organization scope is invalid")
             try:
                 mapped_ids = map_organization_ids(raw_ids, tenant_id) if map_organization_ids else raw_ids
@@ -250,9 +235,7 @@ def compile_postgres_data_scope(
                 # 空组织范围必须明确匹配零行，不能退化成仅按租户查询。
                 branches.append(f"({tenant_predicate} AND FALSE)")
                 continue
-            branches.append(
-                f"({tenant_predicate} AND {quote_column(columns.get('organization_id'))} = ANY({bind(organization_ids)}))"
-            )
+            branches.append(f"({tenant_predicate} AND {quote_column(columns.get('organization_id'))} = ANY({bind(organization_ids)}))")
             continue
         fail("IAM data scope contains an unsupported constraint")
 

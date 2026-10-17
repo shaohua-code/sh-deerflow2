@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 const mocks = rs.hoisted(() => ({
   refetch: rs.fn(),
   statusResult: null as unknown,
-  statusScope: undefined as string | undefined,
 }));
 
 rs.mock("next/navigation", () => ({
@@ -28,10 +27,8 @@ rs.mock("next/dynamic", () => ({
     },
 }));
 rs.mock("@/core/integrations/lark", () => ({
-  useLarkIntegrationStatus: (_enabled = true, cacheScope?: string) => {
-    mocks.statusScope = cacheScope;
-    return mocks.statusResult;
-  },
+  // hook 契约自 cursor 改造起内部自取 userId 构造 owner 槽位，调用方只需传 enabled。
+  useLarkIntegrationStatus: (_enabled = true) => mocks.statusResult,
 }));
 rs.mock("@/components/workspace/capabilities/mcp-plugin-manager", () => ({
   MCPPluginManager: ({
@@ -73,7 +70,6 @@ function renderGallery(locale: "en-US" | "zh-CN") {
 }
 
 beforeEach(() => {
-  mocks.statusScope = undefined;
   mocks.statusResult = {
     data: undefined,
     error: new Error("Gateway unavailable"),
@@ -99,7 +95,6 @@ describe("PluginGallery integration status errors", () => {
       document.cookie = `locale=${locale}; path=/`;
       renderGallery(locale);
 
-      expect(mocks.statusScope).toBe("user-1");
       expect(screen.getByText(status)).toBeDefined();
       fireEvent.click(screen.getByRole("button", { name: retry }));
       expect(mocks.refetch).toHaveBeenCalledTimes(1);

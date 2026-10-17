@@ -146,6 +146,10 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
     if (logoutFailed && typeof window !== "undefined") {
       // Hard navigation ensures every in-flight subscription is torn down,
       // matching the legacy form-POST logout behaviour during a gateway outage.
+      // 刻意的硬导航：登出请求失败（网关中断）时软导航不重载页面，内存中
+      // 的 auth 状态与在途订阅会残留；整页跳转等价旧 form-POST 行为。按行
+      // 豁免 next/next 的 location 赋值规则。
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- 网关中断时的硬导航降级，见上
       window.location.href = "/";
       return;
     }

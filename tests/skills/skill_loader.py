@@ -19,7 +19,14 @@ def load(skill_name: str):
     spec = importlib.util.spec_from_file_location(mod_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = module  # standard pattern; lets the module resolve itself
-    spec.loader.exec_module(module)
+    # 就地加载时禁止写入 __pycache__：字节码缓存会污染规范技能树，
+    # 让后端 SkillScan 审查把 .pyc 判为不可解码代码文件而报 error。
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
     return module
 
 

@@ -149,7 +149,7 @@ describe("SkillGallery error states", () => {
     expect(screen.getByRole("status").textContent).toContain(
       enUS.settings.skills.adminRequired,
     );
-    expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole("switch") as HTMLInputElement).disabled).toBe(
       true,
     );
   });
@@ -160,10 +160,10 @@ describe("SkillGallery error states", () => {
     mocks.authUser.permissions = ["skills:read", "skills:write"];
     renderGallery("en-US");
 
-    expect(screen.getByRole("status").textContent).toContain(
-      enUS.settings.skills.adminRequired,
-    );
-    expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(
+    // 页面在缺 skills:admin 时同时渲染缺 runs:create 的另一条提示，
+    // 两条均为 role="status"，按文案精确断言本用例关注的 adminRequired。
+    expect(screen.getByText(enUS.settings.skills.adminRequired)).toBeDefined();
+    expect((screen.getByRole("switch") as HTMLInputElement).disabled).toBe(
       true,
     );
   });
@@ -173,9 +173,7 @@ describe("SkillGallery error states", () => {
     mocks.authUser.permissions = ["skills:read", "skills:admin"];
     renderGallery("en-US");
 
-    expect(screen.getByRole("status").textContent).toContain(
-      enUS.settings.skills.adminRequired,
-    );
+    expect(screen.getByText(enUS.settings.skills.adminRequired)).toBeDefined();
     expect(
       (
         screen.getByRole("button", {

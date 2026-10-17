@@ -11,7 +11,9 @@ export function SettingsSection({
   description?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const hasHeader = Boolean(title || description);
+  // ?? 而非 ||：title/description 为 ReactNode，nullish 才视为缺省，
+  // 与 JSX 渲染层对 0 等合法节点的处理保持一致。
+  const hasHeader = Boolean(title ?? description);
 
   return (
     <section className={cn(className)}>

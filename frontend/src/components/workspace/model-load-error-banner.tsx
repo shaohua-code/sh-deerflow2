@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -24,16 +24,17 @@ export function ModelLoadErrorBanner({
   // Observe the shared query without starting it. Model consumers remain in
   // charge of loading; this single observer only centralizes their feedback.
   const { error, isFetching, refetch } = useModels({ enabled: false });
-  const visibleErrorRef = useRef<Error | null>(null);
-
   // TanStack clears an empty query's error while another observer refetches.
   // Keep the banner stable until that shared request either succeeds or fails.
+  // 渲染期条件 setState 替代旧的"渲染期写 ref 缓存"，修正后条件自灭。
+  const [visibleError, setVisibleError] = useState<Error | null>(null);
   if (error) {
-    visibleErrorRef.current = error;
-  } else if (!isFetching) {
-    visibleErrorRef.current = null;
+    if (visibleError !== error) {
+      setVisibleError(error);
+    }
+  } else if (!isFetching && visibleError !== null) {
+    setVisibleError(null);
   }
-  const visibleError = error ?? visibleErrorRef.current;
 
   const retry = async () => {
     setIsRetrying(true);

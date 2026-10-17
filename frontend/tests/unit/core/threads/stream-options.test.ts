@@ -84,6 +84,7 @@ async function captureThreadStreamOptions(
 
   const { useThreadMetadata, useThreadStream } =
     await import("@/core/threads/hooks");
+  let capturedMetadataResult: ReturnType<typeof useThreadMetadata> | undefined;
   function ThreadStreamCapture() {
     const result = useThreadStream({
       context: {
@@ -93,18 +94,19 @@ async function captureThreadStreamOptions(
       ...overrides,
     } as never);
     capturedLoadMore = result.loadMoreHistory;
+    // Hook 调用必须留在捕获组件内（rules-of-hooks）。
+    capturedMetadataResult = useThreadMetadata("private-thread", {
+      enabled: false,
+    });
     return null;
   }
   ThreadStreamCapture();
-  const metadataResult = useThreadMetadata("private-thread", {
-    enabled: false,
-  });
 
   return {
     streamOptions: capturedOptions,
     historyQueryOptions: capturedHistoryQueryOptions,
     metadataQueryOptions: capturedMetadataQueryOptions,
-    metadataResult,
+    metadataResult: capturedMetadataResult,
     loadMore: capturedLoadMore,
     fetchNextPage,
   };

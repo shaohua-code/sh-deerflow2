@@ -16,10 +16,9 @@ import { toast } from "sonner";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 
 import { getAPIClient } from "../api";
+import { fetch } from "../api/fetcher";
 import { useAuth } from "../auth/AuthProvider";
 import { getPermissionState, PERMISSIONS } from "../auth/permissions";
-import type { FeedbackData } from "../api/feedback";
-import { fetch } from "../api/fetcher";
 import { getBackendBaseURL } from "../config";
 import { useI18n } from "../i18n/hooks";
 import { getMessageRunId } from "../messages/run-duration";
@@ -273,6 +272,21 @@ const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_RUN_MESSAGES: RunMessage[] = [];
 const EMPTY_MESSAGE_IDENTITIES: readonly string[] = [];
 const EMPTY_MESSAGE_IDENTITIES_SET: ReadonlySet<string> = new Set<string>();
+// Identity-order shallow equality for the rendered-ledger convergence guard:
+// mergeRenderedMessageLedger always allocates a fresh array, so the per-render
+// setState needs a content-level same-value check to self-extinguish.
+function sameIdentityOrder(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((identity, index) => identity === b[index]);
+}
 /**
  * The turn this client submitted, recorded at dispatch time. The visible human
  * input gets one client-generated identity shared by the optimistic display
@@ -457,7 +471,7 @@ export function buildVisibleHistoryMessages(
       run_id: message.run_id,
       ...(lastAiRowByRun.get(message.run_id) === message &&
       message.feedback !== undefined
-        ? { feedback: message.feedback as FeedbackData | null }
+        ? { feedback: message.feedback }
         : {}),
       additional_kwargs: {
         ...message.content.additional_kwargs,
@@ -1473,7 +1487,11 @@ export function useCoalescedStreamMessages(
   // retained snapshot would otherwise be another thread's messages.
   const [snapshot, setSnapshot] = useState<Message[] | null>(null);
   const latestRef = useRef(messages);
-  latestRef.current = messages;
+  // publish 只会在 commit 后的 flush/定时器回调里读取，effect 同步即可；
+  // 渲染期写 ref 会被编译器按"渲染期访问 ref"拦截。
+  useEffect(() => {
+    latestRef.current = messages;
+  });
   // Monotonic clock: a wall-clock step (NTP, sleep/wake) between two reads
   // would otherwise be added to the remaining interval and stall the flush for
   // the length of the jump. -Infinity means "never flushed", so the first
@@ -1499,6 +1517,12 @@ export function useCoalescedStreamMessages(
     }
   }, []);
 
+  // 流结束后清空快照：渲染期条件修正（快照为 null 后条件自灭），定时器与
+  // 基线清理仍在下方 effect 的 commit 阶段完成。
+  if (!isStreaming && snapshot !== null) {
+    setSnapshot(null);
+  }
+
   useEffect(() => {
     if (!isStreaming) {
       clearPendingFlush();
@@ -1508,7 +1532,6 @@ export function useCoalescedStreamMessages(
       // it costs one render per stream end, versus one per idle message change
       // if the snapshot were instead kept in sync while nothing reads it.
       lastFlushRef.current = Number.NEGATIVE_INFINITY;
-      setSnapshot((previous) => (previous === null ? previous : null));
       return;
     }
     const now = performance.now();
@@ -1781,7 +1804,10 @@ export function useThreadStream({
     ? (displayThreadId ?? threadId ?? null)
     : null;
   const currentViewThreadIdRef = useRef(currentViewThreadId);
-  currentViewThreadIdRef.current = currentViewThreadId;
+  // 供异步回调读取最新值；渲染期写 ref 会被编译器拦截，commit 后同步即可。
+  useEffect(() => {
+    currentViewThreadIdRef.current = currentViewThreadId;
+  });
   // Optimistic messages shown before the server stream responds.
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const [optimisticThreadId, setOptimisticThreadId] = useState<string | null>(
@@ -1803,9 +1829,11 @@ export function useThreadStream({
   // Ref to track current thread ID across async callbacks without causing re-renders,
   // and to allow access to the current thread id in onUpdateEvent
   const threadIdRef = useRef<string | null>(activeThreadId ?? null);
-  threadIdRef.current = activeThreadId ?? null;
+  // 供 onUpdateEvent 等异步回调读取最新值；渲染期写 ref 会被编译器拦截。
+  useEffect(() => {
+    threadIdRef.current = activeThreadId ?? null;
+  });
   const startedRef = useRef(false);
-  const pendingUsageBaselineMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingPreparedReplayRef = useRef<PendingPreparedReplayMask | null>(
     null,
   );
@@ -1832,17 +1860,22 @@ export function useThreadStream({
     listeners.current = { onSend, onStart, onFinish };
   }, [onSend, onStart, onFinish]);
 
+  // enabled/threadId 归一后的流线程 ID；变化时在渲染期对比前值同步 state
+  // （官方模式，挂载时 lazy 初始值已相等故不触发），避免 effect 内同步
+  // setState 的级联渲染。threadIdRef 的同步已由上方每次渲染的 effect 覆盖。
+  const normalizedThreadId = enabled ? (threadId ?? null) : null;
+  const [prevStreamThreadId, setPrevStreamThreadId] =
+    useState(normalizedThreadId);
+  if (prevStreamThreadId !== normalizedThreadId) {
+    setPrevStreamThreadId(normalizedThreadId);
+    setOnStreamThreadId(normalizedThreadId);
+  }
   useEffect(() => {
-    const normalizedThreadId = enabled ? (threadId ?? null) : null;
     if (!normalizedThreadId) {
       // Reset when the UI moves back to a brand new unsaved thread.
       startedRef.current = false;
-      setOnStreamThreadId(normalizedThreadId);
-    } else {
-      setOnStreamThreadId(normalizedThreadId);
     }
-    threadIdRef.current = normalizedThreadId;
-  }, [enabled, threadId]);
+  }, [normalizedThreadId]);
 
   const handleStreamStart = useCallback(
     (_threadId: string, _runId: string) => {
@@ -1978,15 +2011,16 @@ export function useThreadStream({
             ? renderedMessageSnapshotRef.current.messages
             : EMPTY_MESSAGES,
         );
-        transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
-          transientHistoryOrderRef.current,
-          transientMessages,
+        // 函数式 setState 保证同一批次的连续流事件按序累积（与旧 ref
+        // 累积语义一致）；bridge/order 的渲染期读取走 state，镜像 ref 由
+        // commit 后 effect 同步供此处之外的异步回调读取。
+        setTransientHistoryOrder((current) =>
+          mergeTransientHistoryBridgeOrder(current, transientMessages),
         );
-        transientHistoryBridgeRef.current = mergeTransientHistoryBridge(
-          transientHistoryBridgeRef.current,
-          transientMessages,
+        setTransientHistoryBridge((current) =>
+          mergeTransientHistoryBridge(current, transientMessages),
         );
-        transientHistoryThreadIdRef.current = threadIdRef.current;
+        setTransientHistoryThreadId(threadIdRef.current);
         messagesRef.current = [];
       }
 
@@ -2018,12 +2052,12 @@ export function useThreadStream({
         setPendingSupersededRunIds(new Set());
         setPendingSupersededMessageIds(new Set());
         messagesRef.current = [];
-        transientHistoryBridgeRef.current = [];
-        transientHistoryOrderRef.current = [];
-        transientHistoryThreadIdRef.current = null;
+        setTransientHistoryBridge([]);
+        setTransientHistoryOrder([]);
+        setTransientHistoryThreadId(null);
         summarizedRef.current = new Set<string>();
-        pendingUsageBaselineMessageIdsRef.current = new Set();
-        localTurnAnchorRef.current = null;
+        setPendingUsageBaselineMessageIds(new Set());
+        setLocalTurnAnchor(null);
         tasksRef.current = {};
         setTasks({});
         invalidateStoppedThreadCaches(queryClient, threadIdRef.current, isMock);
@@ -2068,10 +2102,12 @@ export function useThreadStream({
       setPendingSupersededMessageIds(new Set());
       // 流式请求异常可能包含服务端路径或底层提供商详情；只展示本地化提示。
       toast.error(t.conversation.streamFailed);
-      pendingUsageBaselineMessageIdsRef.current = new Set(
-        messagesRef.current
-          .map(messageIdentity)
-          .filter((id): id is string => Boolean(id)),
+      setPendingUsageBaselineMessageIds(
+        new Set(
+          messagesRef.current
+            .map(messageIdentity)
+            .filter((id): id is string => Boolean(id)),
+        ),
       );
       if (threadIdRef.current && !isMock) {
         void queryClient.invalidateQueries({
@@ -2085,10 +2121,12 @@ export function useThreadStream({
     onFinish(state) {
       listeners.current.onFinish?.(state.values);
       pendingPreparedReplayRef.current = null;
-      pendingUsageBaselineMessageIdsRef.current = new Set(
-        messagesRef.current
-          .map(messageIdentity)
-          .filter((id): id is string => Boolean(id)),
+      setPendingUsageBaselineMessageIds(
+        new Set(
+          messagesRef.current
+            .map(messageIdentity)
+            .filter((id): id is string => Boolean(id)),
+        ),
       );
       invalidateStoppedThreadCaches(queryClient, threadIdRef.current, isMock);
     },
@@ -2157,20 +2195,51 @@ export function useThreadStream({
   // the settled frame. The next local submit replaces it and a thread switch or
   // replay gap clears it. An empty set is meaningful for a new thread and must
   // not be confused with a reconnect that has no local turn anchor.
+  // 渲染管线（mergedMessages useMemo）需要渲染期读取锚点，从 ref 改为
+  // state（响应式快照）；写方均为用户提交/失败回调与换线程收敛，事件回
+  // 调内 setState 合法。镜像 ref 供异步回调读取最新值：渲染期不写、commit
+  // 后同步（P351 latestRef 同款，读取方均在回调，无渲染与提交之间的读
+  // 取窗口）。
+  const [localTurnAnchor, setLocalTurnAnchor] =
+    useState<LocalTurnAnchor | null>(null);
   const localTurnAnchorRef = useRef<LocalTurnAnchor | null>(null);
   // Current-stream lifecycle bridge for messages removed from the checkpoint
   // tail before the canonical run-event page refetch observes the journal
   // flush. It is never appended into useThreadHistory's persisted pages.
-  const transientHistoryBridgeRef = useRef<Message[]>([]);
   // Full identity order of each captured checkpoint. Confirmed bridge entries
   // are pruned from the message buffer, but remain here as non-rendering
   // anchors so an older rescue can be placed before a newest-first page.
-  const transientHistoryOrderRef = useRef<readonly string[]>([]);
-  const transientHistoryThreadIdRef = useRef<string | null>(null);
   // The run-scoped committed display ledger supplies message objects when a
   // compaction replacement outruns React or several rolling checkpoint windows
   // pass between compactions. The merged order separately anchors those
   // objects against canonical history.
+  // —— P354 管线状态化：渲染管线（mergedMessages useMemo / 渲染期派生）
+  // 需要读取 bridge/order/snapshot，从 ref 改为 state（响应式快照，渲染
+  // 期直读）；写方为流事件回调（函数式 setState 保证批内累积）、用户提
+  // 交回调与渲染期收敛块。异步回调（onUpdateEvent 构造 preSubmit 快照、
+  // 台账派生）改读下方镜像 ref：渲染期不写、commit 后同步（P351
+  // latestRef 同款，读取方均在回调，无渲染与提交之间的读取窗口）。
+  const [transientHistoryBridge, setTransientHistoryBridge] = useState<
+    Message[]
+  >([]);
+  const [transientHistoryOrder, setTransientHistoryOrder] = useState<
+    readonly string[]
+  >([]);
+  const [transientHistoryThreadId, setTransientHistoryThreadId] = useState<
+    string | null
+  >(null);
+  const [renderedMessageSnapshot, setRenderedMessageSnapshot] = useState<{
+    threadId: string | null;
+    messages: Message[];
+    order: readonly string[];
+  }>({
+    threadId: null,
+    messages: EMPTY_MESSAGES,
+    order: EMPTY_MESSAGE_IDENTITIES,
+  });
+  const transientHistoryBridgeRef = useRef<Message[]>([]);
+  const transientHistoryOrderRef = useRef<readonly string[]>([]);
+  const transientHistoryThreadIdRef = useRef<string | null>(null);
   const renderedMessageSnapshotRef = useRef<{
     threadId: string | null;
     messages: Message[];
@@ -2184,11 +2253,54 @@ export function useThreadStream({
   // Track human message count before sending to prevent clearing optimistic
   // messages before the server's human message arrives (e.g. when AI messages
   // from "messages-tuple" events arrive before the input human message from
-  // "values" events).
-  const prevHumanMsgCountRef = useRef(humanMessageCount);
+  // "values" events). 渲染期派生（visibleOptimisticMessages）需要读取，
+  // 同步改 state；写方为提交回调与换线程收敛，回调内 setState 合法。
+  const [prevHumanMsgCount, setPrevHumanMsgCount] = useState(humanMessageCount);
+  // Streaming baseline of already-persisted message identities, used to treat
+  // only new messages as "pending" for token usage. 渲染期派生
+  //（pendingUsageMessages）需要读取，同步改 state；写方为流回调与提交回调。
+  const [pendingUsageBaselineMessageIds, setPendingUsageBaselineMessageIds] =
+    useState<Set<string>>(() => new Set());
+  const pendingUsageBaselineMessageIdsRef = useRef<Set<string>>(new Set());
 
-  latestMessageCountsRef.current = { humanMessageCount };
+  // 异步回调读取镜像：渲染期不写，commit 后统一同步（读取方均为回调）。
+  useEffect(() => {
+    localTurnAnchorRef.current = localTurnAnchor;
+    transientHistoryBridgeRef.current = transientHistoryBridge;
+    transientHistoryOrderRef.current = transientHistoryOrder;
+    transientHistoryThreadIdRef.current = transientHistoryThreadId;
+    renderedMessageSnapshotRef.current = renderedMessageSnapshot;
+    pendingUsageBaselineMessageIdsRef.current = pendingUsageBaselineMessageIds;
+  });
+
+  // 供异步回调读取最新计数；渲染期写 ref 会被编译器拦截，commit 后同步即可。
+  useEffect(() => {
+    latestMessageCountsRef.current = { humanMessageCount };
+  });
   summarizedRef.current ??= new Set<string>();
+
+  // 换线程时清空管线状态（bridge/order/snapshot/锚点/基线/计数基线）：
+  // 渲染期对比前值（官方模式），条件自灭；ref 类重置与外部快照清理留在
+  // 下方 effect（渲染期不写 ref）。
+  const [prevResetThreadId, setPrevResetThreadId] = useState<
+    string | null | undefined
+  >(undefined);
+  if (prevResetThreadId !== threadId) {
+    setPrevResetThreadId(threadId);
+    setPendingSupersededRunIds(new Set());
+    setPendingSupersededMessageIds(new Set());
+    setLocalTurnAnchor(null);
+    setTransientHistoryBridge([]);
+    setTransientHistoryOrder([]);
+    setTransientHistoryThreadId(null);
+    setRenderedMessageSnapshot({
+      threadId: null,
+      messages: EMPTY_MESSAGES,
+      order: EMPTY_MESSAGE_IDENTITIES,
+    });
+    setPrevHumanMsgCount(humanMessageCount);
+    setPendingUsageBaselineMessageIds(new Set());
+  }
 
   // Reset thread-local pending UI state when switching between threads so
   // optimistic messages and in-flight guards do not leak across chat views.
@@ -2196,63 +2308,59 @@ export function useThreadStream({
     startedRef.current = false;
     sendInFlightRef.current = false;
     messagesRef.current = [];
-    transientHistoryBridgeRef.current = [];
-    transientHistoryOrderRef.current = [];
-    transientHistoryThreadIdRef.current = null;
-    renderedMessageSnapshotRef.current = {
-      threadId: null,
-      messages: EMPTY_MESSAGES,
-      order: EMPTY_MESSAGE_IDENTITIES,
-    };
     summarizedRef.current = new Set<string>();
-    pendingUsageBaselineMessageIdsRef.current = new Set();
-    localTurnAnchorRef.current = null;
     pendingPreparedReplayRef.current = null;
-    setPendingSupersededRunIds(new Set());
-    setPendingSupersededMessageIds(new Set());
-    prevHumanMsgCountRef.current =
-      latestMessageCountsRef.current.humanMessageCount;
   }, [threadId]);
 
   // Release entries individually once canonical history confirms their stable
   // identities. Keep unconfirmed entries across failure/refetch within this
   // page lifecycle so a temporary persistence gap cannot hide a turn.
-  useEffect(() => {
-    transientHistoryBridgeRef.current = pruneConfirmedTransientMessages(
-      transientHistoryBridgeRef.current,
+  // 渲染期收敛（官方模式）：prune 只删不加、长度单调递减，长度守卫条件
+  // 自灭；桥排空时同步清 order/threadId（与旧 effect 相同的收敛终点）。
+  if (transientHistoryBridge.length > 0) {
+    const prunedBridge = pruneConfirmedTransientMessages(
+      transientHistoryBridge,
       visibleHistory,
     );
-    if (transientHistoryBridgeRef.current.length === 0) {
-      transientHistoryOrderRef.current = [];
-      transientHistoryThreadIdRef.current = null;
+    if (prunedBridge.length !== transientHistoryBridge.length) {
+      setTransientHistoryBridge(prunedBridge);
     }
-  }, [visibleHistory]);
+    if (prunedBridge.length === 0) {
+      setTransientHistoryOrder([]);
+      setTransientHistoryThreadId(null);
+    }
+  } else {
+    if (transientHistoryOrder.length > 0) {
+      setTransientHistoryOrder([]);
+    }
+    if (transientHistoryThreadId !== null) {
+      setTransientHistoryThreadId(null);
+    }
+  }
 
-  useEffect(() => {
-    if (optimisticThreadId && optimisticThreadId !== currentViewThreadId) {
-      setOptimisticMessages([]);
-      setOptimisticThreadId(null);
-    }
-    if (liveMessagesThreadId && liveMessagesThreadId !== currentViewThreadId) {
-      setLiveMessagesThreadId(null);
-    }
-  }, [currentViewThreadId, liveMessagesThreadId, optimisticThreadId]);
+  // 越界的乐观状态在渲染期收敛（官方模式）：清空后条件自灭，不再需要
+  // effect 内同步 setState。
+  if (optimisticThreadId && optimisticThreadId !== currentViewThreadId) {
+    setOptimisticMessages([]);
+    setOptimisticThreadId(null);
+  }
+  if (liveMessagesThreadId && liveMessagesThreadId !== currentViewThreadId) {
+    setLiveMessagesThreadId(null);
+  }
 
   // When streaming starts without a baseline (e.g. reconnection, run started
   // from another client, or page reload mid-stream), snapshot the current
   // messages so only *new* messages are treated as "pending" for token usage.
-  useEffect(() => {
-    if (
-      thread.isLoading &&
-      pendingUsageBaselineMessageIdsRef.current.size === 0
-    ) {
-      pendingUsageBaselineMessageIdsRef.current = new Set(
+  // 渲染期收敛：baseline 已存在时条件不成立，自灭。
+  if (thread.isLoading && pendingUsageBaselineMessageIds.size === 0) {
+    setPendingUsageBaselineMessageIds(
+      new Set(
         persistedMessages
           .map(messageIdentity)
           .filter((id): id is string => Boolean(id)),
-      );
-    }
-  }, [persistedMessages, thread.isLoading]);
+      ),
+    );
+  }
 
   // Clear optimistic when server messages arrive.
   // For messages with a human optimistic message, wait until the server's
@@ -2261,18 +2369,27 @@ export function useThreadStream({
   // first turns — never in the unthrottled per-chunk array, which would
   // withdraw the local input one coalesce interval before the user can see
   // its confirmed copy.
+  // 论证保留 effect 内 setState（react-hooks/set-state-in-effect，P351 同
+  // 款）：乐观清除必须等待"确认副本已出现在渲染快照"——渲染期化会让清
+  // 空提前一帧，从 per-chunk 数组撤回用户可见的本地输入，恰是源注释防
+  // 御的回归。两条 effect（计数守卫 + 身份确认）同属该时序语义。
   const optimisticMessageCount = optimisticMessages.length;
   const hasHumanOptimistic = optimisticMessages.some((m) => m.type === "human");
   useEffect(() => {
     if (optimisticMessageCount === 0) return;
 
-    const newHumanMsgArrived = humanMessageCount > prevHumanMsgCountRef.current;
+    const newHumanMsgArrived = humanMessageCount > prevHumanMsgCount;
 
     if (!hasHumanOptimistic || newHumanMsgArrived) {
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
     }
-  }, [hasHumanOptimistic, humanMessageCount, optimisticMessageCount]);
+  }, [
+    hasHumanOptimistic,
+    humanMessageCount,
+    optimisticMessageCount,
+    prevHumanMsgCount,
+  ]);
 
   useEffect(() => {
     if (
@@ -2304,12 +2421,13 @@ export function useThreadStream({
 
       // Capture the current human message count before showing optimistic
       // messages so we can wait for the server's copy of the user input.
-      prevHumanMsgCountRef.current = humanMessageCount;
-      pendingUsageBaselineMessageIdsRef.current = new Set(
+      setPrevHumanMsgCount(humanMessageCount);
+      const sendBaselineMessageIds = new Set(
         persistedMessages
           .map(messageIdentity)
           .filter((id): id is string => Boolean(id)),
       );
+      setPendingUsageBaselineMessageIds(sendBaselineMessageIds);
       // One client-generated id for this turn's human input: the optimistic
       // display copy and the submitted message share it, so the render
       // snapshot confirms the exact identity it already shows instead of the
@@ -2318,10 +2436,14 @@ export function useThreadStream({
       // turn's anchor).
       const hideFromUI = options?.additionalKwargs?.hide_from_ui === true;
       const humanMessageId = `local-human-${uuid()}`;
-      localTurnAnchorRef.current = {
+      // 提交是用户事件回调，setLocalTurnAnchor 在回调内合法；锚点改 state
+      // 后渲染管线（mergedMessages）在同一重渲染内即读到新锚点，与旧 ref
+      // "写后等下一帧渲染读"相比不引入额外延迟。基线用本地变量直传（同
+      // 批 setState 闭包读不到刚写入的值）。
+      setLocalTurnAnchor({
         threadId,
         humanIdentity: hideFromUI ? null : `message:${humanMessageId}`,
-        baselineIdentities: new Set(pendingUsageBaselineMessageIdsRef.current),
+        baselineIdentities: sendBaselineMessageIds,
         preSubmitHistoryIdentities: new Set(
           visibleHistory.map(messageIdentity).filter(isNonEmptyString),
         ),
@@ -2336,7 +2458,7 @@ export function useThreadStream({
           ...visibleHistory,
           ...persistedMessages,
         ]),
-      };
+      });
 
       // Build optimistic files list with uploading status
       const optimisticFiles: FileInMessage[] = (message.files ?? []).map(
@@ -2363,10 +2485,12 @@ export function useThreadStream({
       }
 
       if (optimisticFiles.length > 0 && !hideFromUI) {
-        // Mock AI message while files are being uploaded
+        // Mock AI message while files are being uploaded. uuid instead of
+        // Date.now(): unique across rapid resubmits, and the compiler's
+        // purity rule treats the project uuid helper as render-safe here.
         newOptimistic.push({
           type: "ai",
-          id: `opt-ai-${Date.now()}`,
+          id: `opt-ai-${uuid()}`,
           content: t.uploads.uploadingFiles,
           additional_kwargs: { element: "task" },
         });
@@ -2497,7 +2621,7 @@ export function useThreadStream({
         setOptimisticThreadId(null);
         setLiveMessagesThreadId(null);
         setIsUploading(false);
-        localTurnAnchorRef.current = null;
+        setLocalTurnAnchor(null);
         if (!uploadFailureWasNotified) {
           // Gateway/model-provider exception bodies can contain private
           // diagnostics. Keep them in logs and show only product copy here.
@@ -2537,18 +2661,21 @@ export function useThreadStream({
         return false;
       }
       sendInFlightRef.current = true;
-      prevHumanMsgCountRef.current = humanMessageCount;
-      pendingUsageBaselineMessageIdsRef.current = new Set(
+      setPrevHumanMsgCount(humanMessageCount);
+      const replayBaselineMessageIds = new Set(
         persistedMessages
           .map(messageIdentity)
           .filter((id): id is string => Boolean(id)),
       );
-      localTurnAnchorRef.current = {
+      setPendingUsageBaselineMessageIds(replayBaselineMessageIds);
+      // 同上：编辑重放是用户事件回调内的锚点更新，setState 在回调内合法；
+      // 基线用本地变量直传（同批 setState 闭包读不到刚写入的值）。
+      const replayBaseAnchor: LocalTurnAnchor = {
         threadId,
         // Replay turns submit no new visible human; an edit replay adopts the
         // prepare response's replacement identity once it lands below.
         humanIdentity: null,
-        baselineIdentities: new Set(pendingUsageBaselineMessageIdsRef.current),
+        baselineIdentities: replayBaselineMessageIds,
         preSubmitHistoryIdentities: new Set(
           visibleHistory.map(messageIdentity).filter(isNonEmptyString),
         ),
@@ -2564,6 +2691,7 @@ export function useThreadStream({
           ...persistedMessages,
         ]),
       };
+      setLocalTurnAnchor(replayBaseAnchor);
       setLiveMessagesThreadId(threadId);
       listeners.current.onSend?.(threadId);
       let preparedSupersededRunId: string | null = null;
@@ -2573,23 +2701,29 @@ export function useThreadStream({
         const prepared = await prepare();
         preparedSupersededRunId = prepared.target_run_id;
         preparedSupersededMessageIds = getSupersededMessageIds(prepared);
-        prevHumanMsgCountRef.current = countHumanMessagesExcludingSuperseded(
-          persistedMessages,
-          preparedSupersededMessageIds,
+        setPrevHumanMsgCount(
+          countHumanMessagesExcludingSuperseded(
+            persistedMessages,
+            preparedSupersededMessageIds,
+          ),
         );
         const replacementHumanMessageId =
           "replacement_human_message_id" in prepared &&
           typeof prepared.replacement_human_message_id === "string"
             ? prepared.replacement_human_message_id
             : undefined;
-        const replayAnchor = localTurnAnchorRef.current;
-        if (replayAnchor?.threadId === threadId && replacementHumanMessageId) {
-          // The edit replay reuses the server-prepared replacement identity;
-          // supersede semantics stay with the prepare response.
-          localTurnAnchorRef.current = {
-            ...replayAnchor,
-            humanIdentity: `message:${replacementHumanMessageId}`,
-          };
+        // 函数式更新读取最新锚点：await prepare() 期间换线程收敛可能已把
+        // 锚点清空，与旧 ref 读取行为一致——只在锚点仍属于本线程时采纳
+        // 服务端预备的替换身份。
+        if (replacementHumanMessageId) {
+          setLocalTurnAnchor((previous) =>
+            previous?.threadId === threadId
+              ? {
+                  ...previous,
+                  humanIdentity: `message:${replacementHumanMessageId}`,
+                }
+              : previous,
+          );
         }
         const pendingReplay: PendingPreparedReplayMask = {
           kind: replacementHumanMessageId ? "edit" : "regenerate",
@@ -2647,7 +2781,7 @@ export function useThreadStream({
         setOptimisticMessages([]);
         setOptimisticThreadId(null);
         setLiveMessagesThreadId(null);
-        localTurnAnchorRef.current = null;
+        setLocalTurnAnchor(null);
         if (preparedSupersededRunId) {
           const supersededRunId = preparedSupersededRunId;
           pendingPreparedReplayRef.current = null;
@@ -2752,15 +2886,24 @@ export function useThreadStream({
     [submitPreparedReplay],
   );
 
-  // Cache the latest thread messages in a ref to compare against incoming history messages for deduplication,
-  // and to allow access to the full message list in onUpdateEvent without causing re-renders.
-  if (persistedMessages.length >= messagesRef.current.length) {
-    messagesRef.current = persistedMessages;
-  }
+  // Cache the latest thread messages in a ref to compare against incoming
+  // history messages for deduplication, and to allow access to the full
+  // message list in onUpdateEvent without causing re-renders. 渲染期不写
+  // ref：条件同步移到 commit 后 effect（读取方均为异步回调，P351 同款）。
+  useEffect(() => {
+    if (persistedMessages.length >= messagesRef.current.length) {
+      // 收缩保护要求先读后写（分页加载的 persistedMessages 短于缓存时保
+      // 留旧缓存）；渲染期已无任何读取方（P354 已全部转 state），消费方
+      // 均为流事件回调，精确豁免编译器对"effect 内读后写同一 ref"的保
+      // 守标记。
+      // eslint-disable-next-line react-hooks/immutability -- 读长度守卫后写，见上
+      messagesRef.current = persistedMessages;
+    }
+  }, [persistedMessages]);
 
   const rawVisibleOptimisticMessages = getVisibleOptimisticMessages(
     optimisticThreadId === currentViewThreadId ? optimisticMessages : [],
-    prevHumanMsgCountRef.current,
+    prevHumanMsgCount,
     humanMessageCount,
   );
   const visibleOptimisticMessages =
@@ -2768,45 +2911,36 @@ export function useThreadStream({
       ? EMPTY_MESSAGES
       : rawVisibleOptimisticMessages;
 
-  const transientHistoryOrder =
-    transientHistoryBridgeRef.current.length > 0 &&
-    transientHistoryThreadIdRef.current === threadId
+  // 桥活跃时把 persistedMessages 中的新身份累积进 order 骨架。合并幂等
+  //（无新增身份时返回输入引用本身，#4409 Phase 1 即为此设计），渲染期
+  // 条件 setState 同值跳过、条件自灭；替代旧"渲染期局部算 + commit 后
+  // effect 写回 ref"的两段式。
+  const extendedTransientHistoryOrder =
+    transientHistoryBridge.length > 0 && transientHistoryThreadId === threadId
       ? mergeTransientHistoryBridgeOrder(
-          transientHistoryOrderRef.current,
+          transientHistoryOrder,
           persistedMessages,
         )
-      : transientHistoryOrderRef.current;
+      : transientHistoryOrder;
+  if (extendedTransientHistoryOrder !== transientHistoryOrder) {
+    setTransientHistoryOrder(extendedTransientHistoryOrder);
+  }
   const previouslyRenderedOrder =
-    renderedMessageSnapshotRef.current.threadId === threadId
-      ? renderedMessageSnapshotRef.current.order
+    renderedMessageSnapshot.threadId === threadId
+      ? renderedMessageSnapshot.order
       : EMPTY_MESSAGE_IDENTITIES;
 
-  // Commit the extended non-rendering order skeleton after React commits this
-  // render. The local value above keeps this render correctly anchored without
-  // mutating a ref during render.
-  useEffect(() => {
-    if (
-      transientHistoryBridgeRef.current.length > 0 &&
-      transientHistoryThreadIdRef.current === threadId
-    ) {
-      transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
-        transientHistoryOrderRef.current,
-        persistedMessages,
-      );
-    }
-  }, [persistedMessages, threadId]);
-
-  // The transient-bridge refs mutate in lockstep with stream/history updates
-  // already captured by these deps, and resolveTransientHistoryBridge is
-  // idempotent for entries canonical history has absorbed, so memoizing on the
-  // coalesced snapshot cannot pin a stale bridge.
+  // The transient-bridge state updates in lockstep with stream/history
+  // updates already captured by these deps, and resolveTransientHistoryBridge
+  // is idempotent for entries canonical history has absorbed, so memoizing on
+  // the coalesced snapshot cannot pin a stale bridge.
   const mergedMessages = useMemo(() => {
     const effectiveHistory = resolveThreadTransientHistoryBridge(
       visibleHistory,
-      transientHistoryBridgeRef.current,
-      transientHistoryThreadIdRef.current,
+      transientHistoryBridge,
+      transientHistoryThreadId,
       threadId,
-      transientHistoryOrder,
+      extendedTransientHistoryOrder,
       previouslyRenderedOrder,
     );
     const merged = mergeMessages(
@@ -2814,10 +2948,8 @@ export function useThreadStream({
       renderMessages,
       visibleOptimisticMessages,
     );
-    const localTurnAnchor =
-      localTurnAnchorRef.current?.threadId === threadId
-        ? localTurnAnchorRef.current
-        : null;
+    const activeTurnAnchor =
+      localTurnAnchor?.threadId === threadId ? localTurnAnchor : null;
     const canonicalHistoryIdentities = new Set(
       visibleHistory.map(messageIdentity).filter(isNonEmptyString),
     );
@@ -2828,7 +2960,7 @@ export function useThreadStream({
     // after submit. Post-submit rescue and later external turns stay outside.
     const confirmedHistoryIdentities = getConfirmedPreSubmitHistoryIdentities(
       visibleHistory,
-      localTurnAnchor,
+      activeTurnAnchor,
     );
     // The current turn's run(s): visible ai/tool steps that appear in the live
     // checkpoint but are neither part of the pre-submit baseline nor already
@@ -2836,96 +2968,97 @@ export function useThreadStream({
     // must never be moved before their human.
     const currentTurnRunIds = getCurrentTurnRunIds(
       renderMessages,
-      localTurnAnchor ? localTurnAnchor.baselineIdentities : null,
+      activeTurnAnchor ? activeTurnAnchor.baselineIdentities : null,
       canonicalHistoryIdentities,
     );
-    if (localTurnAnchor?.humanIdentity) {
+    if (activeTurnAnchor?.humanIdentity) {
       // The surviving merged copy of the submitted human can be the run_id-less
       // optimistic one; recover the run from any rendered or canonical copy so
       // an interrupt-flushed current-run step is still recognised as ours.
       const anchorRunId =
         findMessageRunIdByIdentity(
           renderMessages,
-          localTurnAnchor.humanIdentity,
+          activeTurnAnchor.humanIdentity,
         ) ??
         findMessageRunIdByIdentity(
           effectiveHistory,
-          localTurnAnchor.humanIdentity,
+          activeTurnAnchor.humanIdentity,
         );
       if (anchorRunId) {
         currentTurnRunIds.add(anchorRunId);
       }
     }
-    return localTurnAnchor === null
+    return activeTurnAnchor === null
       ? restoreReconnectedTurnMessageOrder(merged)
       : restoreLocalTurnMessageOrder(
           merged,
-          localTurnAnchor.baselineIdentities,
+          activeTurnAnchor.baselineIdentities,
           confirmedHistoryIdentities,
           currentTurnRunIds,
-          localTurnAnchor.humanIdentity,
+          activeTurnAnchor.humanIdentity,
           canonicalHistoryIdentities,
         );
   }, [
+    extendedTransientHistoryOrder,
+    localTurnAnchor,
     previouslyRenderedOrder,
     renderMessages,
     threadId,
-    transientHistoryOrder,
+    transientHistoryBridge,
+    transientHistoryThreadId,
     visibleHistory,
     visibleOptimisticMessages,
   ]);
-  useEffect(() => {
-    // The committed render ledger excludes hidden control copies and the
-    // still-unconfirmed optimistic ones (keyed by identity, since the local
-    // input now shares its id with the submit instead of an `opt-` prefix):
-    // a failed send must never pin a message the server never saw.
-    const pendingOptimisticIdentities = new Set(
-      (optimisticThreadId === currentViewThreadId
-        ? optimisticMessages
-        : EMPTY_MESSAGES
-      )
-        .map(messageIdentity)
-        .filter(isNonEmptyString),
-    );
-    const visibleMergedMessages = mergedMessages.filter((message) => {
-      if (isHiddenFromUIMessage(message)) {
-        return false;
-      }
-      const identity = messageIdentity(message);
-      return (
-        identity === undefined || !pendingOptimisticIdentities.has(identity)
-      );
-    });
-    const previousLedger =
-      thread.isLoading &&
-      renderedMessageSnapshotRef.current.threadId === threadId
-        ? renderedMessageSnapshotRef.current.messages
-        : EMPTY_MESSAGES;
-    const renderedMessageLedger = mergeRenderedMessageLedger(
-      previousLedger,
-      visibleMergedMessages,
-      pendingSupersededMessageIds,
-    );
-    renderedMessageSnapshotRef.current = {
+  // The committed render ledger excludes hidden control copies and the
+  // still-unconfirmed optimistic ones (keyed by identity, since the local
+  // input now shares its id with the submit instead of an `opt-` prefix):
+  // a failed send must never pin a message the server never saw.
+  // 渲染期收敛（官方模式）：mergeRenderedMessageLedger 每次产新数组，
+  // 以身份序列同值比较作守卫（sameIdentityOrder），order 与 threadId 稳定
+  // 后条件自灭；替代旧无条件写的 effect（顺带消除内容相同时的冗余引用
+  // 替换）。ledger 身份集合由 merge 输入决定、order 只影响排列，收敛链
+  // 有界（最多 2-3 次重渲染），与旧 ref 版本跨渲染的惰性收敛终态一致。
+  const pendingOptimisticIdentities = new Set(
+    (optimisticThreadId === currentViewThreadId
+      ? optimisticMessages
+      : EMPTY_MESSAGES
+    )
+      .map(messageIdentity)
+      .filter(isNonEmptyString),
+  );
+  const visibleMergedMessages = mergedMessages.filter((message) => {
+    if (isHiddenFromUIMessage(message)) {
+      return false;
+    }
+    const identity = messageIdentity(message);
+    return identity === undefined || !pendingOptimisticIdentities.has(identity);
+  });
+  const previousLedger =
+    thread.isLoading && renderedMessageSnapshot.threadId === threadId
+      ? renderedMessageSnapshot.messages
+      : EMPTY_MESSAGES;
+  const renderedMessageLedger = mergeRenderedMessageLedger(
+    previousLedger,
+    visibleMergedMessages,
+    pendingSupersededMessageIds,
+  );
+  const renderedMessageOrder = renderedMessageLedger
+    .map(messageIdentity)
+    .filter(isNonEmptyString);
+  if (
+    renderedMessageSnapshot.threadId !== (threadId ?? null) ||
+    !sameIdentityOrder(renderedMessageSnapshot.order, renderedMessageOrder)
+  ) {
+    setRenderedMessageSnapshot({
       threadId: threadId ?? null,
       messages: renderedMessageLedger,
-      order: renderedMessageLedger
-        .map(messageIdentity)
-        .filter(isNonEmptyString),
-    };
-  }, [
-    mergedMessages,
-    optimisticMessages,
-    optimisticThreadId,
-    currentViewThreadId,
-    pendingSupersededMessageIds,
-    thread.isLoading,
-    threadId,
-  ]);
+      order: renderedMessageOrder,
+    });
+  }
   const pendingUsageMessages = thread.isLoading
     ? getMessagesAfterBaseline(
         persistedMessages,
-        pendingUsageBaselineMessageIdsRef.current,
+        pendingUsageBaselineMessageIds,
       )
     : [];
 
@@ -3056,6 +3189,10 @@ export function useThreadHistory(
     [currentMessageRows, isAuthoritativeComplete, previousRows],
   );
 
+  // 论证保留 effect 内 setState（react-hooks/set-state-in-effect，P351 同
+  // 款）：retainedHistory 是"权限/翻页间隙内保留已加载行"的时序语义——
+  // readEnabled 翻转与 messageRows 重算之间的过渡帧必须沿用旧快照，渲
+  // 染期化会把保留窗口提前一拍、改变 messages 的可见过渡。
   useEffect(() => {
     if (!readEnabled) {
       setRetainedHistory({ threadId, rows: EMPTY_RUN_MESSAGES });
@@ -3086,12 +3223,15 @@ export function useThreadHistory(
     }
   }, [readEnabled, historyQuery.error]);
 
+  // 解构出稳定的 fetchNextPage：依赖整个 historyQuery 对象会让 loadMore
+  // 身份每次渲染都变化（查询对象每渲染新引用），引发消费方 effect 重跑。
+  const { fetchNextPage: fetchNextHistoryPage } = historyQuery;
   const loadMore = useCallback(() => {
     if (!readEnabled || !threadId) {
       return;
     }
-    void historyQuery.fetchNextPage();
-  }, [historyQuery.fetchNextPage, readEnabled, threadId]);
+    void fetchNextHistoryPage();
+  }, [fetchNextHistoryPage, readEnabled, threadId]);
 
   return {
     messages,

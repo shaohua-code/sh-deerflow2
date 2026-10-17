@@ -1,13 +1,13 @@
 import type { Message } from "@langchain/langgraph-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { MessageListItem } from "@/components/workspace/messages/message-list-item";
 import { I18nContext } from "@/core/i18n/context";
 import { enUS } from "@/core/i18n/locales/en-US";
-import { threadHistoryQueryKey } from "@/core/threads/hooks";
 import * as messageUtils from "@/core/messages/utils";
+import { threadHistoryQueryKey } from "@/core/threads/hooks";
 
 const mocks = rs.hoisted(() => ({
   user: { current: { permissions: ["threads:write", "threads:delete"] } },

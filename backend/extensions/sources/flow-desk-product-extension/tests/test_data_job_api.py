@@ -14,11 +14,12 @@ from deerflow_extension_api import (
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from flow_desk_product_extension.api import _data_job_artifact_filename, build_router
-from flow_desk_product_extension.settings import ProductSettingsStore
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+from flow_desk_product_extension.api import _data_job_artifact_filename, build_router
+from flow_desk_product_extension.settings import ProductSettingsStore
 
 _DATA_JOB_PERMISSIONS = (
     "preferences:read",

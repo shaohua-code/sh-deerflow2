@@ -32,24 +32,23 @@ const NEW_CHAT_SCOPE_UNSET = Symbol("deerflow.newChatScopeUnset");
 export function useThreadChat() {
   const { thread_id: threadIdFromPath } = useParams<{ thread_id: string }>();
   const pathname = usePathname();
-  // Render-time values use the committed browser URL. The sync effect below
+  // Render-time values use the committed browser URL. The sync logic below
   // intentionally watches the reactive pathname so client navigation still
   // schedules a reset when window.location is stale during render.
   const actualPathname =
     typeof window === "undefined" ? pathname : window.location.pathname;
   const isNewPath = actualPathname.endsWith("/new");
-  const newThreadIdRef = useRef<string | null>(
+  // new-chat 身份从 ref 改为 state：其读取均发生在渲染期（useState 初始化
+  // 与返回值），state 天然渲染可见，满足编译器"渲染期不读写 ref"约束，
+  // 语义不变（仍是同一身份值跨渲染保持）。
+  const [newThreadId, setNewThreadId] = useState<string | null>(
     threadIdFromPath === "new" ? uuid() : null,
   );
-
-  if (isNewPath && !newThreadIdRef.current) {
-    newThreadIdRef.current = uuid();
-  }
 
   const searchParams = useSearchParams();
   const [threadId, setThreadIdState] = useState(() => {
     return threadIdFromPath === "new"
-      ? (newThreadIdRef.current ?? uuid())
+      ? (newThreadId ?? uuid())
       : threadIdFromPath;
   });
 
@@ -57,31 +56,43 @@ export function useThreadChat() {
     () => threadIdFromPath === "new",
   );
 
-  const resetToNewThread = useCallback(() => {
-    const nextThreadId = uuid();
-    newThreadIdRef.current = nextThreadId;
-    setIsNewThreadState(true);
-    setThreadIdState(nextThreadId);
-  }, []);
-
-  useEffect(() => {
-    if (pathname.endsWith("/new")) {
-      const nextThreadId = newThreadIdRef.current ?? uuid();
-      newThreadIdRef.current = nextThreadId;
-      setIsNewThreadState(true);
-      setThreadIdState(nextThreadId);
-      return;
+  // 路由身份同步：官方 adjusting-state-when-props-change 模式替代 effect 内
+  // 同步 setState（避免级联渲染）。每个字段仅在偏离期望值时更新，条件自灭，
+  // 无渲染循环；返回值在同一次提交内即为新值，比旧 effect 快一拍。
+  if (pathname.endsWith("/new")) {
+    const nextThreadId = newThreadId ?? uuid();
+    if (newThreadId === null) {
+      setNewThreadId(nextThreadId);
     }
-    newThreadIdRef.current = null;
+    if (!isNewThreadState) {
+      setIsNewThreadState(true);
+    }
+    if (threadId !== nextThreadId) {
+      setThreadIdState(nextThreadId);
+    }
+  } else {
+    if (newThreadId !== null) {
+      setNewThreadId(null);
+    }
     // Native history updates the canonical pathname but preserves the route
     // tree, so useParams may still return the stale "new" value. Avoid passing
     // it to downstream hooks (e.g. useStream), which would cause a 422.
-    if (threadIdFromPath === "new") {
-      return;
+    if (threadIdFromPath !== "new") {
+      if (isNewThreadState) {
+        setIsNewThreadState(false);
+      }
+      if (threadId !== threadIdFromPath) {
+        setThreadIdState(threadIdFromPath);
+      }
     }
-    setIsNewThreadState(false);
-    setThreadIdState(threadIdFromPath);
-  }, [pathname, threadIdFromPath]);
+  }
+
+  const resetToNewThread = useCallback(() => {
+    const nextThreadId = uuid();
+    setNewThreadId(nextThreadId);
+    setIsNewThreadState(true);
+    setThreadIdState(nextThreadId);
+  }, []);
 
   // A new-chat identity is minted for the entry scope (the new chat's
   // `project` query). The sidebar "New chat" link can leave
@@ -110,7 +121,7 @@ export function useThreadChat() {
     // flip also runs every fence keyed on `threadId` (composer goal aborts,
     // chat-page submission epoch).
     const nextThreadId = uuid();
-    newThreadIdRef.current = nextThreadId;
+    setNewThreadId(nextThreadId);
     setIsNewThreadState(true);
     setThreadIdState(nextThreadId);
   }, [isNewPath, pathname, searchParams]);
@@ -145,13 +156,13 @@ export function useThreadChat() {
   }, [resetToNewThread, threadId, threadIdFromPath]);
 
   const setThreadId = useCallback((nextThreadId: string) => {
-    newThreadIdRef.current = null;
+    setNewThreadId(null);
     setThreadIdState(nextThreadId);
   }, []);
 
   const setIsNewThread = useCallback((nextIsNewThread: boolean) => {
     if (!nextIsNewThread) {
-      newThreadIdRef.current = null;
+      setNewThreadId(null);
     }
     setIsNewThreadState(nextIsNewThread);
   }, []);
@@ -160,7 +171,7 @@ export function useThreadChat() {
     actualPathname.startsWith(`${SHOWCASE_ROUTE_PREFIX}/`) ||
     searchParams.get("mock") === "true";
   return {
-    threadId: isNewPath ? (newThreadIdRef.current ?? threadId) : threadId,
+    threadId: isNewPath ? (newThreadId ?? threadId) : threadId,
     setThreadId,
     isNewThread: isNewPath ? true : isNewThreadState,
     setIsNewThread,

@@ -14,6 +14,7 @@ import {
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -22,7 +23,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
@@ -122,10 +122,12 @@ type SettingsDialogProps = React.ComponentProps<typeof Dialog> & {
 export function SettingsDialog(props: SettingsDialogProps) {
   const {
     defaultSection = "appearance",
-    onOpenChange,
     onSectionRequestRejected,
     ...dialogProps
   } = props;
+  // Radix 的 onOpenChange 是方法简写签名；解构会触发 unbound-method，
+  // 用本地箭头函数固定调用形态（props 未传时为 no-op，行为不变）。
+  const onOpenChange = (open: boolean) => props.onOpenChange?.(open);
   const { t } = useI18n();
   const { user } = useAuth();
   const unsavedChangesRef = useRef<SettingsUnsavedChanges | null>(null);
@@ -148,7 +150,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       setConfirmingClose(true);
       return;
     }
-    onOpenChange?.(false);
+    onOpenChange(false);
   }
 
   function discardAndClose() {
@@ -157,7 +159,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
     changes?.discard();
     handleUnsavedChanges(null);
     setConfirmingClose(false);
-    onOpenChange?.(false);
+    onOpenChange(false);
   }
 
   return (
@@ -165,7 +167,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       <Dialog
         {...dialogProps}
         onOpenChange={(open) => {
-          if (open) onOpenChange?.(true);
+          if (open) onOpenChange(true);
           else requestDialogClose();
         }}
       >
@@ -411,7 +413,11 @@ function SettingsDialogBody({
             {activeSection === "memory" && <MemorySettingsPage />}
             {activeSection === "subagents" && <SubagentSettingsPage />}
             {activeSection === "notification" && <NotificationSettingsPage />}
-            {activeSection === "channels" && <ChannelsSettingsPage />}
+            {activeSection === "channels" && (
+              <ChannelsSettingsPage
+                onUnsavedChangesChange={onUnsavedChangesChange}
+              />
+            )}
             {activeSection === "about" && <AboutSettingsPage />}
           </div>
         </ScrollArea>

@@ -123,25 +123,13 @@ class IamAuthorizationCredentials(Mapping[str, str]):
         async with self._refresh_lock:
             now_monotonic = time.monotonic()
             now_utc = datetime.now(UTC)
-            near_expiry = (
-                self._access_expires_at is None
-                or self._access_expires_at <= now_utc + timedelta(seconds=_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
-            )
-            if (
-                not force
-                and not near_expiry
-                and now_monotonic - self._last_resolved_at < _RUN_SESSION_REVALIDATE_SECONDS
-            ):
+            near_expiry = self._access_expires_at is None or self._access_expires_at <= now_utc + timedelta(seconds=_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
+            if not force and not near_expiry and now_monotonic - self._last_resolved_at < _RUN_SESSION_REVALIDATE_SECONDS:
                 return
 
             try:
                 tokens = await self._resolve_tokens()
-                if (
-                    tokens is None
-                    or tokens.subject != self._values["iam_subject"]
-                    or tokens.tenant_id != self._values["iam_tenant_id"]
-                    or not tokens.access_token
-                ):
+                if tokens is None or tokens.subject != self._values["iam_subject"] or tokens.tenant_id != self._values["iam_tenant_id"] or not tokens.access_token:
                     raise IamTokenVaultError("IAM token-vault session is no longer active")
                 self._values = {
                     "iam_access_token": tokens.access_token,
@@ -192,9 +180,7 @@ class IamTokenVaultCipher:
             raise IamTokenVaultError("IAM token-vault token purpose is invalid")
         return json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("ascii")
 
-    def encrypt(
-        self, token: str, *, issuer: str, subject: str, tenant_id: str, session_id: str, token_type: str
-    ) -> str:
+    def encrypt(self, token: str, *, issuer: str, subject: str, tenant_id: str, session_id: str, token_type: str) -> str:
         """Encrypt one token and return a versioned URL-safe envelope."""
         if not isinstance(token, str) or not token:
             raise IamTokenVaultError("IAM token is empty or exceeds the supported size")
@@ -204,27 +190,17 @@ class IamTokenVaultCipher:
             raise IamTokenVaultError("IAM token is not valid UTF-8") from None
         if len(plaintext) > _MAX_TOKEN_BYTES:
             raise IamTokenVaultError("IAM token is empty or exceeds the supported size")
-        aad = self._associated_data(
-            issuer=issuer, subject=subject, tenant_id=tenant_id, session_id=session_id, token_type=token_type
-        )
+        aad = self._associated_data(issuer=issuer, subject=subject, tenant_id=tenant_id, session_id=session_id, token_type=token_type)
         nonce = secrets.token_bytes(_NONCE_BYTES)
         ciphertext = self._aesgcm.encrypt(nonce, plaintext, aad)
         encoded = base64.urlsafe_b64encode(nonce + ciphertext).rstrip(b"=").decode("ascii")
         return f"{_VERSION}.{encoded}"
 
-    def decrypt(
-        self, envelope: str, *, issuer: str, subject: str, tenant_id: str, session_id: str, token_type: str
-    ) -> str:
+    def decrypt(self, envelope: str, *, issuer: str, subject: str, tenant_id: str, session_id: str, token_type: str) -> str:
         """Decrypt only when the persisted identity context matches the AAD."""
-        if (
-            not isinstance(envelope, str)
-            or len(envelope) > _MAX_ENVELOPE_CHARS
-            or not envelope.startswith(f"{_VERSION}.")
-        ):
+        if not isinstance(envelope, str) or len(envelope) > _MAX_ENVELOPE_CHARS or not envelope.startswith(f"{_VERSION}."):
             raise IamTokenVaultError("IAM token-vault envelope is malformed or unsupported")
-        aad = self._associated_data(
-            issuer=issuer, subject=subject, tenant_id=tenant_id, session_id=session_id, token_type=token_type
-        )
+        aad = self._associated_data(issuer=issuer, subject=subject, tenant_id=tenant_id, session_id=session_id, token_type=token_type)
         encoded = envelope[len(_VERSION) + 1 :]
         if not encoded or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
             raise IamTokenVaultError("IAM token-vault envelope is malformed or unsupported")
@@ -449,13 +425,9 @@ class IamTokenVaultRepository:
                 refresh_expires_in = _refresh_value(response, "refresh_expires_in")
                 if not isinstance(access_token, str) or not access_token or type(expires_in) is not int or expires_in <= 0:
                     raise IamTokenVaultError("IAM refresh response is incomplete")
-                if replacement_refresh_token is not None and (
-                    not isinstance(replacement_refresh_token, str) or not replacement_refresh_token
-                ):
+                if replacement_refresh_token is not None and (not isinstance(replacement_refresh_token, str) or not replacement_refresh_token):
                     raise IamTokenVaultError("IAM refresh response contains an invalid refresh token")
-                if refresh_expires_in is not None and (
-                    type(refresh_expires_in) is not int or refresh_expires_in <= 0
-                ):
+                if refresh_expires_in is not None and (type(refresh_expires_in) is not int or refresh_expires_in <= 0):
                     raise IamTokenVaultError("IAM refresh response contains an invalid refresh lifetime")
 
                 next_refresh_token = replacement_refresh_token or current.refresh_token
@@ -566,11 +538,7 @@ async def load_iam_authorization_attributes(
         return {}
 
     provider_config = provider_configs.get(provider_id)
-    if (
-        provider_config is None
-        or getattr(provider_config, "iam_token_vault_enabled", False) is not True
-        or "offline_access" not in (getattr(provider_config, "scopes", None) or [])
-    ):
+    if provider_config is None or getattr(provider_config, "iam_token_vault_enabled", False) is not True or "offline_access" not in (getattr(provider_config, "scopes", None) or []):
         return {}
     issuer = getattr(provider_config, "issuer", None)
     refresh_tokens = getattr(oidc_service, "refresh_tokens", None)
@@ -594,9 +562,7 @@ async def load_iam_authorization_attributes(
             issuer=issuer,
             subject=subject,
         )
-        if current is not None and current.access_expires_at <= datetime.now(UTC) + timedelta(
-            seconds=_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
-        ):
+        if current is not None and current.access_expires_at <= datetime.now(UTC) + timedelta(seconds=_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
             current = await repository.load_or_refresh_for_identity(
                 user_id=user_id,
                 session_id=session_id,
@@ -711,9 +677,7 @@ def _refresh_value(response: object, name: str) -> object | None:
     return getattr(response, name, None)
 
 
-async def persist_iam_authentication(
-    *, user: object, session_id: str, provider_id: str, issuer: str, authentication: object
-) -> None:
+async def persist_iam_authentication(*, user: object, session_id: str, provider_id: str, issuer: str, authentication: object) -> None:
     """Validate callback identity and persist its tokens only in the encrypted vault."""
     identity = getattr(authentication, "identity", None)
     access_token = getattr(authentication, "access_token", None)
@@ -724,20 +688,10 @@ async def persist_iam_authentication(
     claims = getattr(identity, "claims", None)
     tenant_id = claims.get("tenant_id") if isinstance(claims, dict) else None
 
-    if (
-        not isinstance(subject, str)
-        or not isinstance(tenant_id, str)
-        or not tenant_id
-        or not isinstance(access_token, str)
-        or not isinstance(refresh_token, str)
-    ):
+    if not isinstance(subject, str) or not isinstance(tenant_id, str) or not tenant_id or not isinstance(access_token, str) or not isinstance(refresh_token, str):
         raise IamTokenVaultError("IAM callback did not provide a verified tenant and refreshable token pair")
 
-    if (
-        getattr(user, "oauth_provider", None) != provider_id
-        or getattr(user, "oauth_id", None) != subject
-        or not getattr(user, "is_active", False)
-    ):
+    if getattr(user, "oauth_provider", None) != provider_id or getattr(user, "oauth_id", None) != subject or not getattr(user, "is_active", False):
         raise IamTokenVaultError("IAM callback identity does not match the active DeerFlow account")
 
     session_factory = get_session_factory()
@@ -773,5 +727,3 @@ async def delete_iam_session(*, user_id: str, session_id: str) -> None:
                 IamOidcTokenVaultRow.session_id == session_id,
             )
         )
-
-

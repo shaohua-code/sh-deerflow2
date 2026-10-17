@@ -19,16 +19,17 @@ export function useSpecificChatMode() {
     return t.inputBox.createSkillPrompt;
   }, [threadIdFromPath, searchParams, t.inputBox.createSkillPrompt]);
   const lastInitialValueRef = useRef<string | undefined>(undefined);
-  const setInputRef = useRef(promptInputController.textInput.setInput);
-  setInputRef.current = promptInputController.textInput.setInput;
   useEffect(() => {
+    // 延迟聚焦期间控制器可能更替，把当前 setter 捕获到 effect 局部，
+    // 避免渲染期写 ref；同时清理定时器防止组件卸载后写入。
+    const setInput = promptInputController.textInput.setInput;
     if (
       inputInitialValue &&
       inputInitialValue !== lastInitialValueRef.current
     ) {
       lastInitialValueRef.current = inputInitialValue;
-      setTimeout(() => {
-        setInputRef.current(inputInitialValue);
+      const timer = setTimeout(() => {
+        setInput(inputInitialValue);
         const textarea = document.querySelector("textarea");
         if (textarea) {
           textarea.focus();
@@ -36,6 +37,7 @@ export function useSpecificChatMode() {
           textarea.selectionEnd = textarea.value.length;
         }
       }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [inputInitialValue]);
+  }, [inputInitialValue, promptInputController.textInput.setInput]);
 }

@@ -167,11 +167,12 @@ describe("SettingsDialog responsive navigation", () => {
       </I18nProvider>,
     );
 
-    expect(
+    // 统一 unsaved-changes 契约：脏草稿下外部切换请求先弹放弃确认，
+    // 确认框打开期间主内容被 Radix 遮出可访问树，先点 "Keep editing"
+    // 走完拒绝流程，再断言 section 未被切换。
+    fireEvent.click(
       await screen.findByRole("button", { name: "Keep editing" }),
-    ).toBeTruthy();
-    expect(getSettingsSectionSelect().value).toBe("product");
-    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    );
 
     expect(getSettingsSectionSelect().value).toBe("product");
     expect(mocks.onSectionRequestRejected).toHaveBeenCalledWith("product");

@@ -660,9 +660,9 @@ describe("ProjectDocumentsSection", () => {
     const dialog = screen.getByRole("dialog");
     const descriptionId = dialog.getAttribute("aria-describedby");
     expect(descriptionId).toBeTruthy();
-    expect(
-      document.getElementById(descriptionId as string)?.textContent,
-    ).toContain("Choose the name this conversation file will use");
+    expect(document.getElementById(descriptionId!)?.textContent).toContain(
+      "Choose the name this conversation file will use",
+    );
     const input = screen.getByLabelText("Shelf name");
     expect(input).toHaveProperty("value", "chart.png");
   });
@@ -784,9 +784,9 @@ describe("ProjectDocumentsSection", () => {
     const dialog = await screen.findByRole("dialog");
     const descriptionId = dialog.getAttribute("aria-describedby");
     expect(descriptionId).toBeTruthy();
-    expect(
-      document.getElementById(descriptionId as string)?.textContent,
-    ).toContain("Preview this project document");
+    expect(document.getElementById(descriptionId!)?.textContent).toContain(
+      "Preview this project document",
+    );
     // The unified PDF mechanism: an iframe WITHOUT sandbox (Chromium blocks
     // its built-in viewer inside sandbox=""), same as the artifact detail
     // view.

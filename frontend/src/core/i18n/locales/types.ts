@@ -666,6 +666,10 @@ export interface Translations {
       titlePlaceholder: string;
       promptPlaceholder: string;
       submit: string;
+      dirtyTitle: string;
+      dirtyDescription: string;
+      discard: string;
+      continueEditing: string;
     };
     status: {
       enabled: string;
@@ -884,6 +888,7 @@ export interface Translations {
     placeholder: string;
     send: string;
     sendFailed: string;
+    threadWritePermissionRequired: string;
     noContext: string;
     continuing: string;
     selectionCrossesMessages: string;

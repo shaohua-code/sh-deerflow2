@@ -22,8 +22,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useCreateProject, useProjects } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useMoveThreadToProject } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
 import { projectIdOfThread } from "@/core/threads/utils";

@@ -83,12 +83,38 @@ export function useBrowserStream(
   > | null>(null);
   // Read the seed at connect time only; it must not be a reconnect dependency.
   const seedRef = useRef(seedUrl);
-  seedRef.current = seedUrl;
   // Latest live page URL reported by the server, used to decide whether an
   // open stream already shows the seed target (avoids redundant navigations).
   const liveUrlRef = useRef<string | null>(null);
   const onNavRejectedRef = useRef(onNavRejected);
-  onNavRejectedRef.current = onNavRejected;
+
+  // 禁用期渲染期条件重置（官方 adjusting-state 模式，条件自灭）：state
+  // 在同一提交内生效；ref 写与缓冲清理留在下方 commit 后 effect（渲染期
+  // 不写 ref）。enabled=false 稳态下所有条件为假，不再触发。
+  if (!enabled) {
+    if (reconnectGeneration !== 0) {
+      setReconnectGeneration(0);
+    }
+    if (liveUrl !== null) {
+      setLiveUrl(null);
+    }
+    if (tabs.length > 0) {
+      setTabs([]);
+    }
+    if (status !== "idle") {
+      setStatus("idle");
+    }
+  }
+
+  // seed/回调最新值缓存：渲染期不写 ref，commit 后同步（P351 同款模式）。
+  // 读取方均为 effect/事件回调，且本 effect 声明在 WebSocket effect 之前，
+  // 按声明顺序先同步再连接，无渲染与提交之间的读取窗口。
+  useEffect(() => {
+    seedRef.current = seedUrl;
+  });
+  useEffect(() => {
+    onNavRejectedRef.current = onNavRejected;
+  });
 
   const sendInput = useCallback((event: BrowserInputEvent) => {
     const socket = socketRef.current;
@@ -112,23 +138,27 @@ export function useBrowserStream(
     if (enabled) {
       return;
     }
+    // state 部分已在上方渲染期条件重置；这里只做渲染期不允许的 ref 写
+    // 与外部缓冲清理。
     reconnectAttemptRef.current = 0;
-    setReconnectGeneration(0);
     frameBuffer.dispose();
-    setLiveUrl(null);
-    setTabs([]);
     liveUrlRef.current = null;
   }, [enabled, frameBuffer, threadId]);
 
   useEffect(() => {
     if (!enabled) {
-      setStatus("idle");
       liveUrlRef.current = null;
       return;
     }
 
     let closedByEffect = false;
     let reconnectTimer: number | null = null;
+    // 论证保留 effect 内 setState（react-hooks/set-state-in-effect）：
+    // "connecting" 是 WebSocket 生命周期状态机的入口转换，语义绑定本
+    // effect 的重新执行（重连 generation++ 或 threadId 切换时回到
+    // connecting）；渲染期条件无法表达"effect 将重跑"这一时机——open
+    // 稳态下任何重渲染都会被错误拉回 connecting。onopen/onclose 的
+    // setStatus 均在外部系统事件回调内，属合法的订阅镜像。
     setStatus("connecting");
     // browserStreamURL treats empty/undefined seed identically (no seed param),
     // so the raw ref value is fine here. Record the seed optimistically so the

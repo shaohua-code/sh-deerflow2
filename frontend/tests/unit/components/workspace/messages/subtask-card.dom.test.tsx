@@ -6,6 +6,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+
+import { SubtaskCard } from "@/components/workspace/messages/subtask-card";
 import type { Subtask } from "@/core/tasks/types";
 
 const mocks = rs.hoisted(() => ({
@@ -58,8 +60,6 @@ rs.mock("@/core/tasks/context", () => ({
   useSubtask: () => mocks.task.current,
   useUpdateSubtask: () => mocks.updateSubtask,
 }));
-
-import { SubtaskCard } from "@/components/workspace/messages/subtask-card";
 
 function renderCard() {
   return render(
@@ -166,7 +166,8 @@ describe("SubtaskCard historical step permissions", () => {
     fireEvent.click(screen.getByRole("button"));
     await waitFor(() => expect(requestSignal).toBeDefined());
 
-    mocks.task.current.steps.push({
+    // 夹具保证 steps 已初始化为空数组；noUncheckedIndexedAccess 之外的可选字段在此显式断言。
+    mocks.task.current.steps!.push({
       kind: "tool",
       message_index: 1,
       text: "",

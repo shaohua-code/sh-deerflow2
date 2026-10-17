@@ -236,7 +236,9 @@ describe("product preference data-job API", () => {
   it("reuses a caller-provided idempotency key when replaying a task request", async () => {
     const stableKey = "same-request-after-network-timeout";
     const threadJob = { ...job, scope: ["threads"] as ["threads"] };
-    mocks.fetch.mockResolvedValue(
+    // 每次调用返回新的 Response：mockResolvedValue 复用同一实例会让第二
+    // 次读取报 "Body has already been read"（真实 fetch 每次都给新响应）。
+    mocks.fetch.mockImplementation(async () =>
       jsonResponse({ api_version: 1, job: threadJob }),
     );
 
@@ -249,7 +251,7 @@ describe("product preference data-job API", () => {
     expect(exportKeys).toEqual([stableKey, stableKey]);
 
     mocks.fetch.mockReset();
-    mocks.fetch.mockResolvedValue(
+    mocks.fetch.mockImplementation(async () =>
       jsonResponse({
         api_version: 1,
         job: { ...threadJob, kind: "deletion" },

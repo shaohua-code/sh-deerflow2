@@ -37,13 +37,13 @@ import {
   getDataJobFailureReason,
   isRetryableDataJobFailure,
 } from "@/product/data-job-failure";
+import { getDataJobRequiredPermissions } from "@/product/data-job-permissions";
 import {
   clearPendingDataJobSubmission,
   readPendingDataJobSubmission,
   savePendingDataJobSubmission,
   type PendingDataJobSubmission,
 } from "@/product/data-job-submission";
-import { getDataJobRequiredPermissions } from "@/product/data-job-permissions";
 import { useProductDataCapabilities } from "@/product/hooks";
 import {
   useCancelProductDataJob,

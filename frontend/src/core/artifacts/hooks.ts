@@ -75,14 +75,16 @@ export function useArtifactContent({
       userId,
       filepath,
       threadId,
-      isMock,
+      // useThread 上下文的 isMock 是可选布尔；归一后进 queryKey，
+      // 保持同一挂载周期内键值稳定（undefined 与 false 等价语义）。
+      Boolean(isMock),
       fullContentRequested,
     ),
     queryFn: ({ signal }) => {
       return loadArtifactContent({
         filepath,
         threadId,
-        isMock,
+        isMock: Boolean(isMock),
         full: fullContentRequested,
         signal,
       });

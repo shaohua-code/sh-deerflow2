@@ -7,14 +7,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from deerflow_extension_api import ExtensionRuntimeDeps
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
 from flow_desk_product_extension.settings import (
     DataJobIdempotencyConflict,
     DataJobInProgressConflict,
     DataJobRateLimitError,
     ProductSettingsStore,
 )
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 
 def test_data_job_is_durable_owner_scoped_and_idempotent(tmp_path) -> None:

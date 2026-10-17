@@ -4,7 +4,7 @@
 
 `useSkills` 按账号缓存技能目录并传递 AbortSignal；`skills:read` 明确拒绝时只清理该账号，调用方停用不清理。创建需要 `runs:create`；安装与开关遵循 `skills:write`、`skills:admin` 与管理员角色。
 
-记忆设置页的 `core/memory/hooks.ts` query key 必须包含认证用户 ID；明确撤销 `memory:read` 或切换账号时取消请求并清除旧 owner 缓存。记忆读取、导出和写入 API 都携带 `X-Expected-User-Id`，Gateway 在访问记忆存储前核对当前会话身份。Mutation 只失效发起操作的账号缓存，不把迟到响应直接写回缓存；导入草稿、事实编辑/删除和清空确认也绑定 owner，账号切换时清除，导出请求取消且忽略迟到回调。继续兼容不带此请求头的旧 API 客户端。
+记忆设置页的 `core/memory/hooks.ts` query key 必须包含认证用户 ID；明确撤销 `memory:read`（由 hook 内部判定）或切换账号时取消请求并清除旧 owner 缓存，调用方停用只隐藏、不清理缓存。记忆读取、导出和写入 API 都携带 `X-Expected-User-Id`，Gateway 在访问记忆存储前核对当前会话身份。Mutation 只失效发起操作的账号缓存，不把迟到响应直接写回缓存；导入草稿、事实编辑/删除和清空确认也绑定 owner，账号切换时清除，导出请求取消且忽略迟到回调。继续兼容不带此请求头的旧 API 客户端。
 
 产物面板的 `sessionStorage` v2 键由认证用户 ID 与 pathname 共同组成，只保存产物路径列表、选中路径和面板开关状态；正文编辑草稿仍只在组件内存中。旧 v1 键仅含 pathname，无法证明属于哪个账号，因此不能自动迁入任一已登录用户；保留旧键但不读取。账号或路径变化时，先完成新键水合，再写入新状态，避免旧渲染帧覆盖新账号的存储。
 
@@ -87,9 +87,11 @@
    bounded error and attempt count; retryable failures use backend backoff,
    while a permanent rejection or exhausted five-attempt budget is shown as
    stopped rather than implying that retries will continue.
-   Their GET hooks consume React Query's AbortSignal and cancel/remove the
-   thread-and-user scoped list/detail cache when `threads:read` is revoked;
-   cancellation mutations must not write returned task data back into a cache.
+   Their GET hooks consume React Query's AbortSignal; explicit `threads:read`
+   denial cancels and removes that owner's thread-scoped list/detail cache in
+   the same frame, while caller-disable (feature off or collapsed detail) only
+   hides it. Cancellation mutations must not write returned task data back into
+   a cache.
    Explicit durable native-subagent batches use `core/subagent-batches` and
    `ThreadSubagentBatches`. `/api/features` reports SQL-repository availability
    separately from the startup worker. A running worker exposes the trigger on
@@ -97,8 +99,10 @@
    durable history visible in read-only mode for inspection and JSONL export,
    while deployments with neither a worker nor history keep the trigger hidden.
    Batch history and item pages require `threads:read`, are keyed by both thread
-   and authenticated user, consume React Query's AbortSignal, and clear their
-   scoped caches when reads are disabled. Pause/resume/cancel/retry requires
+   and authenticated user, and consume React Query's AbortSignal. Explicit read
+   denial clears that owner's thread-scoped caches in the same frame;
+   caller-disable (repository unavailable or collapsed items) only hides them.
+   Pause/resume/cancel/retry requires
    `threads:write`; mutation variables carry the initiating user scope so a
    late success invalidates only that user's cached history.
    The panel renders bounded progress and incrementally paged item previews, controls pause/resume/cancel,
@@ -260,7 +264,7 @@ Delete preflight requires a fresh, user-scoped capability read; unknown/failure 
 - `src/app/workspace/chats/[thread_id]/page.tsx` gates the Workspace Browser trigger and browser right panel on `/api/features -> browser_control.enabled`; `src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` applies the same capability gate and additionally requires the Custom Agent's tool groups to be unrestricted or include `browser`. Default/failed feature discovery hides the browser control so optional backend installs do not show a dead Live socket.
 - `src/app/workspace/chats/[thread_id]/page.tsx` and `src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` own active-goal display state for their composer overlays.
 - `src/components/workspace/messages/message-list.tsx` owns human-input card answered/latest/pending gating; entry pages only translate a submitted card response into `sendMessage` calls.
-- `src/components/workspace/sidecar/sidecar-panel.tsx` owns Side Chat send/delete failure feedback. Route failures through `core/sidecar/error-feedback.ts`: retain the original exception in diagnostics, show the operation's localized product message, and keep pending references when a send fails. Cover both operations in the sidecar feedback regression.
+- `src/components/workspace/sidecar/sidecar-panel.tsx` owns Side Chat send/delete failure feedback. Route failures through `core/sidecar/error-feedback.ts`: retain the original exception in diagnostics, show the operation's localized product message, and keep pending references when a send fails. Cover both operations in the sidecar feedback regression. Sidecar Gateway calls preflight their route grants via `getChatSubmissionBlock`: creating a sidecar thread requires `threads:write` and sending requires `runs:create`, with localized toasts and preserved drafts on denial; the provider's restore probe skips `threads.search` while `threads:read` is explicitly denied and resumes after the grant returns.
 - `src/components/workspace/browser-view/browser-view-panel.tsx` forwards each physical pointer click as one `click` input; do not also emit `down`/`up` for the same gesture because the remote Playwright click would run twice.
 - `src/components/workspace/browser-view/use-browser-stream.ts` requests binary JPEG
   frames with `frame_format=binary`; status, URL, tabs, and navigation rejection

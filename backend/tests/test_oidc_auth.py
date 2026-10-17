@@ -573,9 +573,7 @@ async def test_oidc_authenticate_callback_treats_string_false_email_verified_as_
         (None, "tenant-from-userinfo", None),
     ],
 )
-async def test_oidc_callback_uses_only_signed_tenant_claim_for_iam_context(
-    monkeypatch, id_token_tenant, userinfo_tenant, expected_tenant
-):
+async def test_oidc_callback_uses_only_signed_tenant_claim_for_iam_context(monkeypatch, id_token_tenant, userinfo_tenant, expected_tenant):
     """UserInfo may refresh profile fields but cannot choose the IAM tenant."""
     service = OIDCService()
     metadata = OIDCMetadata(

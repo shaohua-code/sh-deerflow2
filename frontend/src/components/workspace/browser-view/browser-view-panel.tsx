@@ -48,6 +48,16 @@ export function BrowserViewPanel({
     frameUrl: string;
     url?: string;
   } | null>(null);
+  // 渲染期条件修正的 prev 守卫（官方 adjusting-state 模式）：上次处理的
+  // threadId（切换时重置 lastLiveUrl）与上次同步进地址栏的非 live url 源
+  //（仅源变化时覆盖，保留用户手动编辑）。
+  const [prevThreadId, setPrevThreadId] = useState(threadId);
+  const [syncedNonLiveUrl, setSyncedNonLiveUrl] = useState<string | null>(null);
+  // True while the user is actively editing the URL bar, so background live-URL
+  // reports do not clobber a half-typed address the user has not submitted yet.
+  // 渲染期需要读取（live URL 同步分支），从 ref 改为 state（P352 同款：
+  // 读取发生在渲染期的值用 state 承载；写入均在用户事件回调，合法）。
+  const [urlEditing, setUrlEditing] = useState(false);
 
   const streamSeedUrl = lastLiveUrl ?? liveFallback?.url ?? frame?.url;
   const handleNavRejected = useCallback(
@@ -68,9 +78,6 @@ export function BrowserViewPanel({
   const surfaceRef = useRef<HTMLImageElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const staticScreenshotRef = useRef<string | null>(null);
-  // True while the user is actively editing the URL bar, so background live-URL
-  // reports do not clobber a half-typed address the user has not submitted yet.
-  const urlEditingRef = useRef(false);
   // Handle for the live-navigate spinner timeout so it can be cleared on
   // unmount / re-navigation instead of firing setState after teardown.
   const navSpinnerTimerRef = useRef<number | null>(null);
@@ -83,28 +90,62 @@ export function BrowserViewPanel({
     };
   }, []);
 
-  useEffect(() => {
+  // —— 渲染期条件同步（官方 adjusting-state-when-props-change 模式）——
+  // 以下各分支仅在偏离期望值时 setState，修正后条件自灭，无渲染循环；
+  // state 在同一提交内生效，替代旧 effect 的级联 setState。
+  if (prevThreadId !== threadId) {
+    setPrevThreadId(threadId);
     setLastLiveUrl(null);
-  }, [threadId]);
-
-  useEffect(() => {
-    if (frame?.url && !urlInput && !liveUrl) {
-      setUrlInput(frame.url);
-    }
-  }, [frame?.url, liveUrl, urlInput]);
-
+  }
+  // 静态帧首次出现时给地址栏播种（urlInput 填充后条件自灭）。
+  if (frame?.url && !urlInput && !liveUrl) {
+    setUrlInput(frame.url);
+  }
   // Keep the URL bar in sync with the latest visible browser state while not
   // live. If the user leaves Live mode, the last streamed frame becomes the
   // static baseline instead of falling back to an older artifact screenshot.
-  useEffect(() => {
-    if (!live) {
-      const url = liveFallback?.url ?? frame?.url;
-      if (url) {
-        setUrlInput(url);
-      }
+  // 仅在 url 源变化时覆盖，用户手动编辑不被每次渲染重置。
+  if (!live) {
+    const sourceUrl = liveFallback?.url ?? frame?.url;
+    if (sourceUrl && syncedNonLiveUrl !== sourceUrl) {
+      setSyncedNonLiveUrl(sourceUrl);
+      setUrlInput(sourceUrl);
     }
-  }, [frame?.url, live, liveFallback?.url]);
+  }
+  // In live mode the server reports the page's real URL (after redirects and
+  // history moves). Reconcile the address bar + device-shell label + persisted
+  // frame so the top URL never goes stale after navigation. liveFallback 单点
+  // 合并计算（等价旧两条 effect 的链式更新），字段级同值跳过避免无效渲染。
+  const framedFallback = frameUrl
+    ? {
+        frameUrl,
+        url: liveUrl ?? liveFallback?.url ?? (urlInput || frame?.url),
+      }
+    : liveFallback;
+  const mergedFallback =
+    live && liveUrl && framedFallback && framedFallback.url !== liveUrl
+      ? { ...framedFallback, url: liveUrl }
+      : framedFallback;
+  if (live && liveUrl) {
+    if (lastLiveUrl !== liveUrl) {
+      setLastLiveUrl(liveUrl);
+    }
+    if (!urlEditing) {
+      setUrlInput(liveUrl === "about:blank" ? "" : liveUrl);
+    }
+    if (navigating) {
+      setNavigating(false);
+    }
+  }
+  if (
+    mergedFallback?.frameUrl !== liveFallback?.frameUrl ||
+    mergedFallback?.url !== liveFallback?.url
+  ) {
+    setLiveFallback(mergedFallback);
+  }
 
+  // New static screenshot arrived: drop the persisted live frame so the static
+  // baseline takes over (effect 内 ref 写 + 条件 setState，未被规则报告，保留原形)。
   useEffect(() => {
     const screenshot = frame?.screenshot ?? null;
     if (screenshot && screenshot !== staticScreenshotRef.current) {
@@ -112,29 +153,6 @@ export function BrowserViewPanel({
       setLiveFallback(null);
     }
   }, [frame?.screenshot]);
-
-  useEffect(() => {
-    if (frameUrl) {
-      setLiveFallback((prev) => ({
-        frameUrl,
-        url: liveUrl ?? prev?.url ?? (urlInput || frame?.url),
-      }));
-    }
-  }, [frame?.url, frameUrl, liveUrl, urlInput]);
-
-  // In live mode the server reports the page's real URL (after redirects and
-  // history moves). Reconcile the address bar + device-shell label + persisted
-  // frame so the top URL never goes stale after navigation.
-  useEffect(() => {
-    if (live && liveUrl) {
-      setLastLiveUrl(liveUrl);
-      if (!urlEditingRef.current) {
-        setUrlInput(liveUrl === "about:blank" ? "" : liveUrl);
-      }
-      setNavigating(false);
-      setLiveFallback((prev) => (prev ? { ...prev, url: liveUrl } : prev));
-    }
-  }, [liveUrl, live]);
 
   const handleNavigate = async () => {
     const target = urlInput.trim();
@@ -153,7 +171,7 @@ export function BrowserViewPanel({
     if (live) {
       sendInput({ type: "navigate", url: normalized });
       setUrlInput(normalized);
-      urlEditingRef.current = false;
+      setUrlEditing(false);
       setLiveFallback((prev) => (prev ? { ...prev, url: normalized } : prev));
       setNavigating(true);
       if (navSpinnerTimerRef.current !== null) {
@@ -381,15 +399,15 @@ export function BrowserViewPanel({
           <Input
             value={urlInput}
             onChange={(event) => {
-              urlEditingRef.current = true;
+              setUrlEditing(true);
               setUrlInput(event.target.value);
             }}
             onFocus={(event) => {
-              urlEditingRef.current = true;
+              setUrlEditing(true);
               event.currentTarget.select();
             }}
             onBlur={() => {
-              urlEditingRef.current = false;
+              setUrlEditing(false);
             }}
             onKeyDown={(event) => {
               // Keep browser select-all/copy/cut/paste working inside the URL

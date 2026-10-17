@@ -310,11 +310,7 @@ class SQLiteUserRepository(UserRepository):
             elif dialect == "sqlite":
                 await session.execute(text("BEGIN IMMEDIATE"))
 
-            row = (
-                await session.execute(
-                    select(UserRow).where(UserRow.id == user_id).with_for_update()
-                )
-            ).scalar_one_or_none()
+            row = (await session.execute(select(UserRow).where(UserRow.id == user_id).with_for_update())).scalar_one_or_none()
             if row is None:
                 await session.rollback()
                 return None
@@ -325,11 +321,7 @@ class SQLiteUserRepository(UserRepository):
                 return result
 
             if not is_active and row.system_role == "admin":
-                active_admins = await session.scalar(
-                    select(func.count())
-                    .select_from(UserRow)
-                    .where(UserRow.system_role == "admin", UserRow.is_active.is_(True))
-                )
+                active_admins = await session.scalar(select(func.count()).select_from(UserRow).where(UserRow.system_role == "admin", UserRow.is_active.is_(True)))
                 if int(active_admins or 0) <= 1:
                     await session.rollback()
                     raise LastActiveAdminError("The last active administrator cannot be disabled")

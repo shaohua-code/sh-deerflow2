@@ -9,13 +9,13 @@ import {
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
+import { useAgents } from "@/core/agents";
 import { useAuth } from "@/core/auth/AuthProvider";
 import {
   getMissingPermissions,
   hasPermission,
   PERMISSIONS,
 } from "@/core/auth/permissions";
-import { useAgents } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 
 import { AgentCard } from "./agent-card";

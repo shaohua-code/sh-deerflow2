@@ -24,12 +24,12 @@ import { formatArtifactBytes } from "@/components/workspace/artifacts/artifact-f
 import { useAuth } from "@/core/auth/AuthProvider";
 import { PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import {
   PROJECTS_CONFIG_DEFAULT,
   useProjects,
   useProjectsConfig,
 } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import {
   RestoreConflictError,
   TrashNotFoundError,

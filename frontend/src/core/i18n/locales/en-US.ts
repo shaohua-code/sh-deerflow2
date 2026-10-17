@@ -804,6 +804,11 @@ export const enUS: Translations = {
       titlePlaceholder: "Edit title",
       promptPlaceholder: "Edit prompt",
       submit: "Save edit",
+      dirtyTitle: "Discard unsaved edits?",
+      dirtyDescription:
+        "This task has unsaved edits. Continuing will discard them.",
+      discard: "Discard changes",
+      continueEditing: "Keep editing",
     },
     status: {
       enabled: "Enabled",
@@ -1071,6 +1076,8 @@ export const enUS: Translations = {
     placeholder: "Ask a deeper follow-up...",
     send: "Send",
     sendFailed: "Failed to send side chat message.",
+    threadWritePermissionRequired:
+      "Creating a side chat requires thread write permission.",
     noContext: "No context selected",
     continuing: "Continue in this side chat",
     selectionCrossesMessages:

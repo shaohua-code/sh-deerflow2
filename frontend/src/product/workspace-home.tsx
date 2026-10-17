@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 import {
   Activity,
   ArrowRight,
@@ -15,6 +14,7 @@ import {
   Search,
 } from "lucide-react";
 import Link from "next/link";
+import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -37,12 +37,12 @@ import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { searchThreads } from "@/core/threads/api";
 import { useInfiniteThreads } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
-import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import {
   agentNameOfThread,
   pathOfThread,
   titleOfThread,
 } from "@/core/threads/utils";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import { formatTimeAgo } from "@/core/utils/datetime";
 import { fetchProductFiles, type ProductFileEntry } from "@/product/api";
 

@@ -27,10 +27,11 @@ import {
   useInfiniteThreads,
 } from "@/core/threads/hooks";
 
-const listParams = {
-  sortBy: "updated_at" as const,
-  sortOrder: "desc" as const,
-  select: ["thread_id", "updated_at", "values", "metadata"] as const,
+// 直接使用 hook 参数类型，让 select 获得上下文推断（不能 as const，需要可变数组）。
+const listParams: NonNullable<Parameters<typeof useInfiniteThreads>[0]> = {
+  sortBy: "updated_at",
+  sortOrder: "desc",
+  select: ["thread_id", "updated_at", "values", "metadata"],
 };
 const otherParams = { ...listParams, archived: false };
 

@@ -69,5 +69,10 @@ config.yaml.bak
 .gstack/
 .worktrees
 
+# Local pytest basetemp scratch roots (tests copy repo trees here; must stay untracked
+# or scripts/check_agent_guidance.py's worktree scan picks up nested AGENTS.md copies)
+backend/.t/
+.t/
+
 # Monocle agent-observability trace output (local file exporter)
 .monocle/

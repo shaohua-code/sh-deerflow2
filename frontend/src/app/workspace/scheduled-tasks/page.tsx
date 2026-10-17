@@ -48,9 +48,9 @@ import {
   useTriggerScheduledTask,
   useThreadScheduledTasks,
 } from "@/core/scheduled-tasks/hooks";
+import { getScheduledTaskPermissionAccess } from "@/core/scheduled-tasks/permissions";
 import { RECIPES, type Recipe } from "@/core/scheduled-tasks/recipes";
 import { useScheduledTaskRunHistory } from "@/core/scheduled-tasks/run-history";
-import { getScheduledTaskPermissionAccess } from "@/core/scheduled-tasks/permissions";
 import type {
   ScheduledTask,
   ScheduledTaskRun,
@@ -107,6 +107,54 @@ function agentDisplayName(
   return assistantId;
 }
 
+// 编辑草稿的规范化形态：值来源与提交语义一致（时区空串视为 UTC）。
+type TaskEditDraft = {
+  title: string;
+  prompt: string;
+  assistantId: string;
+  schedule: ScheduleValue;
+};
+
+function buildTaskEditDraft(task: ScheduledTask): TaskEditDraft {
+  const spec = task.schedule_spec as {
+    cron?: string;
+    run_at?: string;
+    every_seconds?: number;
+  };
+  return {
+    title: task.title,
+    prompt: task.prompt,
+    assistantId: task.assistant_id ?? DEFAULT_ASSISTANT_ID,
+    schedule: {
+      schedule_type: task.schedule_type,
+      schedule_spec: {
+        cron: typeof spec.cron === "string" ? spec.cron : undefined,
+        run_at: typeof spec.run_at === "string" ? spec.run_at : undefined,
+        every_seconds:
+          typeof spec.every_seconds === "number"
+            ? spec.every_seconds
+            : undefined,
+      },
+      timezone: task.timezone || "UTC",
+    },
+  };
+}
+
+// 逐字段比较编辑草稿；schedule_spec 的三个字段互斥，逐个比较即可。
+function taskEditDraftsEqual(a: TaskEditDraft, b: TaskEditDraft): boolean {
+  return (
+    a.title === b.title &&
+    a.prompt === b.prompt &&
+    a.assistantId === b.assistantId &&
+    a.schedule.schedule_type === b.schedule.schedule_type &&
+    a.schedule.timezone === b.schedule.timezone &&
+    a.schedule.schedule_spec.cron === b.schedule.schedule_spec.cron &&
+    a.schedule.schedule_spec.run_at === b.schedule.schedule_spec.run_at &&
+    a.schedule.schedule_spec.every_seconds ===
+      b.schedule.schedule_spec.every_seconds
+  );
+}
+
 export default function ScheduledTasksPage() {
   const { t, locale } = useI18n();
   const { user } = useAuth();
@@ -159,6 +207,10 @@ export default function ScheduledTasksPage() {
     schedule_spec: { cron: "0 9 * * *" },
     timezone: "UTC",
   });
+  // 未保存编辑的放弃确认；switch 携带目标任务，toggleEdit 表示退出编辑态。
+  const [pendingDiscard, setPendingDiscard] = useState<
+    { type: "switch"; taskId: string | null } | { type: "toggleEdit" } | null
+  >(null);
   const [createNonce, setCreateNonce] = useState(0);
   const createFormRef = useRef<HTMLDivElement>(null);
   const createTitleRef = useRef<HTMLInputElement>(null);
@@ -210,12 +262,26 @@ export default function ScheduledTasksPage() {
     return missing.length === 0;
   };
 
-  useEffect(() => {
-    if (!access.canReuseThread && contextMode === "reuse_thread") {
-      setContextMode("fresh_thread_per_run");
-      setTargetThreadId("");
-    }
-    if (!access.canCreateTask && !createTask.isPending) {
+  // 撤权守卫改为渲染期条件修正（React 官方"渲染时调整 state"模式）：权限缺失
+  // 期间把越界状态收敛回安全形态，修正后条件自灭，避免 effect 内同步 setState
+  // 的级联渲染。同值 setState 会被 React 跳过；nonce 只在确实清掉草稿时递增。
+  if (!access.canReuseThread && contextMode === "reuse_thread") {
+    setContextMode("fresh_thread_per_run");
+    setTargetThreadId("");
+  }
+  if (!access.canCreateTask && !createTask.isPending) {
+    // 仅在任一字段偏离安全默认值时执行重置：对象 setState 每次都是新引用，
+    // 无条件重置会让 React 的同值跳过失效并造成渲染循环。
+    const hasCreateDraft =
+      title !== "" ||
+      prompt !== "" ||
+      targetThreadId !== "" ||
+      createAssistantId !== DEFAULT_ASSISTANT_ID ||
+      formError !== null ||
+      createSchedule.schedule_type !== "cron" ||
+      createSchedule.timezone !== "" ||
+      createSchedule.schedule_spec.cron !== "0 9 * * *";
+    if (hasCreateDraft) {
       setTitle("");
       setPrompt("");
       setTargetThreadId("");
@@ -229,28 +295,23 @@ export default function ScheduledTasksPage() {
       setFormError(null);
       setCreateNonce((nonce) => nonce + 1);
     }
-    if (!access.canUpdateTask && !updateTask.isPending) {
-      setEditing(false);
-      setEditTitle("");
-      setEditPrompt("");
-    }
-    if (
-      (!access.canDeleteTask || !access.canReadTasks) &&
-      !deleteTask.isPending
-    ) {
-      setDeleteOpen(false);
-    }
-  }, [
-    access.canCreateTask,
-    access.canDeleteTask,
-    access.canReadTasks,
-    access.canReuseThread,
-    access.canUpdateTask,
-    contextMode,
-    createTask.isPending,
-    deleteTask.isPending,
-    updateTask.isPending,
-  ]);
+  }
+  if (
+    !access.canUpdateTask &&
+    !updateTask.isPending &&
+    (editing || editTitle !== "" || editPrompt !== "")
+  ) {
+    setEditing(false);
+    setEditTitle("");
+    setEditPrompt("");
+  }
+  if (
+    (!access.canDeleteTask || !access.canReadTasks) &&
+    !deleteTask.isPending &&
+    deleteOpen
+  ) {
+    setDeleteOpen(false);
+  }
 
   const scheduleTypeLabel = (v: string) =>
     v === "cron"
@@ -315,48 +376,61 @@ export default function ScheduledTasksPage() {
     document.title = `${t.sidebar.scheduledTasks} - ${t.pages.appName}`;
   }, [t.pages.appName, t.sidebar.scheduledTasks]);
 
-  useEffect(() => {
-    if (!selectedTaskId) {
+  // 服务器值作为编辑初值；切换账号/任务时按任务重建。渲染期 setState 会
+  // 使依赖这些 state 的手动 memo 无法保留（preserve-manual-memoization），
+  // 这里直接使用普通值/函数，由编译器自动优化；草稿对比是逐字段值比较，
+  // 每次渲染新建 currentEditDraft 对象不影响语义。
+  const initialEditDraft = selectedTask
+    ? buildTaskEditDraft(selectedTask)
+    : null;
+  const currentEditDraft = {
+    title: editTitle,
+    prompt: editPrompt,
+    assistantId: editAssistantId,
+    schedule: editSchedule,
+  };
+  // 不变量①：草稿与服务器值一致时禁止再次提交保存。
+  const editDirty =
+    initialEditDraft !== null &&
+    !taskEditDraftsEqual(currentEditDraft, initialEditDraft);
+
+  // 不变量②：编辑中有未保存草稿时，切换任务必须先确认放弃。
+  const selectTask = (taskId: string | null) => {
+    if (taskId === (selectedTask?.id ?? null)) return;
+    if (editing && editDirty) {
+      setPendingDiscard({ type: "switch", taskId });
       return;
     }
-    const stillVisible = filteredData.some(
-      (task) => task.id === selectedTaskId,
-    );
-    if (!stillVisible) {
-      setSelectedTaskId(filteredData[0]?.id ?? null);
-      setEditing(false);
-    }
-  }, [filteredData, selectedTaskId]);
+    setSelectedTaskId(taskId);
+  };
 
-  useEffect(() => {
+  // 选中任务从筛选结果消失时在渲染期自动切换（同走 selectTask 的放弃确认）。
+  // 切换后 selectedTaskId 落回列表内或为 null，条件自灭。
+  if (
+    selectedTaskId &&
+    !filteredData.some((task) => task.id === selectedTaskId)
+  ) {
+    selectTask(filteredData[0]?.id ?? null);
+  }
+
+  // 选中任务变化时重播种编辑草稿：渲染期对比前值（官方模式）。首渲染用
+  // undefined 哨兵触发一次播种，与原挂载 effect 行为一致；只对比 id 使后台
+  // refetch（同任务新引用）不清空进行中的编辑。
+  const [prevSelectedTaskKey, setPrevSelectedTaskKey] = useState<
+    string | null | undefined
+  >(undefined);
+  if ((selectedTask?.id ?? null) !== prevSelectedTaskKey) {
+    setPrevSelectedTaskKey(selectedTask?.id ?? null);
     if (!selectedTask) {
       setEditing(false);
-      return;
+    } else {
+      const draft = buildTaskEditDraft(selectedTask);
+      setEditTitle(draft.title);
+      setEditPrompt(draft.prompt);
+      setEditAssistantId(draft.assistantId);
+      setEditSchedule(draft.schedule);
     }
-    setEditTitle(selectedTask.title);
-    setEditPrompt(selectedTask.prompt);
-    setEditAssistantId(selectedTask.assistant_id ?? DEFAULT_ASSISTANT_ID);
-    const spec = selectedTask.schedule_spec as {
-      cron?: string;
-      run_at?: string;
-      every_seconds?: number;
-    };
-    setEditSchedule({
-      schedule_type: selectedTask.schedule_type,
-      schedule_spec: {
-        cron: typeof spec.cron === "string" ? spec.cron : undefined,
-        run_at: typeof spec.run_at === "string" ? spec.run_at : undefined,
-        every_seconds:
-          typeof spec.every_seconds === "number"
-            ? spec.every_seconds
-            : undefined,
-      },
-      timezone: selectedTask.timezone || "UTC",
-    });
-    // Depend on id only so a background refetch (same task, new object reference)
-    // does not wipe edits in progress.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTask?.id]);
+  }
 
   return (
     <WorkspaceContainer>
@@ -753,7 +827,7 @@ export default function ScheduledTasksPage() {
                         <button
                           type="button"
                           key={task.id}
-                          onClick={() => setSelectedTaskId(task.id)}
+                          onClick={() => selectTask(task.id)}
                           data-testid={`scheduled-task-item-${task.id}`}
                           className={cn(
                             "rounded-lg border p-4 text-left",
@@ -783,7 +857,14 @@ export default function ScheduledTasksPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => setEditing((value) => !value)}
+                            onClick={() => {
+                              // 退出编辑会丢弃草稿；有未保存修改时先确认。
+                              if (editing && editDirty) {
+                                setPendingDiscard({ type: "toggleEdit" });
+                                return;
+                              }
+                              setEditing((value) => !value);
+                            }}
                           >
                             {editing ? st.actions.cancelEdit : st.actions.edit}
                           </Button>
@@ -901,7 +982,7 @@ export default function ScheduledTasksPage() {
                                 timezone: editSchedule.timezone || "UTC",
                               });
                             }}
-                            disabled={updateTask.isPending}
+                            disabled={updateTask.isPending || !editDirty}
                           >
                             {st.edit.submit}
                           </Button>
@@ -1181,6 +1262,53 @@ export default function ScheduledTasksPage() {
               disabled={deleteTask.isPending}
             >
               {deleteTask.isPending ? t.common.loading : st.actions.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 未保存编辑的放弃确认：切换任务或退出编辑前必须显式确认，避免静默丢草稿。 */}
+      <Dialog
+        open={pendingDiscard !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDiscard(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{st.edit.dirtyTitle}</DialogTitle>
+            <DialogDescription>{st.edit.dirtyDescription}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDiscard(null)}
+              data-testid="scheduled-task-discard-continue"
+            >
+              {st.edit.continueEditing}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (pendingDiscard?.type === "switch") {
+                  setSelectedTaskId(pendingDiscard.taskId);
+                } else {
+                  // 放弃编辑时把草稿恢复为服务器值，
+                  // 避免下次进入编辑时残留已放弃的内容。
+                  if (selectedTask) {
+                    const draft = buildTaskEditDraft(selectedTask);
+                    setEditTitle(draft.title);
+                    setEditPrompt(draft.prompt);
+                    setEditAssistantId(draft.assistantId);
+                    setEditSchedule(draft.schedule);
+                  }
+                  setEditing(false);
+                }
+                setPendingDiscard(null);
+              }}
+              data-testid="scheduled-task-discard-confirm"
+            >
+              {st.edit.discard}
             </Button>
           </DialogFooter>
         </DialogContent>

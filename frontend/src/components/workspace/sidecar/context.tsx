@@ -12,6 +12,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import {
   appendSidecarReference,
   buildMessageSidecarContext,
@@ -64,6 +66,10 @@ export function SidecarProvider({
   isMock?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const { user } = useAuth();
+  // 恢复搜索走 POST /threads/search，要求 threads:read；权限字段缺失时继续以兼容旧 Gateway。
+  const threadsReadDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
   const [activeReferences, setActiveReferences] = useState<SidecarReference[]>(
     [],
   );
@@ -120,6 +126,12 @@ export function SidecarProvider({
         return restoreRequest.promise;
       }
 
+      // threads.search requires threads:read; an explicit denial stops the
+      // restore probe while unresolved snapshots keep the legacy behavior.
+      if (threadsReadDenied) {
+        return null;
+      }
+
       const promise = findLatestSidecarThread({
         parentThreadId,
         isMock,
@@ -155,7 +167,7 @@ export function SidecarProvider({
 
       return promise;
     },
-    [isMock, parentThreadId, updateSidecarThreadId],
+    [isMock, parentThreadId, threadsReadDenied, updateSidecarThreadId],
   );
 
   useEffect(() => {

@@ -39,16 +39,16 @@ import {
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useCreateProject, useProjects, type Project } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useLocalSettings } from "@/core/settings";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { useInfiniteThreads } from "@/core/threads/hooks";
-import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import { flattenThreadBranches } from "@/core/threads/thread-branch-tree";
 import { buildThreadListModel } from "@/core/threads/thread-list-model";
 import type { AgentThread } from "@/core/threads/types";
 import { pathOfThread, projectIdOfThread } from "@/core/threads/utils";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import { isIMEComposing } from "@/lib/ime";
 
 import { ThreadSidebarItem } from "./recent-chat-list";

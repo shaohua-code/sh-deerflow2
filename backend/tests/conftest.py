@@ -39,6 +39,18 @@ _executor_mock.get_background_task_result = MagicMock()
 
 sys.modules["deerflow.subagents.executor"] = _executor_mock
 
+# Pre-import the auth router before any test runs. Its module top level does
+# ``from app.gateway.deps import get_local_provider``, binding the *current*
+# function object permanently. If the first import happens inside a test's
+# monkeypatch window (e.g. authz.py lazily importing routers.auth while
+# ``deps.get_local_provider`` is patched), the mock lambda gets baked into
+# ``routers.auth`` and every later HTTP auth test receives the stub instead of
+# the real provider. Importing it here — before any fixture or test can patch
+# deps — pins the real binding for the whole session, and tests that need a
+# stub patch ``routers.auth.get_local_provider`` directly (see
+# test_initialize_admin / test_pat_auth for that pattern).
+import app.gateway.routers.auth as _auth_router_preimport  # noqa: E402,F401
+
 
 @pytest.fixture()
 def provisioner_module():

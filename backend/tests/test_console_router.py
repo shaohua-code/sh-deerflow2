@@ -453,9 +453,7 @@ def test_console_scope_denial_happens_before_database_access(client, monkeypatch
         ("usage", "runs:read", []),
     ],
 )
-async def test_console_reports_require_every_resource_permission_before_scope(
-    monkeypatch, route, missing_permission, granted_permissions
-):
+async def test_console_reports_require_every_resource_permission_before_scope(monkeypatch, route, missing_permission, granted_permissions):
     request = Request({"type": "http", "method": "GET", "path": "/api/console", "headers": []})
     request.state.auth = AuthContext(user=SimpleNamespace(id="user-a", system_role="user"), permissions=granted_permissions)
     scope_check = AsyncMock(side_effect=AssertionError("scope lookup must not run without route permission"))

@@ -423,7 +423,7 @@ DeerFlow 支持可配置的 MCP Server 和 skills，用来扩展能力。
 对于 HTTP/SSE MCP Server，还支持 OAuth token 流程（`client_credentials`、`refresh_token`）。
 详细说明见 [MCP Server 指南](backend/docs/MCP_SERVER.md)。
 
-启用持久 MCP 后台任务后，工作台按 `threads:read` 控制任务列表和详情读取，按 `threads:write` 控制取消操作；撤销读取权限会停止轮询并隐藏已缓存任务。
+启用持久 MCP 后台任务后，工作台按 `threads:read` 控制任务列表和详情读取，按 `threads:write` 控制取消操作；读取权限被明确撤销时同一帧隐藏并只清理该账号的列表/详情缓存，功能关闭或调用方停用只隐藏、不清理缓存。
 
 #### IM 渠道
 

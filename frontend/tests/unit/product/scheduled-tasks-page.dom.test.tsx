@@ -29,6 +29,8 @@ rs.mock("next/navigation", () => ({
 }));
 rs.mock("@/core/agents/hooks", () => ({
   useAgentsApiEnabled: () => ({ enabled: false, isLoading: false }),
+  // 页面会无条件调用 useAgents；测试里返回空目录即可。
+  useAgents: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 rs.mock("@/core/agents/api", () => ({
   listAgents: (...args: unknown[]) => mocks.listAgents(...args),
@@ -117,6 +119,13 @@ const scheduledTask = {
   run_count: 0,
   created_at: "2026-10-01T00:00:00Z",
   updated_at: "2026-10-01T00:00:00Z",
+};
+
+const scheduledTaskB = {
+  ...scheduledTask,
+  id: "task-b",
+  title: "每周备份",
+  prompt: "备份数据库",
 };
 
 beforeEach(() => {
@@ -260,5 +269,107 @@ describe("ScheduledTasksPage list states", () => {
 
     resolveDelete();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+});
+
+describe("ScheduledTasksPage edit dirty guards", () => {
+  const EDIT_PERMISSIONS = [
+    "threads:read",
+    "threads:write",
+    "runs:create",
+  ] as const;
+
+  async function openEditor(
+    tasks: Array<{ id: string }> = [scheduledTask],
+  ): Promise<void> {
+    mocks.fetchScheduledTasks.mockResolvedValue(tasks);
+    renderPage({ permissions: [...EDIT_PERMISSIONS] });
+    // 所有调用方都传入非空任务数组；noUncheckedIndexedAccess 需要显式断言。
+    await screen.findByTestId(`scheduled-task-item-${tasks[0]!.id}`);
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    await screen.findByPlaceholderText("编辑标题");
+  }
+
+  it("disables save until the edit draft actually changes", async () => {
+    await openEditor();
+
+    const save = screen.getByRole("button", { name: "保存编辑" });
+    // 不变量①：草稿与服务器值一致时禁止重复保存。
+    expect(save.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByPlaceholderText("编辑标题"), {
+      target: { value: "新标题" },
+    });
+    expect(save.hasAttribute("disabled")).toBe(false);
+
+    // 改回原值后草稿不再脏，保存重新禁用。
+    fireEvent.change(screen.getByPlaceholderText("编辑标题"), {
+      target: { value: "每日项目摘要" },
+    });
+    expect(save.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("confirms before switching tasks while edits are unsaved", async () => {
+    await openEditor([scheduledTask, scheduledTaskB]);
+
+    fireEvent.change(screen.getByPlaceholderText("编辑标题"), {
+      target: { value: "新标题" },
+    });
+    fireEvent.click(screen.getByTestId("scheduled-task-item-task-b"));
+
+    // 不变量②：切换任务前弹出放弃确认。
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("放弃未保存的编辑？")).toBeDefined();
+
+    // 继续编辑：留在原任务且草稿保留。
+    fireEvent.click(
+      within(dialog).getByTestId("scheduled-task-discard-continue"),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByTestId("scheduled-task-item-task-b").getAttribute("class"),
+    ).not.toContain("border-foreground");
+    expect(screen.getByPlaceholderText("编辑标题").getAttribute("value")).toBe(
+      "新标题",
+    );
+
+    // 再次切换并放弃：草稿丢弃并切到目标任务。
+    fireEvent.click(screen.getByTestId("scheduled-task-item-task-b"));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByTestId(
+        "scheduled-task-discard-confirm",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const detail = within(screen.getByTestId("scheduled-task-detail"));
+    expect(detail.getByText("每周备份")).toBeDefined();
+    expect(screen.getByPlaceholderText("编辑标题").getAttribute("value")).toBe(
+      "每周备份",
+    );
+  });
+
+  it("confirms before leaving edit mode and reseeds drafts on discard", async () => {
+    await openEditor();
+
+    fireEvent.change(screen.getByPlaceholderText("编辑标题"), {
+      target: { value: "新标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消编辑" }));
+
+    // 不变量②：退出编辑前弹出放弃确认。
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("放弃未保存的编辑？")).toBeDefined();
+
+    fireEvent.click(
+      within(dialog).getByTestId("scheduled-task-discard-confirm"),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByPlaceholderText("编辑标题")).toBeNull();
+
+    // 重新进入编辑时草稿从服务器值重新播种。
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    expect(screen.getByPlaceholderText("编辑标题").getAttribute("value")).toBe(
+      "每日项目摘要",
+    );
   });
 });

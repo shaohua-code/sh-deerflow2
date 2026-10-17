@@ -258,9 +258,18 @@ const ChatBox: React.FC<{
     };
   }, [rightPanelOpen, sidePanelRef]);
 
-  useEffect(() => {
+  // 切换右侧面板时立即渲染新面板（渲染期对比前值），退出动画的延迟清理
+  // 仍由下方 effect 在异步回调里完成，避免 effect 内同步 setState。
+  const [prevActiveRightPanel, setPrevActiveRightPanel] =
+    useState(activeRightPanel);
+  if (prevActiveRightPanel !== activeRightPanel) {
+    setPrevActiveRightPanel(activeRightPanel);
     if (activeRightPanel) {
       setRenderedRightPanel(activeRightPanel);
+    }
+  }
+  useEffect(() => {
+    if (activeRightPanel) {
       return;
     }
 

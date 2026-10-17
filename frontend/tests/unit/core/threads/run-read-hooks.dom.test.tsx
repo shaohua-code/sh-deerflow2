@@ -71,7 +71,9 @@ describe("run read hooks", () => {
     mocks.user.current.permissions = [];
 
     const { result } = renderHook(
-      () => [useThreadRuns("thread-1"), useRunDetail("thread-1", "run-1")],
+      // as const 让 TS 推断为元组：noUncheckedIndexedAccess 下索引不再附加 undefined。
+      () =>
+        [useThreadRuns("thread-1"), useRunDetail("thread-1", "run-1")] as const,
       { wrapper: createWrapper(client) },
     );
 
@@ -117,7 +119,9 @@ describe("run read hooks", () => {
     );
 
     const { result, rerender } = renderHook(
-      () => [useThreadRuns("thread-1"), useRunDetail("thread-1", "run-1")],
+      // as const 让 TS 推断为元组：noUncheckedIndexedAccess 下索引不再附加 undefined。
+      () =>
+        [useThreadRuns("thread-1"), useRunDetail("thread-1", "run-1")] as const,
       { wrapper: createWrapper(client) },
     );
     await waitFor(() => {

@@ -8,11 +8,11 @@ import {
 } from "@testing-library/react";
 
 import { ChannelsSettingsPage } from "@/components/workspace/settings/channels-settings-page";
+import { AuthProvider } from "@/core/auth/AuthProvider";
 import type {
   ChannelProvider,
   ChannelRuntimeConfigValues,
 } from "@/core/channels/types";
-import { AuthProvider } from "@/core/auth/AuthProvider";
 import { I18nProvider } from "@/core/i18n/context";
 
 const mocks = rs.hoisted(() => ({
@@ -66,6 +66,7 @@ rs.mock(
       provider,
       open,
       onSubmit,
+      onUnsavedChangesChange,
     }: {
       provider: ChannelProvider;
       open: boolean;
@@ -73,11 +74,24 @@ rs.mock(
         provider: ChannelProvider,
         values: ChannelRuntimeConfigValues,
       ) => void;
+      onUnsavedChangesChange?: (changes: unknown) => void;
     }) =>
       open ? (
-        <button onClick={() => onSubmit(provider, {})}>
-          Save channel settings
-        </button>
+        <>
+          <button onClick={() => onSubmit(provider, {})}>
+            Save channel settings
+          </button>
+          <button
+            onClick={() =>
+              onUnsavedChangesChange?.({
+                isPending: false,
+                discard: () => undefined,
+              })
+            }
+          >
+            Mark channel draft dirty
+          </button>
+        </>
       ) : null,
   }),
 );
@@ -95,6 +109,7 @@ const cachedProvider = {
 function renderPage(
   locale: "en-US" | "zh-CN" = "en-US",
   permissions = ["channels:read", "channels:write", "channels:admin"],
+  onUnsavedChangesChange?: (changes: unknown) => void,
 ) {
   return render(
     <I18nProvider initialLocale={locale}>
@@ -108,7 +123,7 @@ function renderPage(
           permissions,
         }}
       >
-        <ChannelsSettingsPage />
+        <ChannelsSettingsPage onUnsavedChangesChange={onUnsavedChangesChange} />
       </AuthProvider>
     </I18nProvider>,
   );
@@ -406,5 +421,39 @@ describe("ChannelsSettingsPage read error state", () => {
     expect(mocks.toastError).not.toHaveBeenCalledWith(
       "private provider credential detail",
     );
+  });
+
+  it("forwards the unsaved-changes contract from the runtime dialog to the page", () => {
+    const onUnsavedChangesChange = rs.fn();
+    // Modify 按钮要求 provider 带凭据字段。
+    mocks.useProviders.mockReturnValue({
+      enabled: true,
+      providers: [
+        {
+          ...cachedProvider,
+          credential_fields: [
+            { name: "token", label: "Token", type: "password", required: true },
+          ],
+        },
+      ],
+      isLoading: false,
+      isFetching: false,
+      hasData: true,
+      error: undefined,
+      refetch: mocks.refetchProviders,
+    });
+    renderPage("en-US", undefined, onUnsavedChangesChange);
+
+    // 打开运行时配置弹窗并把草稿标记为脏。
+    fireEvent.click(screen.getByRole("button", { name: "Modify" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Mark channel draft dirty" }),
+    );
+
+    // 页面把弹窗的草稿登记转发给设置弹窗，供切栏确认链路使用。
+    expect(onUnsavedChangesChange).toHaveBeenCalledWith({
+      isPending: false,
+      discard: expect.any(Function),
+    });
   });
 });

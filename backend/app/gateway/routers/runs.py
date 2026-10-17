@@ -56,7 +56,15 @@ async def stateless_stream(body: RunCreateRequest, request: Request) -> Streamin
     record = await start_run(body, thread_id, request)
 
     return StreamingResponse(
-        sse_consumer(bridge, record, request, run_mgr),
+        # Stateless 建立端点连接时强制 runs:create 与其 data scope；运行中按同一规则复查撤权。
+        sse_consumer(
+            bridge,
+            record,
+            request,
+            run_mgr,
+            permission_recheck=("runs", "create"),
+            data_scope_recheck=("runs:create", "create"),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

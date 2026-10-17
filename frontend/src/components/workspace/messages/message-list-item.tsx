@@ -12,7 +12,6 @@ import {
 import {
   memo,
   useCallback,
-  useEffect,
   useId,
   useMemo,
   useState,
@@ -98,10 +97,15 @@ function FeedbackButtons({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const deletePermissionHintId = useId();
 
-  useEffect(() => {
-    // 历史请求刷新后用 Gateway 的持久化结果校准局部按钮状态。
+  // 历史请求刷新后用 Gateway 的持久化结果校准局部按钮状态：改为渲染期
+  // 对比前值（官方"props 变化时调整 state"模式），避免 effect 内同步
+  // setState 的级联渲染。引用对比语义与原 effect 依赖数组一致。
+  const [prevInitialFeedback, setPrevInitialFeedback] =
+    useState(initialFeedback);
+  if (prevInitialFeedback !== initialFeedback) {
+    setPrevInitialFeedback(initialFeedback);
     setFeedback(initialFeedback);
-  }, [initialFeedback]);
+  }
 
   const handleClick = useCallback(
     async (rating: number) => {

@@ -530,6 +530,118 @@ async def resolve_route_permissions_for_request(request: Request, user: Any) -> 
     )
 
 
+_STREAM_RECHECK_COOKIE_NAME = "access_token"
+
+
+async def recheck_stream_permission(
+    request: Request,
+    resource: str,
+    action: str,
+    *,
+    data_scope_target: str | None = None,
+    data_scope_action: str | None = None,
+) -> bool:
+    """Re-evaluate one route permission for an in-flight SSE stream.
+
+    Streaming responses outlive the request that created them: the
+    ``@require_permission`` decorator only ran once at connection setup, so a
+    permission revoked (or an account deactivated) mid-run would otherwise
+    keep streaming until the run finishes. The SSE heartbeat callback calls
+    this periodically to close that gap.
+
+    Re-resolution deliberately bypasses the ``request.state.user`` cache and
+    re-reads the account from the local repository so a role change or
+    deactivation is observed without waiting for a new request. Returns:
+
+    - ``False`` — authorization is enabled and the re-loaded account is
+      deactivated, no longer holds ``resource:action``, or (when
+      ``data_scope_target`` is given) lost its Central IAM row scope; the
+      caller must stop streaming.
+    - ``True`` — still allowed, or the check could not be performed
+      (authorization disabled, no session cookie for non-cookie callers,
+      transient lookup failure). Fail-open keeps transient infrastructure
+      errors from tearing down healthy runs; connection setup remains the
+      authoritative grant for those callers.
+
+    ``data_scope_target``/``data_scope_action`` mirror the endpoint's
+    ``require_iam_data_scope_for_request`` call so a mid-run Central IAM
+    scope revocation also terminates the stream. They are evaluated against
+    the freshly reloaded identity only — the checked call re-reads the
+    ``iam_authz_attributes`` that ``resolve_route_permissions_for_request``
+    just refreshed on ``request.state``, so no stale connection-setup
+    snapshot is consulted.
+    """
+    config = _get_route_authorization_config()
+    if config.enabled is not True:
+        # Legacy all-permissions mode: nothing to re-evaluate (mirrors
+        # resolve_route_permissions' disabled fast path).
+        return True
+
+    try:
+        # Cookie callers are re-resolved from the repository so a mid-run
+        # role change or deactivation is observed. Non-cookie callers (PAT,
+        # internal) have no session cookie to refresh; their identity stays
+        # the one authenticated at connection setup and their grants are
+        # still re-evaluated below against current provider state.
+        fresh_user: Any = getattr(getattr(request, "state", None), "user", None)
+        access_token = request.cookies.get(_STREAM_RECHECK_COOKIE_NAME)
+        if access_token:
+            from app.gateway.auth import decode_token
+            from app.gateway.auth.errors import TokenError
+            from app.gateway.deps import get_local_provider
+
+            payload = decode_token(access_token)
+            if isinstance(payload, TokenError):
+                # Session token expired/revoked mid-stream: deny outright —
+                # a fresh request with this cookie would fail auth too.
+                return False
+            user = await get_local_provider().get_user(payload.sub)
+            if user is None or not getattr(user, "is_active", False):
+                return False
+            fresh_user = user
+
+        if fresh_user is None:
+            # Unidentifiable caller (no cookie, nothing stamped on state):
+            # keep the connection-setup grant rather than inventing a deny.
+            return True
+
+        permissions = await resolve_route_permissions_for_request(request, fresh_user)
+        if f"{resource}:{action}" not in permissions:
+            return False
+
+        if data_scope_target is not None:
+            # require_iam_data_scope_for_request reports denials as 403 and
+            # infrastructure gaps as 503; translate so only an explicit scope
+            # revocation ends the stream (transient IAM failures fail open,
+            # mirroring the permission path above).
+            try:
+                await require_iam_data_scope_for_request(
+                    request,
+                    fresh_user,
+                    target=data_scope_target,
+                    action=data_scope_action or "read",
+                )
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    return False
+                logger.warning(
+                    "Stream data-scope recheck unavailable for %s; keeping the stream open",
+                    data_scope_target,
+                )
+                return True
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "Stream permission recheck failed for %s:%s; keeping the stream open",
+            resource,
+            action,
+            exc_info=True,
+        )
+        return True
+
+
 class _AuthorizationUnavailable(Exception):
     """Raised internally when the provider cannot be resolved for a route check.
 

@@ -13,16 +13,12 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/core/auth/AuthProvider";
 import {
   useConfigureChannelProvider,
   useChannelProviders,
   useConnectChannelProvider,
 } from "@/core/channels/hooks";
-import {
-  canManageChannelRuntime,
-  canReadChannels,
-  canWriteChannels,
-} from "@/core/channels/permissions";
 import { getChannelMutationFailureMessage } from "@/core/channels/mutation-errors";
 import {
   closeConnectWindow,
@@ -30,13 +26,17 @@ import {
   prepareConnectWindow,
 } from "@/core/channels/open-connect-url";
 import {
+  canManageChannelRuntime,
+  canReadChannels,
+  canWriteChannels,
+} from "@/core/channels/permissions";
+import {
   providerCanConnect,
   providerCanEditRuntimeConfig,
   providerNeedsRuntimeConfig,
 } from "@/core/channels/provider-state";
 import type { ChannelProvider } from "@/core/channels/types";
 import { useI18n } from "@/core/i18n/hooks";
-import { useAuth } from "@/core/auth/AuthProvider";
 import { cn } from "@/lib/utils";
 
 import { ChannelProviderIcon } from "./channel-provider-icon";

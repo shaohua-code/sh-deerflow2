@@ -39,14 +39,20 @@ export default function SkillExportDialog({
   const active = useRef<AbortController | null>(null);
   const downloading = useRef(false);
 
-  const load = useCallback(async () => {
-    active.current?.abort();
-    const controller = new AbortController();
-    active.current = controller;
+  // name 变化时在渲染期重置加载状态（官方"props 变化时调整 state"模式），
+  // effect 只负责异步获取与中止，避免 effect 内同步 setState 的级联渲染。
+  const [prevName, setPrevName] = useState(name);
+  if (prevName !== name) {
+    setPrevName(name);
     setManifest(null);
     setError(null);
     setPhase("loading");
     setVisible(0);
+  }
+  const load = useCallback(async () => {
+    const controller = new AbortController();
+    active.current?.abort();
+    active.current = controller;
     try {
       const result = await loadSkillExportManifest(name, controller.signal);
       if (controller.signal.aborted || active.current !== controller) return;
@@ -59,9 +65,25 @@ export default function SkillExportDialog({
     }
   }, [name]);
   useEffect(() => {
-    void load();
+    // 与 load 相同的请求逻辑，但 setState 内联在 promise 回调里：编译器规则
+    // 允许异步回调中的 setState，而对 effect 体内直接调用含 setState 的函数
+    // 一律按同步级联报警，故不复用 load。
+    const controller = new AbortController();
+    active.current?.abort();
+    active.current = controller;
+    loadSkillExportManifest(name, controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted || active.current !== controller) return;
+        setManifest(result);
+        setPhase("ready");
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || active.current !== controller) return;
+        setError(error);
+        setPhase("error");
+      });
     return () => active.current?.abort();
-  }, [load]);
+  }, [name]);
 
   const close = () => {
     active.current?.abort();

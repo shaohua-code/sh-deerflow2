@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 
 import {
@@ -37,7 +39,12 @@ export function useBackgroundTasks(
   threadId: string,
   options: { enabled: boolean; cacheScope?: string },
 ) {
-  const active = options.enabled && Boolean(threadId);
+  const { user } = useAuth();
+  // 列表 GET 要求 threads:read；权限字段缺失时继续请求以兼容旧 Gateway。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  // 功能开关关闭或调用方停用不是撤权，只隐藏结果，不清理该账号缓存。
+  const active = options.enabled && Boolean(threadId) && !accessDenied;
   const queryClient = useQueryClient();
   const queryKey = useMemo(
     () => backgroundTasksQueryKey(threadId, options.cacheScope),
@@ -45,12 +52,12 @@ export function useBackgroundTasks(
   );
 
   useEffect(() => {
-    if (active) return;
+    if (!accessDenied) return;
 
-    // 线程读取权限撤销后按用户和线程清理列表及详情，防止响应继续回填。
+    // 明确撤权时取消并清理当前账号该线程的列表和详情。其他线程与账号保持不动。
     void queryClient.cancelQueries({ queryKey });
     queryClient.removeQueries({ queryKey });
-  }, [active, queryClient, queryKey]);
+  }, [accessDenied, queryClient, queryKey]);
 
   const query = useQuery({
     queryKey,
@@ -78,20 +85,34 @@ export function useBackgroundTask(
   taskId: string,
   options: { enabled: boolean; cacheScope?: string },
 ) {
-  const active = options.enabled && Boolean(threadId) && Boolean(taskId);
+  const { user } = useAuth();
+  // 详情 GET 与列表同为 threads:read；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  // 收起详情或调用方停用不是撤权，只隐藏该详情，不清理列表或其他详情。
+  const active =
+    options.enabled && Boolean(threadId) && Boolean(taskId) && !accessDenied;
+  const cacheScope = options.cacheScope;
   const queryClient = useQueryClient();
   const queryKey = useMemo(
-    () => backgroundTaskQueryKey(threadId, taskId, options.cacheScope),
-    [options.cacheScope, taskId, threadId],
+    () => backgroundTaskQueryKey(threadId, taskId, cacheScope),
+    [cacheScope, taskId, threadId],
   );
 
   useEffect(() => {
-    if (active) return;
+    if (!accessDenied) return;
 
-    // 详情只在展开时读取；关闭详情或失去读取权后取消并清除该详情。
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [active, queryClient, queryKey]);
+    // 明确撤权只取消并清理当前账号该线程的详情；列表由列表 hook 清理。
+    const ownerDetails = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        query.queryKey[0] === "background-tasks" &&
+        query.queryKey[1] === threadId &&
+        query.queryKey[2] === cacheScope &&
+        query.queryKey.length >= 4,
+    };
+    void queryClient.cancelQueries(ownerDetails);
+    queryClient.removeQueries(ownerDetails);
+  }, [accessDenied, cacheScope, queryClient, threadId]);
 
   const query = useQuery({
     queryKey,

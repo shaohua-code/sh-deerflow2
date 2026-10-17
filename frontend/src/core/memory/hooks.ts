@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
+
 import {
   clearMemory,
   createMemoryFact,
@@ -21,6 +24,12 @@ export const memoryQueryKey = (userId: string | null) =>
 type MemoryOwner = { ownerId: string };
 
 export function useMemory(enabled = true, userId: string | null = null) {
+  const { user } = useAuth();
+  // 记忆读取要求 memory:read；权限字段缺失时继续请求以兼容旧 Gateway。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.MEMORY_READ) === "denied";
+  // 调用方停用不是撤权，只隐藏结果，不清理该账号缓存。
+  const active = enabled && userId !== null && !accessDenied;
   const queryClient = useQueryClient();
   const previousUserId = useRef(userId);
   const key = memoryQueryKey(userId);
@@ -30,7 +39,7 @@ export function useMemory(enabled = true, userId: string | null = null) {
       if (!userId) throw new Error("Memory requires an authenticated owner");
       return loadMemory(userId, signal);
     },
-    enabled: enabled && userId !== null,
+    enabled: active,
   });
 
   useEffect(() => {
@@ -39,19 +48,17 @@ export function useMemory(enabled = true, userId: string | null = null) {
     previousUserId.current = userId;
     const keysToClear = new Set<string>();
     if (previous && previous !== userId) keysToClear.add(previous);
-    if (!enabled || !userId) {
-      if (userId) keysToClear.add(userId);
-    }
+    if (accessDenied && userId) keysToClear.add(userId);
     for (const ownerId of keysToClear) {
       const previousKey = memoryQueryKey(ownerId);
       void queryClient.cancelQueries({ queryKey: previousKey, exact: true });
       queryClient.removeQueries({ queryKey: previousKey, exact: true });
     }
-  }, [enabled, queryClient, userId]);
+  }, [accessDenied, queryClient, userId]);
 
   return {
     // 清理 effect 执行前也不向页面暴露当前权限不允许的数据。
-    memory: enabled && userId ? (query.data ?? null) : null,
+    memory: active ? (query.data ?? null) : null,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     error: query.error,

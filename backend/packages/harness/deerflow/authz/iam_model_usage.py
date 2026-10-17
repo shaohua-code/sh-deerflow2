@@ -114,7 +114,12 @@ class IamModelUsageClient:
     ) -> dict[str, Any]:
         """Settle one prior reservation with actual or explicitly estimated usage."""
         payload = self._settlement_payload(
-            request_id, input_tokens, output_tokens, outcome, usage_is_estimated, latency_ms,
+            request_id,
+            input_tokens,
+            output_tokens,
+            outcome,
+            usage_is_estimated,
+            latency_ms,
         )
         result = self._request("POST", "/internal/model-usage/reservations/settle", payload=payload, service_auth=True)
         if not isinstance(result.get("settled"), bool):
@@ -142,7 +147,12 @@ class IamModelUsageClient:
             "application_id": self._uuid(application_id, "application ID"),
             "user_id": self._uuid(user_id, "user ID"),
             **self._settlement_payload(
-                request_id, input_tokens, output_tokens, outcome, usage_is_estimated, latency_ms,
+                request_id,
+                input_tokens,
+                output_tokens,
+                outcome,
+                usage_is_estimated,
+                latency_ms,
             ),
         }
         result = self._request("POST", "/internal/model-usage", payload=payload, service_auth=True)

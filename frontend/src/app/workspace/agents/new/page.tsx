@@ -23,8 +23,6 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/core/auth/AuthProvider";
-import { getMissingPermissions, PERMISSIONS } from "@/core/auth/permissions";
 import {
   Dialog,
   DialogContent,
@@ -50,6 +48,8 @@ import {
   checkAgentName,
   getAgent,
 } from "@/core/agents/api";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getMissingPermissions, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   buildHumanInputResponseText,
@@ -101,8 +101,11 @@ export default function NewAgentPage() {
       PERMISSIONS.RUNS_CREATE,
     ])[0] ?? null;
   // 保存本次渲染的权限结果，查名异步返回时用它阻止撤权后的旧回调继续启动 Agent。
+  // 渲染期写 ref 会被编译器按"渲染期访问 ref"拦截，改为 commit 后同步。
   const missingPermissionRef = useRef(missingPermission);
-  missingPermissionRef.current = missingPermission;
+  useEffect(() => {
+    missingPermissionRef.current = missingPermission;
+  }, [missingPermission]);
   const nameCheckAbortControllerRef = useRef<AbortController | null>(null);
 
   const [step, setStep] = useState<Step>("name");
@@ -325,16 +328,11 @@ export default function NewAgentPage() {
     isCheckingName,
     nameInput,
     sendMessage,
-    t.agents.nameStepAlreadyExistsError,
-    t.agents.nameStepApiDisabledError,
-    t.agents.nameStepNetworkError,
-    t.agents.nameStepBootstrapMessage,
-    t.agents.nameStepBootstrapError,
-    t.agents.nameStepCheckError,
-    t.agents.nameStepInvalidError,
+    // 依赖整个 t.agents 命名空间：react-hooks v7 对细粒度属性链要求对象
+    // 级依赖，且对象引用仅随语言切换变化，粗依赖更稳定。
+    t.agents,
     threadId,
     missingPermission,
-    t.agents.permissionRequired,
   ]);
 
   const handleNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -417,7 +415,6 @@ export default function NewAgentPage() {
     sendMessage,
     setupAgentStatus,
     missingPermission,
-    t.agents.permissionRequired,
     t.agents.saveCommandMessage,
     t.agents.saveFailed,
     thread.isLoading,

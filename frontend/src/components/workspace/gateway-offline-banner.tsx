@@ -33,7 +33,8 @@ export function GatewayOfflineBanner({
   const inFlightRef = useRef(false);
   const [isProbing, setIsProbing] = useState(false);
   // The button reuses the same auth probe as the background recovery timer.
-  const retryProbeRef = useRef<() => Promise<void>>(async () => {});
+  // 占位函数显式返回 undefined，避免 no-empty-function。
+  const retryProbeRef = useRef<() => Promise<void>>(async () => undefined);
   // Count consecutive 401s so we can distinguish "transient warm-up 401"
   // from "session actually expired" and avoid lying with the banner.
   const authFailuresRef = useRef(0);

@@ -588,18 +588,9 @@ class OIDCService:
                 claims=merged,
             ),
             access_token=access_token if isinstance(access_token, str) and access_token else None,
-            refresh_token=(
-                token_response.get("refresh_token")
-                if isinstance(token_response.get("refresh_token"), str)
-                and token_response.get("refresh_token")
-                else None
-            ),
-            access_token_expires_in=(
-                access_expires_in if type(access_expires_in) is int and access_expires_in >= 0 else None
-            ),
-            refresh_token_expires_in=(
-                refresh_expires_in if type(refresh_expires_in) is int and refresh_expires_in >= 0 else None
-            ),
+            refresh_token=(token_response.get("refresh_token") if isinstance(token_response.get("refresh_token"), str) and token_response.get("refresh_token") else None),
+            access_token_expires_in=(access_expires_in if type(access_expires_in) is int and access_expires_in >= 0 else None),
+            refresh_token_expires_in=(refresh_expires_in if type(refresh_expires_in) is int and refresh_expires_in >= 0 else None),
         )
 
 

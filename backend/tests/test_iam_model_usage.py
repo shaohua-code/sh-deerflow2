@@ -30,13 +30,15 @@ def test_resolve_user_id_uses_authenticated_me_endpoint(monkeypatch: pytest.Monk
     monkeypatch.setattr(iam_model_usage.httpx, "request", fake_request)
 
     assert _client().resolve_user_id("verified-bearer") == _USER_ID
-    assert calls == [{
-        "method": "GET",
-        "url": "https://iam.example.test/api/v1/auth/me",
-        "headers": {"Authorization": "Bearer verified-bearer"},
-        "json": None,
-        "timeout": 3.0,
-    }]
+    assert calls == [
+        {
+            "method": "GET",
+            "url": "https://iam.example.test/api/v1/auth/me",
+            "headers": {"Authorization": "Bearer verified-bearer"},
+            "json": None,
+            "timeout": 3.0,
+        }
+    ]
 
 
 def test_reservation_uses_service_key_and_uuid_subjects(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,26 +86,32 @@ def test_settlement_and_unreserved_report_use_distinct_endpoints(monkeypatch: py
     monkeypatch.setattr(iam_model_usage.httpx, "request", fake_request)
     client = _client()
 
-    assert client.settle_usage(
-        request_id="deerflow:call:12345678",
-        input_tokens=95,
-        output_tokens=20,
-        outcome="succeeded",
-        usage_is_estimated=False,
-        latency_ms=1200,
-    )["settled"] is True
-    assert client.report_usage(
-        request_id="deerflow:call:abcdefgh",
-        tenant_id=_TENANT_ID,
-        model_id=_MODEL_ID,
-        application_id=_APPLICATION_ID,
-        user_id=_USER_ID,
-        input_tokens=95,
-        output_tokens=20,
-        outcome="succeeded",
-        usage_is_estimated=False,
-        latency_ms=1200,
-    )["recorded"] is True
+    assert (
+        client.settle_usage(
+            request_id="deerflow:call:12345678",
+            input_tokens=95,
+            output_tokens=20,
+            outcome="succeeded",
+            usage_is_estimated=False,
+            latency_ms=1200,
+        )["settled"]
+        is True
+    )
+    assert (
+        client.report_usage(
+            request_id="deerflow:call:abcdefgh",
+            tenant_id=_TENANT_ID,
+            model_id=_MODEL_ID,
+            application_id=_APPLICATION_ID,
+            user_id=_USER_ID,
+            input_tokens=95,
+            output_tokens=20,
+            outcome="succeeded",
+            usage_is_estimated=False,
+            latency_ms=1200,
+        )["recorded"]
+        is True
+    )
     assert urls == [
         "https://iam.example.test/internal/model-usage/reservations/settle",
         "https://iam.example.test/internal/model-usage",

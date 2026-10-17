@@ -15,6 +15,22 @@ rs.mock("@/core/projects", () => ({
 rs.mock("@/core/threads/hooks", () => ({
   useMoveThreadToProject: () => ({ mutate: mocks.moveThreadToProject }),
 }));
+// NewProjectDialog 现在经 getProjectPermissionAccess 预检（canCreateProject
+// = projects:read + projects:write，加 threads:write），缺失时 effect 直接
+// 关闭对话框（P327/P328 权限矩阵）。
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: {
+      id: "user-1",
+      permissions: [
+        "projects:read",
+        "projects:write",
+        "threads:read",
+        "threads:write",
+      ],
+    },
+  }),
+}));
 
 import { NewProjectDialog } from "@/components/workspace/move-to-project-menu";
 import { I18nProvider } from "@/core/i18n/context";

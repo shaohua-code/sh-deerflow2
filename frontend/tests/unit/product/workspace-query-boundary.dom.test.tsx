@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cleanup,
@@ -8,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useState } from "react";
 
 const mocks = rs.hoisted(() => ({
   userId: "alice",

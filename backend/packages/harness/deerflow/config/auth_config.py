@@ -25,10 +25,7 @@ class OIDCProviderConfig(BaseModel):
     )
     iam_token_vault_enabled: bool = Field(
         default=False,
-        description=(
-            "Persist this provider's IAM access/refresh tokens in the encrypted Gateway vault. "
-            "Requires the offline_access scope and DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY."
-        ),
+        description=("Persist this provider's IAM access/refresh tokens in the encrypted Gateway vault. Requires the offline_access scope and DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY."),
     )
 
     @model_validator(mode="after")
@@ -53,10 +50,7 @@ class OIDCProviderConfig(BaseModel):
     )
     admin_emails: list[str] = Field(
         default_factory=list,
-        description=(
-            "Deprecated compatibility setting; ignored. OIDC email addresses never grant admin access. "
-            "Elevated access requires explicit IAM authorization after server-side integration is enabled."
-        ),
+        description=("Deprecated compatibility setting; ignored. OIDC email addresses never grant admin access. Elevated access requires explicit IAM authorization after server-side integration is enabled."),
     )
 
     # ── PKCE / nonce ──────────────────────────────────────────────────

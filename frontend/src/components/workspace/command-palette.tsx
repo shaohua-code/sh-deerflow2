@@ -6,7 +6,7 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
 import {
   CommandDialog,
@@ -35,7 +35,9 @@ export function CommandPalette() {
   const { openSettings } = useSettingsDialog();
   const [open, setOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [isMac, setIsMac] = useState(false);
+  // 平台探测是静态浏览器快照，用 useSyncExternalStore 挂载后读取，
+  // 服务端渲染保持 false，替代"effect 内同步 setState"的旧写法。
+  const isMac = useSyncExternalStore(subscribeNoop, getIsMac, getIsMacServer);
 
   const handleNewChat = useCallback(() => {
     router.push("/workspace/chats/new");
@@ -64,9 +66,6 @@ export function CommandPalette() {
 
   useGlobalShortcuts(shortcuts);
 
-  useEffect(() => {
-    setIsMac(navigator.userAgent.includes("Mac"));
-  }, []);
   const metaKey = isMac ? "⌘" : "Ctrl+";
   const shiftKey = isMac ? "⇧" : "Shift+";
 
@@ -130,4 +129,15 @@ export function CommandPalette() {
       </Dialog>
     </>
   );
+}
+
+// 平台快照在整个生命周期内不变，无需真实订阅；原始布尔值保证快照稳定。
+function subscribeNoop() {
+  return () => undefined;
+}
+function getIsMac() {
+  return navigator.userAgent.includes("Mac");
+}
+function getIsMacServer() {
+  return false;
 }

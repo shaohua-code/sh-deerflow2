@@ -23,10 +23,11 @@ from deerflow_extension_api import (
     OwnerScheduledTaskPage,
     OwnerThreadPage,
 )
-from flow_desk_product_extension.jobs import DataJobWorker, _run_cursor_key
-from flow_desk_product_extension.settings import ProductSettingsStore
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+from flow_desk_product_extension.jobs import DataJobWorker, _run_cursor_key
+from flow_desk_product_extension.settings import ProductSettingsStore
 
 
 def test_run_cursor_comparison_normalizes_timezone_offsets() -> None:

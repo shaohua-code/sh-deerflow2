@@ -48,10 +48,10 @@ import {
 import { getAPIClient } from "@/core/api";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { useProjects } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { useLocalSettings } from "@/core/settings";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { exportThread, type ThreadExportFormat } from "@/core/threads/export";
@@ -61,7 +61,6 @@ import {
   usePinThread,
   useRenameThread,
 } from "@/core/threads/hooks";
-import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import {
   flattenThreadBranches,
   type ThreadBranchEntry,
@@ -75,6 +74,7 @@ import {
   projectIdOfThread,
   titleOfThread,
 } from "@/core/threads/utils";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import { env } from "@/env";
 import { isIMEComposing } from "@/lib/ime";
 import { buildThreadShareUrl } from "@/product/thread-share-url";

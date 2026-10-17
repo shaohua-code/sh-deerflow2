@@ -26,6 +26,14 @@ rs.mock("@/core/auth/AuthProvider", () => ({
 }));
 
 import {
+  projectConfigQueryKey,
+  projectDetailQueryKey,
+  projectDocumentsQueryKey,
+  projectThreadFilesQueryKey,
+  projectThreadsQueryKey,
+  projectsListQueryKey,
+} from "@/core/projects/api";
+import {
   useAttachProjectDocument,
   useDeleteProjectDocument,
   useInfiniteProjectDocuments,
@@ -37,14 +45,6 @@ import {
   usePromoteThreadFile,
   useUploadProjectDocument,
 } from "@/core/projects/hooks";
-import {
-  projectConfigQueryKey,
-  projectDetailQueryKey,
-  projectDocumentsQueryKey,
-  projectThreadFilesQueryKey,
-  projectThreadsQueryKey,
-  projectsListQueryKey,
-} from "@/core/projects/api";
 
 const DOCUMENT = {
   id: "doc-1",

@@ -1,7 +1,7 @@
 "use client";
 
 import { LoaderCircleIcon } from "lucide-react";
-import { type CSSProperties, type FormEvent, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import type { SettingsUnsavedChangesHandler } from "@/components/workspace/settings/settings-unsaved-changes";
 import type {
   ChannelProvider,
   ChannelRuntimeConfigValues,
@@ -28,6 +29,7 @@ type ChannelRuntimeConfigDialogProps = {
     provider: ChannelProvider,
     values: ChannelRuntimeConfigValues,
   ) => void;
+  onUnsavedChangesChange?: SettingsUnsavedChangesHandler;
 };
 
 type SecretInputStyle = CSSProperties & {
@@ -44,6 +46,7 @@ export function ChannelRuntimeConfigDialog({
   submitting,
   onOpenChange,
   onSubmit,
+  onUnsavedChangesChange,
 }: ChannelRuntimeConfigDialogProps) {
   // 关闭时卸载编辑器；每次重新打开都从最新服务端快照创建独立凭据会话。
   if (!provider || !open) return null;
@@ -55,6 +58,7 @@ export function ChannelRuntimeConfigDialog({
       submitting={submitting}
       onOpenChange={onOpenChange}
       onSubmit={onSubmit}
+      onUnsavedChangesChange={onUnsavedChangesChange}
     />
   );
 }
@@ -64,6 +68,7 @@ function ChannelRuntimeConfigEditor({
   submitting,
   onOpenChange,
   onSubmit,
+  onUnsavedChangesChange,
 }: Omit<ChannelRuntimeConfigDialogProps, "provider" | "open"> & {
   provider: ChannelProvider;
 }) {
@@ -95,6 +100,24 @@ function ChannelRuntimeConfigEditor({
     }
     onOpenChange(false);
   };
+
+  // 放弃动作只把草稿重置为服务端快照，不关闭弹窗；
+  // 设置弹窗切栏时会先调用它再卸载本页。
+  const discardDraft = () => {
+    setValues(initialValues);
+  };
+
+  // 向设置弹窗登记当前草稿状态；pending 时由设置弹窗阻止切换与关闭。
+  useEffect(() => {
+    if (!onUnsavedChangesChange) return;
+    onUnsavedChangesChange(
+      hasUnsavedChanges
+        ? { isPending: submitting, discard: discardDraft }
+        : null,
+    );
+    return () => onUnsavedChangesChange(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsavedChanges, onUnsavedChangesChange, submitting]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

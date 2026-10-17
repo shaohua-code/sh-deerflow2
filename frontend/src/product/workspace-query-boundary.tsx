@@ -1,9 +1,8 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useEffect } from "react";
-
-import { useQueryClient } from "@tanstack/react-query";
 
 import { QueryClientProvider } from "@/components/query-client-provider";
 import { useAuth } from "@/core/auth/AuthProvider";

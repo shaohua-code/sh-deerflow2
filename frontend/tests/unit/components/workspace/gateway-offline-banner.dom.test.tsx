@@ -276,7 +276,7 @@ describe("GatewayOfflineBanner logout recovery (#3001)", () => {
   });
 
   it("keeps identity and fails closed when the auth request cannot connect", async () => {
-    rs.spyOn(console, "error").mockImplementation(() => {});
+    rs.spyOn(console, "error").mockImplementation(() => undefined);
     rs.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     renderAuthRefreshProbe({ withBanner: true });
 

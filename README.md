@@ -639,7 +639,7 @@ Notification launch and failed Agent-run deliveries use capped exponential backo
 Notification runs keep their trusted delivery instruction separate from the framed, untrusted remote event payload. The process-started task runtime—not a hot config read—controls whether the task-management tools are exposed, so changing `mcp_tasks` requires a Gateway restart. When a skill's `allowed-tools` policy is active, `list_background_tasks` and `cancel_background_task` must be declared explicitly like other business tools.
 See the [MCP Server Guide](backend/docs/MCP_SERVER.md) for detailed instructions.
 
-In the workspace, listing task records and details requires `threads:read`; cancellation requires `threads:write`. The UI stops polling and hides cached task rows when read permission is revoked.
+In the workspace, listing task records and details requires `threads:read`; cancellation requires `threads:write`. An explicit read-permission revocation hides cached rows in the same frame and clears only that account's list/detail cache; feature-off or caller-disable only hides it.
 
 Security: pass per-request MCP credentials only through `config.context.secrets`;
 credentials must never be placed in either run metadata surface

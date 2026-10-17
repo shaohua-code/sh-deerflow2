@@ -1,3 +1,6 @@
+// undici File 继承 undici Blob，可被 FormData.append 校验接受（见下方替换说明）。
+import { File as UndiciFile } from "node:buffer";
+
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -16,11 +19,28 @@ import { AuthProvider, useAuth } from "@/core/auth/AuthProvider";
 import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
+// rstest dom 环境的 jsdom File 不是 undici Blob 的子类实例，上传链路
+// （undici FormData.append）会抛 "The 'obj' argument must be an instance
+// of Blob. Received an instance of File"。与 sessionStorage 整体替换先例
+// 一致，用 Object.defineProperty 替换全局 File，保证组件内
+// `attachment.file instanceof File` 判断与 FormData 校验使用同一实现。
+Object.defineProperty(globalThis, "File", {
+  value: UndiciFile,
+  configurable: true,
+  writable: true,
+});
+
 const toastMocks = rs.hoisted(() => ({
   error: rs.fn(),
   info: rs.fn(),
 }));
 const polishMocks = rs.hoisted(() => ({ polishInputDraft: rs.fn() }));
+
+// fetch mock 的调用方只传字符串 URL；Request/URL 形态仍安全取值，避免 [object Object]。
+function fetchCallUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  return input instanceof URL ? input.href : input.url;
+}
 
 rs.mock("sonner", () => ({
   toast: toastMocks,
@@ -355,7 +375,7 @@ describe("InputBox stop gating (runs:cancel)", () => {
     const fetchSpy = rs
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input) => {
-        const url = String(input);
+        const url = fetchCallUrl(input);
         return new Response(
           JSON.stringify(
             url.includes("/suggestions")
@@ -379,7 +399,7 @@ describe("InputBox stop gating (runs:cancel)", () => {
 
     expect(
       fetchSpy.mock.calls.some(([input]) =>
-        String(input).includes("/api/threads/thread-1/suggestions"),
+        fetchCallUrl(input).includes("/api/threads/thread-1/suggestions"),
       ),
     ).toBe(false);
   });
@@ -388,7 +408,7 @@ describe("InputBox stop gating (runs:cancel)", () => {
     const fetchSpy = rs
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input) => {
-        const url = String(input);
+        const url = fetchCallUrl(input);
         return new Response(
           JSON.stringify(
             url.includes("/suggestions")
@@ -417,7 +437,7 @@ describe("InputBox stop gating (runs:cancel)", () => {
     );
     expect(
       fetchSpy.mock.calls.filter(([input]) =>
-        String(input).includes("/api/threads/thread-1/suggestions"),
+        fetchCallUrl(input).includes("/api/threads/thread-1/suggestions"),
       ),
     ).toHaveLength(1);
   });
@@ -461,7 +481,7 @@ describe("InputBox built-in command permission gating", () => {
       permissions: ["runs:create", "threads:write"],
       status: "ready",
     });
-    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "/goal" } });
     fireEvent.click(getSubmitButton(container));
 
@@ -471,9 +491,9 @@ describe("InputBox built-in command permission gating", () => {
       ),
     );
     expect(
-      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+      fetchSpy.mock.calls.some(([url]) => fetchCallUrl(url).includes("/goal")),
     ).toBe(false);
-    expect(input.value).toBe("/goal");
+    expect((input as HTMLInputElement).value).toBe("/goal");
   });
 
   it("does not clear the goal when threads:write is denied", async () => {
@@ -485,7 +505,7 @@ describe("InputBox built-in command permission gating", () => {
       permissions: ["runs:create", "threads:read"],
       status: "ready",
     });
-    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "/goal clear" } });
     fireEvent.click(getSubmitButton(container));
 
@@ -495,9 +515,9 @@ describe("InputBox built-in command permission gating", () => {
       ),
     );
     expect(
-      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+      fetchSpy.mock.calls.some(([url]) => fetchCallUrl(url).includes("/goal")),
     ).toBe(false);
-    expect(input.value).toBe("/goal clear");
+    expect((input as HTMLInputElement).value).toBe("/goal clear");
   });
 
   it("requires threads:write before saving a goal, even when runs:create is granted", async () => {
@@ -509,7 +529,7 @@ describe("InputBox built-in command permission gating", () => {
       permissions: ["runs:create", "threads:read"],
       status: "ready",
     });
-    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const input = screen.getByRole("textbox");
     fireEvent.change(input, {
       target: { value: "/goal finish the product review" },
     });
@@ -521,9 +541,11 @@ describe("InputBox built-in command permission gating", () => {
       ),
     );
     expect(
-      fetchSpy.mock.calls.some(([url]) => String(url).includes("/goal")),
+      fetchSpy.mock.calls.some(([url]) => fetchCallUrl(url).includes("/goal")),
     ).toBe(false);
-    expect(input.value).toBe("/goal finish the product review");
+    expect((input as HTMLInputElement).value).toBe(
+      "/goal finish the product review",
+    );
   });
 
   it("does not compact the conversation when threads:write is denied", async () => {
@@ -535,7 +557,7 @@ describe("InputBox built-in command permission gating", () => {
       permissions: ["runs:create", "threads:read"],
       status: "ready",
     });
-    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "/compact" } });
     fireEvent.click(getSubmitButton(container));
 
@@ -545,8 +567,10 @@ describe("InputBox built-in command permission gating", () => {
       ),
     );
     expect(
-      fetchSpy.mock.calls.some(([url]) => String(url).includes("/compact")),
+      fetchSpy.mock.calls.some(([url]) =>
+        fetchCallUrl(url).includes("/compact"),
+      ),
     ).toBe(false);
-    expect(input.value).toBe("/compact");
+    expect((input as HTMLInputElement).value).toBe("/compact");
   });
 });

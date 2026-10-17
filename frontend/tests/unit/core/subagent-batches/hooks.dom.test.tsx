@@ -9,9 +9,15 @@ const mocks = rs.hoisted(() => ({
   fetchBatches: rs.fn(),
   retry: rs.fn(),
   toastError: rs.fn(),
+  user: {
+    current: { id: "user-1", permissions: null as string[] | null },
+  },
 }));
 
 rs.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: mocks.user.current }),
+}));
 rs.mock("@/core/subagent-batches/api", () => ({
   controlSubagentBatch: mocks.control,
   fetchSubagentBatchItems: mocks.fetchItems,
@@ -51,6 +57,7 @@ afterEach(() => {
   mocks.fetchBatches.mockReset();
   mocks.retry.mockReset();
   mocks.toastError.mockReset();
+  mocks.user.current = { id: "user-1", permissions: null };
 });
 
 describe("subagent batch mutation error copy", () => {
@@ -109,6 +116,8 @@ describe("subagent batch mutation error copy", () => {
 
 describe("subagent batch read permissions", () => {
   it("passes React Query cancellation signals to authorized batch reads", async () => {
+    // 权限快照缺失时继续请求，保持旧 Gateway 兼容。
+    mocks.user.current = { id: "user-1", permissions: null };
     mocks.fetchBatches.mockResolvedValueOnce([]);
     mocks.fetchItems.mockResolvedValueOnce([]);
     const { client, Wrapper } = createWrapper();
@@ -146,18 +155,16 @@ describe("subagent batch read permissions", () => {
     }
   });
 
-  it("hides and removes batch and paged-item caches when threads:read is denied", async () => {
+  it("hides caller-disabled batch and paged-item reads without removing owner caches", () => {
     const { client, Wrapper } = createWrapper();
-    client.setQueryData(subagentBatchesKey("thread-1", "user-1"), [
-      { id: "private" },
-    ]);
+    const ownerBatch = { id: "batch-1" };
+    client.setQueryData(subagentBatchesKey("thread-1", "user-1"), [ownerBatch]);
     client.setQueryData(
       subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
-      {
-        pages: [[{ id: "private-item" }]],
-        pageParams: [0],
-      },
+      { pages: [[{ id: "item-1" }]], pageParams: [0] },
     );
+    mocks.user.current = { id: "user-1", permissions: ["threads:read"] };
+
     const batches = renderHook(
       () =>
         useSubagentBatches("thread-1", {
@@ -175,22 +182,136 @@ describe("subagent batch read permissions", () => {
       { wrapper: Wrapper },
     );
     try {
+      // 仓储不可用或调用方停用只隐藏结果，不删该账号的批次或条目缓存。
       expect(batches.result.current.data).toBeUndefined();
+      expect(batches.result.current.isLoading).toBe(false);
+      expect(batches.result.current.isFetching).toBe(false);
+      expect(batches.result.current.error).toBeNull();
       expect(items.result.current.data).toBeUndefined();
+      expect(items.result.current.isLoading).toBe(false);
+      expect(items.result.current.isFetching).toBe(false);
+      expect(items.result.current.error).toBeNull();
+      expect(
+        client.getQueryData(subagentBatchesKey("thread-1", "user-1")),
+      ).toEqual([ownerBatch]);
+      expect(
+        client.getQueryData(
+          subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
+        ),
+      ).toEqual({ pages: [[{ id: "item-1" }]], pageParams: [0] });
+      expect(mocks.fetchBatches).not.toHaveBeenCalled();
+      expect(mocks.fetchItems).not.toHaveBeenCalled();
+    } finally {
+      batches.unmount();
+      items.unmount();
+      client.clear();
+    }
+  });
+
+  it("clears only this owner's batch and item caches when threads:read is denied", async () => {
+    const { client, Wrapper } = createWrapper();
+    client.setQueryData(subagentBatchesKey("thread-1", "user-1"), [
+      { id: "private" },
+    ]);
+    client.setQueryData(
+      subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
+      { pages: [[{ id: "private-item" }]], pageParams: [0] },
+    );
+    client.setQueryData(subagentBatchesKey("thread-1", "user-2"), [
+      { id: "other-owner" },
+    ]);
+    client.setQueryData(
+      subagentBatchItemsKey("thread-1", "batch-2", "user-2"),
+      { pages: [[{ id: "other-item" }]], pageParams: [0] },
+    );
+    client.setQueryData(subagentBatchesKey("thread-2", "user-1"), []);
+    mocks.user.current = { id: "user-1", permissions: [] };
+
+    const batches = renderHook(
+      () =>
+        useSubagentBatches("thread-1", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    try {
+      expect(batches.result.current.data).toBeUndefined();
+      expect(batches.result.current.isLoading).toBe(false);
+      expect(batches.result.current.error).toBeNull();
       await waitFor(() => {
         expect(
           client.getQueryData(subagentBatchesKey("thread-1", "user-1")),
-        ).toBe(undefined);
+        ).toBeUndefined();
         expect(
           client.getQueryData(
             subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
           ),
         ).toBeUndefined();
       });
+      // 其他账号和当前账号的其他线程缓存保持不动。
+      expect(
+        client.getQueryData(subagentBatchesKey("thread-1", "user-2")),
+      ).toEqual([{ id: "other-owner" }]);
+      expect(
+        client.getQueryData(
+          subagentBatchItemsKey("thread-1", "batch-2", "user-2"),
+        ),
+      ).toEqual({ pages: [[{ id: "other-item" }]], pageParams: [0] });
+      expect(
+        client.getQueryData(subagentBatchesKey("thread-2", "user-1")),
+      ).toEqual([]);
       expect(mocks.fetchBatches).not.toHaveBeenCalled();
-      expect(mocks.fetchItems).not.toHaveBeenCalled();
     } finally {
       batches.unmount();
+      client.clear();
+    }
+  });
+
+  it("hides a denied items read without removing the owner's batch list", async () => {
+    const { client, Wrapper } = createWrapper();
+    const ownerBatch = { id: "batch-1" };
+    client.setQueryData(subagentBatchesKey("thread-1", "user-1"), [ownerBatch]);
+    client.setQueryData(
+      subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
+      { pages: [[{ id: "item-1" }]], pageParams: [0] },
+    );
+    client.setQueryData(
+      subagentBatchItemsKey("thread-1", "batch-2", "user-1"),
+      { pages: [[{ id: "item-2" }]], pageParams: [0] },
+    );
+    mocks.user.current = { id: "user-1", permissions: [] };
+
+    const items = renderHook(
+      () =>
+        useSubagentBatchItems("thread-1", "batch-1", {
+          enabled: true,
+          cacheScope: "user-1",
+        }),
+      { wrapper: Wrapper },
+    );
+    try {
+      expect(items.result.current.data).toBeUndefined();
+      expect(items.result.current.isLoading).toBe(false);
+      expect(items.result.current.error).toBeNull();
+      await waitFor(() => {
+        expect(
+          client.getQueryData(
+            subagentBatchItemsKey("thread-1", "batch-1", "user-1"),
+          ),
+        ).toBeUndefined();
+        expect(
+          client.getQueryData(
+            subagentBatchItemsKey("thread-1", "batch-2", "user-1"),
+          ),
+        ).toBeUndefined();
+      });
+      // 条目撤权只清理条目分页；批次列表由列表 hook 负责清理。
+      expect(
+        client.getQueryData(subagentBatchesKey("thread-1", "user-1")),
+      ).toEqual([ownerBatch]);
+      expect(mocks.fetchItems).not.toHaveBeenCalled();
+    } finally {
       items.unmount();
       client.clear();
     }

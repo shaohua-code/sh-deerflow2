@@ -90,7 +90,13 @@ for (const cached of [false, true]) {
       });
       let summaryReads = 0;
       mocks.fetch.mockImplementation((input: RequestInfo | URL) => {
-        const url = String(input);
+        // Request/URL 形态也安全取值，避免 [object Object]。
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
         if (url.includes("/summary")) {
           summaryReads += 1;
           return summaryReads === 1

@@ -749,6 +749,10 @@ export const zhCN: Translations = {
       titlePlaceholder: "编辑标题",
       promptPlaceholder: "编辑提示词",
       submit: "保存编辑",
+      dirtyTitle: "放弃未保存的编辑？",
+      dirtyDescription: "当前任务的修改尚未保存，继续将放弃这些更改。",
+      discard: "放弃更改",
+      continueEditing: "继续编辑",
     },
     status: {
       enabled: "已启用",
@@ -1000,6 +1004,7 @@ export const zhCN: Translations = {
     placeholder: "继续深入追问...",
     send: "发送",
     sendFailed: "侧边对话发送失败。",
+    threadWritePermissionRequired: "创建侧边对话需要会话写入权限。",
     noContext: "未选择上下文",
     continuing: "继续当前侧边对话",
     selectionCrossesMessages:

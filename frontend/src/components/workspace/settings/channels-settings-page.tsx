@@ -20,6 +20,7 @@ import {
   ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
+import { useAuth } from "@/core/auth/AuthProvider";
 import {
   useConfigureChannelProvider,
   useChannelConnections,
@@ -28,11 +29,6 @@ import {
   useDisconnectChannelConnection,
   useDisconnectChannelProvider,
 } from "@/core/channels/hooks";
-import {
-  canManageChannelRuntime,
-  canReadChannels,
-  canWriteChannels,
-} from "@/core/channels/permissions";
 import { getChannelMutationFailureMessage } from "@/core/channels/mutation-errors";
 import {
   closeConnectWindow,
@@ -40,12 +36,16 @@ import {
   prepareConnectWindow,
 } from "@/core/channels/open-connect-url";
 import {
+  canManageChannelRuntime,
+  canReadChannels,
+  canWriteChannels,
+} from "@/core/channels/permissions";
+import {
   providerCanConnect,
   providerCanEditRuntimeConfig,
   providerNeedsRuntimeConfig,
 } from "@/core/channels/provider-state";
 import type { ChannelConnection, ChannelProvider } from "@/core/channels/types";
-import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
@@ -53,6 +53,7 @@ import { ChannelProviderIcon } from "../channels/channel-provider-icon";
 import { ChannelRuntimeConfigDialog } from "../channels/channel-runtime-config-dialog";
 
 import { SettingsSection } from "./settings-section";
+import type { SettingsUnsavedChangesHandler } from "./settings-unsaved-changes";
 
 function getProviderDescription(
   provider: ChannelProvider,
@@ -116,9 +117,11 @@ function getProviderUnavailableReason(
 function ChannelProviderItem({
   provider,
   connection,
+  onUnsavedChangesChange,
 }: {
   provider: ChannelProvider;
   connection?: ChannelConnection;
+  onUnsavedChangesChange?: SettingsUnsavedChangesHandler;
 }) {
   const { t } = useI18n();
   const { user } = useAuth();
@@ -382,6 +385,7 @@ function ChannelProviderItem({
         open={setupOpen}
         submitting={configureMutation.isPending}
         onOpenChange={setSetupOpen}
+        onUnsavedChangesChange={onUnsavedChangesChange}
         onSubmit={(submitProvider, values) => {
           if (!canManageRuntime) {
             toast.error(t.channels.adminPermissionRequired);
@@ -419,7 +423,11 @@ function ChannelProviderItem({
   );
 }
 
-export function ChannelsSettingsPage() {
+export function ChannelsSettingsPage({
+  onUnsavedChangesChange,
+}: {
+  onUnsavedChangesChange?: SettingsUnsavedChangesHandler;
+} = {}) {
   const { t } = useI18n();
   const { user } = useAuth();
   const canRead = canReadChannels(user);
@@ -522,6 +530,7 @@ export function ChannelsSettingsPage() {
                   key={provider.provider}
                   provider={provider}
                   connection={connectionByProvider.get(provider.provider)}
+                  onUnsavedChangesChange={onUnsavedChangesChange}
                 />
               ))}
             </div>

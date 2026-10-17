@@ -13,11 +13,11 @@ rs.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(mocks.query),
 }));
 
-import { WorkspaceSettingsDeepLink } from "@/components/workspace/workspace-settings-deep-link";
 import {
   getSettingsDialogSnapshot,
   setSettingsDialogOpen,
 } from "@/components/workspace/settings/settings-dialog-store";
+import { WorkspaceSettingsDeepLink } from "@/components/workspace/workspace-settings-deep-link";
 
 afterEach(() => {
   cleanup();

@@ -234,6 +234,10 @@ describe("SubagentSettingsPage mutation error copy", () => {
       within(firstDialog).getByRole("button", { name: "Cancel" }),
     );
 
+    // 统一 unsaved-changes 契约：草稿脏时取消先弹放弃确认，"Discard
+    // changes"才真正关闭编辑器（P347/P348 系列交互契约的回归覆盖）。
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Add subagent" }));
     const reopenedDialog = screen.getByRole("dialog");
     expect(within(reopenedDialog).getAllByRole("textbox")[0]).toHaveProperty(

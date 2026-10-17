@@ -46,7 +46,6 @@ import {
   hasPermission,
 } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
-import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import {
   PROJECTS_CONFIG_DEFAULT,
   useArchiveProject,
@@ -59,6 +58,7 @@ import {
   type Project,
   type ProjectsConfig,
 } from "@/core/projects";
+import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";

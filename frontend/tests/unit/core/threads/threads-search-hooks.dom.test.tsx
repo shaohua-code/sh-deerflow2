@@ -24,11 +24,12 @@ rs.mock("@/core/api", () => ({
 
 import { threadsSearchQueryKey, useThreads } from "@/core/threads/hooks";
 
-const listParams = {
+// ThreadSearchParams 未导出；用 hook 参数类型取参，让 select 获得上下文推断。
+const listParams: NonNullable<Parameters<typeof useThreads>[0]> = {
   limit: 50,
-  sortBy: "updated_at" as const,
-  sortOrder: "desc" as const,
-  select: ["thread_id", "updated_at", "values", "metadata"] as const,
+  sortBy: "updated_at",
+  sortOrder: "desc",
+  select: ["thread_id", "updated_at", "values", "metadata"],
 };
 const otherParams = { ...listParams, offset: 50 };
 

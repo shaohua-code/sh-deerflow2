@@ -101,11 +101,7 @@ def is_authz_decision(value: Any) -> bool:
         return (
             isinstance(allow, bool)
             and isinstance(reasons, list)
-            and all(
-                isinstance(getattr(reason, "code", None), str)
-                and isinstance(getattr(reason, "message", ""), str)
-                for reason in reasons
-            )
+            and all(isinstance(getattr(reason, "code", None), str) and isinstance(getattr(reason, "message", ""), str) for reason in reasons)
             and (policy_id is None or isinstance(policy_id, str))
             and isinstance(metadata, Mapping)
         )

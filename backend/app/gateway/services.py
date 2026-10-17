@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -25,7 +26,7 @@ from langchain_core.messages.utils import convert_to_messages
 from langgraph.types import Command
 
 from app.gateway.auth_disabled import AUTH_SOURCE_INTERNAL
-from app.gateway.authz import require_cancel_permission_if
+from app.gateway.authz import recheck_stream_permission, require_cancel_permission_if
 from app.gateway.deps import get_checkpointer, get_local_provider, get_run_context, get_run_manager, get_stream_bridge
 from app.gateway.internal_auth import (
     INTERNAL_OWNER_USER_ID_HEADER_NAME,
@@ -720,11 +721,7 @@ def inject_authenticated_user_context(
         permissions = getattr(auth_context, "permissions", None)
         # ToolRuntime.context is transient; do not copy this snapshot into
         # configurable because LangGraph checkpoints persist that section.
-        runtime_context["route_permissions"] = (
-            list(permissions)
-            if isinstance(permissions, (list, tuple)) and all(isinstance(item, str) for item in permissions)
-            else []
-        )
+        runtime_context["route_permissions"] = list(permissions) if isinstance(permissions, (list, tuple)) and all(isinstance(item, str) for item in permissions) else []
     if auth_source == AUTH_SOURCE_INTERNAL and request_context is not None:
         channel_user_id = request_context.get("channel_user_id")
         if channel_user_id is not None:
@@ -1994,6 +1991,11 @@ async def launch_mcp_task_notification_run(
     return {"run_id": record.run_id, "thread_id": record.thread_id}
 
 
+# Mid-stream permission rechecks run on the heartbeat callback, but no more
+# often than this — the bridge heartbeat is a pacing signal, not a poll budget.
+_STREAM_PERMISSION_RECHECK_INTERVAL_SECONDS = 30.0
+
+
 async def sse_consumer(
     bridge: StreamBridge,
     record: RunRecord,
@@ -2002,6 +2004,9 @@ async def sse_consumer(
     *,
     apply_on_disconnect: bool = True,
     emit_gap_on_missing_stream: bool = False,
+    permission_recheck: tuple[str, str] | None = None,
+    permission_recheck_interval: float = _STREAM_PERMISSION_RECHECK_INTERVAL_SECONDS,
+    data_scope_recheck: tuple[str, str] | None = None,
 ):
     """Async generator that yields SSE frames from the bridge.
 
@@ -2023,6 +2028,20 @@ async def sse_consumer(
     that flag. Thread-scoped ``/runs/stream`` passes True only for this
     request's reuse; default callers (joins, stateless ``/api/runs/stream``,
     tests) keep ``end`` when a terminal record's stream is gone.
+
+    ``permission_recheck`` opts the stream into mid-run authorization
+    re-evaluation: on each heartbeat at least
+    ``permission_recheck_interval`` seconds apart, ``recheck_stream_permission``
+    re-resolves the caller and re-runs the route permission the endpoint
+    enforced at connection setup (``("runs", "create")`` for creating
+    endpoints, ``("runs", "read")`` for join surfaces). ``data_scope_recheck``
+    additionally mirrors the endpoint's ``require_iam_data_scope_for_request``
+    call (``("runs:create", "create")`` / ``("runs:read", "read")``) so a
+    mid-run Central IAM row-scope revocation also terminates the stream. A
+    denied recheck ends this stream with ``end`` and must NOT trigger the
+    creator's cancel-on-disconnect policy — revoking a grant terminates the
+    caller's view of the run, not the run itself (matching the observer
+    semantics).
     """
     last_event_id = request.headers.get("Last-Event-ID")
     if await _terminal_record_stream_missing(bridge, record):
@@ -2045,6 +2064,8 @@ async def sse_consumer(
         return
 
     gap_emitted = False
+    permission_recheck_terminated = False
+    next_permission_recheck = time.monotonic() + permission_recheck_interval
     try:
         async for entry in bridge.subscribe(record.run_id, last_event_id=last_event_id):
             if await request.is_disconnected():
@@ -2069,6 +2090,27 @@ async def sse_consumer(
                 if await _orphan_recovery_observed_after_heartbeat(record, run_mgr):
                     yield format_sse("end", None)
                     return
+                recheck_due = permission_recheck is not None and time.monotonic() >= next_permission_recheck
+                if recheck_due and not await recheck_stream_permission(
+                    request,
+                    *permission_recheck,
+                    data_scope_target=data_scope_recheck[0] if data_scope_recheck else None,
+                    data_scope_action=data_scope_recheck[1] if data_scope_recheck else None,
+                ):
+                    # The caller lost the grant or row scope (or the account
+                    # was deactivated) while the run was in flight. End their
+                    # stream; the run itself keeps running for clients that
+                    # still hold access.
+                    logger.warning(
+                        "Ending stream for run %s: permission %s:%s (data_scope=%s) was revoked mid-stream",
+                        sanitize_log_param(record.run_id),
+                        permission_recheck[0],
+                        permission_recheck[1],
+                        sanitize_log_param(data_scope_recheck[0]) if data_scope_recheck else "n/a",
+                    )
+                    permission_recheck_terminated = True
+                    yield format_sse("end", None)
+                    return
                 yield ": heartbeat\n\n"
                 continue
 
@@ -2084,7 +2126,10 @@ async def sse_consumer(
         # subscribing; a plain join disconnect must not invent a new
         # cancellation request. Only apply on_disconnect to locally-owned runs,
         # and only on the creator's own stream — never on an observer join.
-        if apply_on_disconnect and not gap_emitted and not record.store_only and record.status in (RunStatus.pending, RunStatus.running):
+        # A permission-recheck termination is the server revoking this
+        # caller's view, not the creator disconnecting, so it must not fire
+        # cancel-on-disconnect either.
+        if apply_on_disconnect and not gap_emitted and not permission_recheck_terminated and not record.store_only and record.status in (RunStatus.pending, RunStatus.running):
             if record.on_disconnect == DisconnectMode.cancel:
                 await run_mgr.cancel(record.run_id)
 

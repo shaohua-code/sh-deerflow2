@@ -49,7 +49,11 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/core/auth/AuthProvider";
-import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  getChatSubmissionBlock,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   buildHumanInputResponseText,
@@ -455,6 +459,20 @@ export function SidecarPanel({ className }: { className?: string }) {
       if ((!text && message.files.length === 0) || disabled) {
         return;
       }
+      // POST /threads requires threads:write and the follow-up run requires
+      // runs:create. Preflight both so a revoked grant keeps the draft and
+      // references instead of surfacing a generic Gateway failure.
+      const submissionBlock = getChatSubmissionBlock(user, {
+        requiresThreadWrite: !sidecar.sidecarThreadId,
+      });
+      if (submissionBlock === "thread") {
+        toast.error(t.sidecar.threadWritePermissionRequired);
+        return Promise.reject(new Error("thread-write-permission-denied"));
+      }
+      if (submissionBlock === "run") {
+        toast.error(t.inputBox.runPermissionRequired);
+        return Promise.reject(new Error("run-permission-denied"));
+      }
       const uploadValidation = validateUploadLimits([], files, uploadLimits);
       if (uploadValidation.violations.length > 0) {
         reportUploadLimitViolations(uploadValidation.violations);
@@ -491,8 +509,11 @@ export function SidecarPanel({ className }: { className?: string }) {
       sidecar,
       submitToSidecarThread,
       t.sidecar.sendFailed,
+      t.sidecar.threadWritePermissionRequired,
       t.inputBox.uploadPermissionRequired,
+      t.inputBox.runPermissionRequired,
       uploadLimits,
+      user,
     ],
   );
 

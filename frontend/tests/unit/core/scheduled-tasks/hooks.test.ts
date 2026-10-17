@@ -91,7 +91,8 @@ describe("scheduled tasks api", () => {
     await fetchThreadScheduledTasks("thread-1", controller.signal);
 
     expect(mockedFetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
-    expect(String(mockedFetch.mock.calls[0]?.[0])).toContain(
+    // 该 API 层以字符串 URL 调用 fetch；断言即锁定此契约。
+    expect(String(mockedFetch.mock.calls[0]?.[0] as string)).toContain(
       "/api/threads/thread-1/scheduled-tasks",
     );
   });
