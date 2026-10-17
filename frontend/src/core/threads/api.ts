@@ -1,10 +1,10 @@
-import { throwGatewayApiError } from "@/core/api/errors";
+import { createGatewayApiError, throwGatewayApiError } from "@/core/api/errors";
 import { fetch as fetchWithAuth } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 
 import { isValidMessageSeq } from "./message-order";
-import { loadStaticDemoThreads } from "./static-demo";
+import { loadStaticDemoThread, loadStaticDemoThreads } from "./static-demo";
 import type {
   AgentThread,
   RunMessage,
@@ -74,6 +74,33 @@ async function readThreadAPIError(
     // Fall through to the caller-provided message.
   }
   return fallback;
+}
+
+/**
+ * 读取会话页头摘要。有仓储行时 Gateway 不物化 checkpoint；
+ * 静态演示继续使用本地样例会话。
+ */
+export async function fetchThreadSummary(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<AgentThread> {
+  if (isStaticWebsiteOnly()) {
+    return loadStaticDemoThread(threadId);
+  }
+  const response = await fetchWithAuth(
+    `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/summary`,
+    {
+      method: "GET",
+      ...(signal ? { signal } : {}),
+    },
+  );
+  if (!response.ok) {
+    throw await createGatewayApiError(
+      response,
+      "Failed to load the conversation.",
+    );
+  }
+  return (await response.json()) as AgentThread;
 }
 
 export async function fetchThreadTokenUsage(
@@ -233,14 +260,16 @@ export async function searchThreadsByArchive({
   status,
   limit,
   offset,
+  signal,
 }: {
   archived: boolean;
   metadata?: Record<string, unknown>;
   status?: string;
   limit: number;
   offset: number;
+  signal?: AbortSignal;
 }): Promise<AgentThread[]> {
-  return searchThreads({ archived, metadata, status, limit, offset });
+  return searchThreads({ archived, metadata, status, limit, offset, signal });
 }
 
 /**

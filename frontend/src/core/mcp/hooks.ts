@@ -7,6 +7,8 @@ import {
 import { useEffect } from "react";
 import { toast } from "sonner";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 
 import {
@@ -19,27 +21,53 @@ import {
 } from "./api";
 import type { MCPServerConfig } from "./types";
 
-export function useMCPConfig(enabled = true) {
-  const queryClient = useQueryClient();
-  useEffect(() => {
-    if (enabled) return;
+export function mcpConfigQueryKey(userId: string | null | undefined) {
+  // owner 位于 mcpConfig 之后；["mcpConfig"] 仍能失效全部账号。
+  return ["mcpConfig", userId ?? null] as const;
+}
 
-    // mcp:admin 被撤销后终止配置读取并移除旧响应，避免旧配置继续显示。
-    void queryClient.cancelQueries({ queryKey: ["mcpConfig"], exact: true });
-    queryClient.removeQueries({ queryKey: ["mcpConfig"], exact: true });
-  }, [enabled, queryClient]);
+export function isOwnerMcpConfigQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 2 段才是 owner。写入前缀 ["mcpConfig"] 不会被当成某个账号的精确缓存。
+  return queryKey[0] === "mcpConfig" && queryKey[1] === userId;
+}
+
+export function useMCPConfig(enabled?: boolean) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/mcp/config 要求 mcp:admin；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.MCP_ADMIN) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !accessDenied;
+  const queryKey = mcpConfigQueryKey(userId);
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的 MCP 配置。调用方停用不能清空该账号缓存。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerMcpConfigQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["mcpConfig"],
+    queryKey,
     queryFn: ({ signal }) => loadMCPConfig(signal),
-    enabled,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled,
     retry: (count, error) =>
       !(error instanceof MCPConfigRequestError) && count < 3,
   });
+  const visible = callerEnabled && !accessDenied;
   return {
-    config: enabled ? data : undefined,
-    isLoading: enabled && isLoading,
-    error: enabled ? error : null,
+    config: visible ? data : undefined,
+    isLoading: visible && isLoading,
+    error: visible ? error : null,
   };
 }
 

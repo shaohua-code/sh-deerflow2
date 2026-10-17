@@ -86,7 +86,7 @@ function renderPage({
     defaultOptions: { queries: { retry: false } },
   });
   if (cachedTasks) {
-    client.setQueryData(["scheduled-tasks"], cachedTasks);
+    client.setQueryData(["scheduled-tasks", "user-1"], cachedTasks);
   }
   const result = render(
     <I18nProvider initialLocale="zh-CN">

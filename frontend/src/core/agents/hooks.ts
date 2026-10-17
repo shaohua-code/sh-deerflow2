@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
 
 import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 
 import {
   createAgent,
@@ -31,6 +32,18 @@ export function agentQueryKey(
   name: string | null | undefined,
 ) {
   return [...agentsQueryKey(userId), name ?? null] as const;
+}
+
+function isOwnerAgentDetailQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 3 段才是详情名称。目录只有两段，不能按目录前缀一起删掉。
+  return (
+    queryKey[0] === AGENTS_QUERY_KEY[0] &&
+    queryKey[1] === userId &&
+    queryKey.length >= 3
+  );
 }
 
 export function useAgentsApiEnabled() {
@@ -77,26 +90,31 @@ export function useAgentsApiEnabled() {
 export function useAgents(enabled = true) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  // GET /api/agents 要求 agents:read 与 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.AGENTS_READ) === "denied";
   const queryClient = useQueryClient();
+  // 调用方停用不是撤权，不能清空该账号的目录或详情。
+  const callerEnabled = enabled && !accessDenied;
+  const queryKey = agentsQueryKey(userId);
+
   useEffect(() => {
-    if (enabled) return;
-    const queryKey = agentsQueryKey(userId);
-    // React Query 默认会保留禁用查询的成功结果；撤销 agents:read 时，
-    // 清除当前账号的目录和详情缓存，避免后续重新挂载时复用旧数据。
+    if (!accessDenied) return;
+    // 明确撤权时取消并清理当前账号的目录和详情。其他账号保持不动。
     void queryClient.cancelQueries({ queryKey });
     queryClient.removeQueries({ queryKey });
-  }, [enabled, queryClient, userId]);
+  }, [accessDenied, queryClient, queryKey]);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: agentsQueryKey(userId),
+    queryKey,
     queryFn: ({ signal }) => listAgents({ signal }),
-    enabled,
+    enabled: callerEnabled,
   });
   return {
-    agents: enabled ? (data ?? []) : [],
-    isLoading,
-    isFetching,
-    error,
+    agents: callerEnabled ? (data ?? []) : [],
+    isLoading: callerEnabled && isLoading,
+    isFetching: callerEnabled && isFetching,
+    error: callerEnabled ? error : null,
     refetch,
   };
 }
@@ -104,25 +122,34 @@ export function useAgents(enabled = true) {
 export function useAgent(name: string | null | undefined, enabled = true) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  // GET 详情同样要求 agents:read；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.AGENTS_READ) === "denied";
   const queryClient = useQueryClient();
+  // 没有名称或调用方停用都不是撤权，不能清空目录或其他详情。
+  const callerEnabled = Boolean(name) && enabled && !accessDenied;
+
   useEffect(() => {
-    if (enabled) return;
-    const queryKey = agentsQueryKey(userId);
-    // 详情页也负责清理当前账号的目录缓存，避免列表数据在其它入口残留。
-    void queryClient.cancelQueries({ queryKey });
-    queryClient.removeQueries({ queryKey });
-  }, [enabled, queryClient, userId]);
+    if (!accessDenied) return;
+    // 明确撤权只取消并清理当前账号的详情。目录仍由列表 hook 清理。
+    const ownerDetails = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerAgentDetailQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerDetails);
+    queryClient.removeQueries(ownerDetails);
+  }, [accessDenied, queryClient, userId]);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: agentQueryKey(userId, name),
     queryFn: ({ signal }) => getAgent(name!, { signal }),
-    enabled: Boolean(name) && enabled,
+    enabled: callerEnabled,
   });
   return {
-    agent: enabled ? (data ?? null) : null,
-    isLoading,
-    isFetching,
-    error,
+    agent: callerEnabled ? (data ?? null) : null,
+    isLoading: callerEnabled && isLoading,
+    isFetching: callerEnabled && isFetching,
+    error: callerEnabled ? error : null,
     refetch,
   };
 }

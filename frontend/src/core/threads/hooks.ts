@@ -45,6 +45,7 @@ import { uuid } from "../utils/uuid";
 
 import {
   branchThreadFromTurn,
+  fetchThreadSummary,
   fetchThreadTokenUsage,
   moveThreadToProject,
   patchThreadMetadata,
@@ -1672,8 +1673,9 @@ export function invalidateStoppedThreadCaches(
   void queryClient.invalidateQueries({
     queryKey: threadHistoryQueryKey(threadId),
   });
+  // 元数据 key 在 threadId 之后才是 owner 与 isMock；停止时用此前缀失效该会话的全部账号。
   void queryClient.invalidateQueries({
-    queryKey: ["thread", "metadata", threadId, isMock],
+    queryKey: ["thread", "metadata", threadId],
   });
   void queryClient.invalidateQueries({
     predicate: (query) =>
@@ -3103,25 +3105,68 @@ export function useThreadHistory(
   };
 }
 
+export function threadsSearchQueryKey(
+  userId: string | null | undefined,
+  params: ThreadSearchParams,
+  cacheScope?: string,
+) {
+  // owner 在 search 前缀和查询参数之后、调用方 cacheScope 之前。
+  // 写入侧 ["threads", "search"] 仍能失效全部账号，cacheScope 不再套到前缀上。
+  return ["threads", "search", params, userId ?? null, cacheScope] as const;
+}
+
+function isOwnerThreadsSearchQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "threads" &&
+    queryKey[1] === "search" &&
+    queryKey[3] === userId
+  );
+}
+
 export function useThreads(
   params: ThreadSearchParams = DEFAULT_THREAD_SEARCH_PARAMS,
-  {
-    enabled = true,
-    cacheScope,
-  }: { enabled?: boolean; cacheScope?: string } = {},
+  { enabled, cacheScope }: { enabled?: boolean; cacheScope?: string } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // POST /threads/search 只要求 threads:read；权限字段缺失时继续请求，不能把未知当成拒绝。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
   const apiClient = getAPIClient();
+  const callerEnabled = enabled ?? true;
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的有限会话目录。调用方停用不能清空该账号缓存，也不能波及其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerThreadsSearchQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const queryOptions = buildThreadsSearchQueryOptions(apiClient, params);
   const query = useQuery<AgentThread[]>({
     ...queryOptions,
-    // The picker is user data. A shared search key could briefly show the
-    // previous account's conversations after an in-app account switch.
-    queryKey: [...queryOptions.queryKey, cacheScope],
-    enabled,
+    queryKey: threadsSearchQueryKey(userId, params, cacheScope),
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  // A disabled query can still have a previous successful result in cache.
-  // Permission-gated consumers must not render that stale thread directory.
-  return enabled ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的会话行。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export const INFINITE_THREADS_PAGE_SIZE = 50;
@@ -3165,6 +3210,7 @@ export async function fetchInfiniteThreadsPage(
   params: InfiniteThreadsParams,
   pageParam: number,
   pageSize: number = INFINITE_THREADS_PAGE_SIZE,
+  signal?: AbortSignal,
 ): Promise<AgentThread[]> {
   const threads: AgentThread[] = [];
   let offset = pageParam;
@@ -3172,19 +3218,25 @@ export async function fetchInfiniteThreadsPage(
 
   while (threads.length < pageSize) {
     const currentLimit = pageSize - threads.length;
+    // 只有调用方传入 AbortSignal 时才放进请求，避免无信号调用多出一个 undefined 字段。
+    const request = {
+      ...params,
+      limit: currentLimit,
+      offset,
+      ...(signal ? { signal } : {}),
+    };
     const response =
       params.archived === undefined
-        ? ((await apiClient.threads.search<AgentThreadState>({
-            ...params,
-            limit: currentLimit,
-            offset,
-          })) as AgentThread[])
+        ? ((await apiClient.threads.search<AgentThreadState>(
+            request,
+          )) as AgentThread[])
         : await searchThreadsByArchive({
             ...params,
             archived: params.archived,
             metadata: params.metadata ?? undefined,
             limit: currentLimit,
             offset,
+            signal,
           });
 
     threads.push(...filterThreadSearchResults(response, params));
@@ -3338,15 +3390,57 @@ export function setThreadTitleInCaches(
   );
 }
 
+export function infiniteThreadsQueryKey(
+  userId: string | null | undefined,
+  params: InfiniteThreadsParams,
+) {
+  // owner 位于 searchInfinite 前缀之后、查询参数之前；写入侧前缀仍能失效全部账号。
+  return [
+    ...INFINITE_THREADS_QUERY_KEY_PREFIX,
+    userId ?? null,
+    params,
+  ] as const;
+}
+
+function isOwnerInfiniteThreadsQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "threads" &&
+    queryKey[1] === "searchInfinite" &&
+    queryKey[2] === userId
+  );
+}
+
 export function useInfiniteThreads(
   params: InfiniteThreadsParams = {
     sortBy: "updated_at",
     sortOrder: "desc",
     select: ["thread_id", "updated_at", "values", "metadata"],
   },
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // POST /threads/search 只要求 threads:read；权限字段缺失时继续请求，不能把未知当成拒绝。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
   const apiClient = getAPIClient();
+  const callerEnabled = enabled ?? true;
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的无限列表。调用方停用不能清空该账号缓存，也不能波及其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerInfiniteThreadsQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useInfiniteQuery<
     AgentThread[],
     Error,
@@ -3354,23 +3448,32 @@ export function useInfiniteThreads(
     readonly unknown[],
     number
   >({
-    queryKey: [...INFINITE_THREADS_QUERY_KEY_PREFIX, params],
+    queryKey: infiniteThreadsQueryKey(userId, params),
     initialPageParam: 0,
-    queryFn: async ({ pageParam }) =>
+    queryFn: async ({ pageParam, signal }) =>
       fetchInfiniteThreadsPage(
         apiClient,
         params,
         pageParam,
         INFINITE_THREADS_PAGE_SIZE,
+        signal,
       ),
     getNextPageParam: (lastPage, allPages) =>
       getInfiniteThreadsNextPageParam(lastPage, allPages),
-    enabled,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
     refetchOnWindowFocus: false,
   });
-  // TanStack keeps disabled query data cached; permission-gated consumers must
-  // not render a prior authorization snapshot after access is revoked.
-  return enabled ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的会话行。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export function useThreadRuns(
@@ -3412,23 +3515,83 @@ export function useThreadRuns(
 export const threadRunsQueryKey = (threadId?: string, userId?: string | null) =>
   ["thread-runs", userId ?? null, threadId] as const;
 
+export function threadMetadataQueryKey(
+  threadId: string | null | undefined,
+  userId: string | null | undefined,
+  isMock: boolean,
+) {
+  // owner 放在 threadId 之后，写入侧 ["thread", "metadata", threadId] 前缀仍能失效全部账号。
+  return ["thread", "metadata", threadId, userId ?? null, isMock] as const;
+}
+
+function isOwnerThreadMetadataQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "thread" &&
+    queryKey[1] === "metadata" &&
+    queryKey[3] === userId
+  );
+}
+
+function findCachedInfiniteThread(
+  queryClient: QueryClient,
+  threadId: string,
+  userId: string | null,
+): AgentThread | undefined {
+  // 侧栏无限列表已经按账号分区。页头先用同一条缓存，摘要返回后再替换。
+  const cachedLists = queryClient.getQueriesData<InfiniteData<AgentThread[]>>({
+    queryKey: [...INFINITE_THREADS_QUERY_KEY_PREFIX, userId],
+  });
+  for (const [, data] of cachedLists) {
+    for (const page of data?.pages ?? []) {
+      const match = page.find((thread) => thread.thread_id === threadId);
+      if (match) {
+        return match;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function useThreadMetadata(
   threadId?: string | null,
-  {
-    enabled = true,
-    isMock = false,
-  }: { enabled?: boolean; isMock?: boolean } = {},
+  { enabled, isMock = false }: { enabled?: boolean; isMock?: boolean } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // 会话元数据 GET 要求 threads:read；权限字段缺失时保持旧 Gateway 兼容，不能把未知当成拒绝。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
   const apiClient = getAPIClient(isMock);
+  const callerEnabled = enabled ?? true;
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的元数据。未选中会话或调用方停用不能清空该账号缓存，也不能波及其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerThreadMetadataQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useQuery<AgentThread | null>({
-    queryKey: ["thread", "metadata", threadId, isMock],
-    queryFn: async () => {
+    queryKey: threadMetadataQueryKey(threadId, userId, isMock),
+    queryFn: async ({ signal }) => {
       if (!threadId) {
         return null;
       }
       try {
-        const response = await apiClient.threads.get(threadId);
-        return response as AgentThread;
+        // 静态演示走 SDK 样例；真实会话走仓储摘要，避免页头等待 checkpoint。
+        if (isMock) {
+          const response = await apiClient.threads.get(threadId, { signal });
+          return response as AgentThread;
+        }
+        return await fetchThreadSummary(threadId, signal);
       } catch (error) {
         if (isThreadMissingError(error)) {
           return null;
@@ -3436,12 +3599,26 @@ export function useThreadMetadata(
         throw error;
       }
     },
-    enabled: enabled && Boolean(threadId),
+    // 摘要尚未返回时，先显示侧栏里已经加载的同一条会话。
+    placeholderData: () =>
+      threadId
+        ? findCachedInfiniteThread(queryClient, threadId, userId)
+        : undefined,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied && Boolean(threadId),
     retry: false,
     refetchOnWindowFocus: false,
   });
-  // TanStack 会保留 disabled query 的缓存；撤权时不向调用方暴露旧快照。
-  return enabled ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧隐藏缓存，不暴露加载中或旧错误。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export function useThreadTokenUsage(

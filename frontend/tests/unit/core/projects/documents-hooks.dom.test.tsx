@@ -7,10 +7,22 @@ const mocks = rs.hoisted(() => ({
   fetch: rs.fn(),
   isStatic: rs.fn(() => false),
 }));
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
 rs.mock("@/core/api/fetcher", () => ({ fetch: mocks.fetch }));
 rs.mock("@/core/config", () => ({ getBackendBaseURL: () => "/backend" }));
 rs.mock("@/core/static-mode", () => ({
   isStaticWebsiteOnly: mocks.isStatic,
+}));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
 }));
 
 import {
@@ -18,12 +30,21 @@ import {
   useDeleteProjectDocument,
   useInfiniteProjectDocuments,
   useInfiniteProjectThreadFiles,
+  useInfiniteProjectThreads,
   useProject,
   useProjects,
   useProjectsConfig,
   usePromoteThreadFile,
   useUploadProjectDocument,
 } from "@/core/projects/hooks";
+import {
+  projectConfigQueryKey,
+  projectDetailQueryKey,
+  projectDocumentsQueryKey,
+  projectThreadFilesQueryKey,
+  projectThreadsQueryKey,
+  projectsListQueryKey,
+} from "@/core/projects/api";
 
 const DOCUMENT = {
   id: "doc-1",
@@ -56,6 +77,8 @@ afterEach(() => {
   cleanup();
   rs.resetAllMocks();
   mocks.isStatic.mockReturnValue(false);
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
 test("useInfiniteProjectDocuments pages the shelf under the documents key", async () => {
@@ -108,16 +131,17 @@ test("useInfiniteProjectDocuments pages the shelf under the documents key", asyn
       ).toHaveLength(3),
     );
     expect(result.current.hasNextPage).toBe(false);
-    expect(client.getQueryData(["projects", "documents", "proj-1"])).toEqual(
-      result.current.data,
-    );
+    expect(
+      client.getQueryData(projectDocumentsQueryKey("proj-1", "owner-a")),
+    ).toEqual(result.current.data);
   } finally {
     unmount();
     client.clear();
   }
 });
 
-test("useProjectsConfig fetches the server limits under the config key", async () => {
+test("unresolved permissions still fetch project config", async () => {
+  authState.permissions = null;
   const client = makeClient();
   const body = { instructions_max_bytes: 16384, trash_retention_days: 7 };
   mocks.fetch.mockResolvedValue(new Response(JSON.stringify(body)));
@@ -130,19 +154,18 @@ test("useProjectsConfig fetches the server limits under the config key", async (
     const [url] = mocks.fetch.mock.calls[0] as [string];
     expect(url).toBe("/backend/api/projects/config");
     expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(client.getQueryData(["projects", "config"])).toEqual(body);
+    expect(client.getQueryData(projectConfigQueryKey("owner-a"))).toEqual(body);
   } finally {
     unmount();
     client.clear();
   }
 });
 
-test("useProjectsConfig hides and removes cached limits without projects:read", async () => {
+test("caller-disabled project config does not remove the owner cache", () => {
   const client = makeClient();
-  client.setQueryData(["projects", "config"], {
-    instructions_max_bytes: 16384,
-    trash_retention_days: 7,
-  });
+  const body = { instructions_max_bytes: 16384, trash_retention_days: 7 };
+  const key = projectConfigQueryKey("owner-a");
+  client.setQueryData(key, body);
 
   const { result, unmount } = renderHook(
     () => useProjectsConfig({ enabled: false }),
@@ -152,9 +175,7 @@ test("useProjectsConfig hides and removes cached limits without projects:read", 
     expect(result.current.data).toBeUndefined();
     expect(result.current.error).toBeNull();
     expect(result.current.isLoading).toBe(false);
-    await waitFor(() =>
-      expect(client.getQueryData(["projects", "config"])).toBeUndefined(),
-    );
+    expect(client.getQueryData(key)).toEqual(body);
     expect(mocks.fetch).not.toHaveBeenCalled();
   } finally {
     unmount();
@@ -162,36 +183,83 @@ test("useProjectsConfig hides and removes cached limits without projects:read", 
   }
 });
 
-test("useProjectsConfig aborts a read after projects:read is withdrawn", async () => {
+test("explicit projects:read denial hides config and clears only this owner", async () => {
   const client = makeClient();
-  let requestSignal: AbortSignal | null | undefined;
-  mocks.fetch.mockImplementation(
-    (_url: RequestInfo | URL, init?: RequestInit) => {
-      requestSignal = init?.signal;
-      return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener(
-          "abort",
-          () => reject(new DOMException("Aborted", "AbortError")),
-          { once: true },
-        );
-      });
-    },
-  );
+  const body = { instructions_max_bytes: 16384, trash_retention_days: 7 };
+  const currentKey = projectConfigQueryKey("owner-a");
+  const otherOwnerKey = projectConfigQueryKey("owner-b");
+  const listKey = projectsListQueryKey("owner-a", "active");
+  const detailKey = projectDetailQueryKey("proj-1", "owner-a");
+  const threadsKey = projectThreadsQueryKey("proj-1", "owner-a");
+  const documentsKey = projectDocumentsQueryKey("proj-1", "owner-a");
+  client.setQueryData(currentKey, body);
+  client.setQueryData(otherOwnerKey, body);
+  client.setQueryData(listKey, [{ id: "proj-1" }]);
+  client.setQueryData(detailKey, { id: "proj-1", name: "Mine" });
+  client.setQueryData(threadsKey, {
+    pages: [[{ thread_id: "t-1" }]],
+    pageParams: [0],
+  });
+  client.setQueryData(documentsKey, {
+    pages: [{ documents: [], total: 0, limit: 100, offset: 0 }],
+    pageParams: [0],
+  });
+  authState.permissions = [];
 
-  const { result, rerender, unmount } = renderHook(
-    ({ enabled }: { enabled: boolean }) => useProjectsConfig({ enabled }),
-    { initialProps: { enabled: true }, wrapper: wrapperFor(client) },
+  const { result, unmount } = renderHook(
+    () => useProjectsConfig({ enabled: true }),
+    { wrapper: wrapperFor(client) },
   );
   try {
-    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
-    rerender({ enabled: false });
-
-    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
     expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
     expect(result.current.error).toBeNull();
     await waitFor(() =>
-      expect(client.getQueryData(["projects", "config"])).toBeUndefined(),
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
     );
+    expect(client.getQueryData(otherOwnerKey)).toEqual(body);
+    expect(client.getQueryData(listKey)).toEqual([{ id: "proj-1" }]);
+    expect(client.getQueryData(detailKey)).toEqual({
+      id: "proj-1",
+      name: "Mine",
+    });
+    expect(client.getQueryData(threadsKey)).toEqual({
+      pages: [[{ thread_id: "t-1" }]],
+      pageParams: [0],
+    });
+    expect(client.getQueryData(documentsKey)).toEqual({
+      pages: [{ documents: [], total: 0, limit: 100, offset: 0 }],
+      pageParams: [0],
+    });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight project config read", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read"];
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
+    },
+  );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(
+    () => useProjectsConfig({ enabled: true }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
   } finally {
     unmount();
     client.clear();
@@ -209,8 +277,8 @@ test("project list and detail queries mask cached data when disabled", () => {
     created_at: "2026-09-10T00:00:00Z",
     updated_at: "2026-09-10T00:00:00Z",
   };
-  client.setQueryData(["projects", "detail", "proj-1"], project);
-  client.setQueryData(["projects", { status: "active" }], [project]);
+  client.setQueryData(projectDetailQueryKey("proj-1", "owner-a"), project);
+  client.setQueryData(projectsListQueryKey("owner-a", "active"), [project]);
 
   const detail = renderHook(() => useProject("proj-1", { enabled: false }), {
     wrapper: wrapperFor(client),
@@ -220,7 +288,17 @@ test("project list and detail queries mask cached data when disabled", () => {
   });
   try {
     expect(detail.result.current.data).toBeUndefined();
+    expect(detail.result.current.isLoading).toBe(false);
+    expect(detail.result.current.error).toBeNull();
+    expect(
+      client.getQueryData(projectDetailQueryKey("proj-1", "owner-a")),
+    ).toEqual(project);
     expect(list.result.current.data).toBeUndefined();
+    expect(list.result.current.isLoading).toBe(false);
+    expect(list.result.current.error).toBeNull();
+    expect(
+      client.getQueryData(projectsListQueryKey("owner-a", "active")),
+    ).toEqual([project]);
     expect(mocks.fetch).not.toHaveBeenCalled();
   } finally {
     detail.unmount();
@@ -256,6 +334,203 @@ test("useProject forwards its query cancellation signal to the Gateway", async (
   }
 });
 
+test("unresolved permissions still fetch project detail", async () => {
+  authState.permissions = null;
+  const client = makeClient();
+  mocks.fetch.mockResolvedValue(
+    new Response(JSON.stringify({ id: "proj-1", name: "Project" })),
+  );
+  const { result, unmount } = renderHook(() => useProject("proj-1"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    await waitFor(() => expect(result.current.data?.id).toBe("proj-1"));
+    expect(mocks.fetch).toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("explicit projects:read denial hides detail and clears only this owner", async () => {
+  const client = makeClient();
+  const project = { id: "proj-1", name: "Mine" };
+  const currentKey = projectDetailQueryKey("proj-1", "owner-a");
+  const otherProjectKey = projectDetailQueryKey("proj-2", "owner-a");
+  const otherOwnerKey = projectDetailQueryKey("proj-1", "owner-b");
+  const listKey = projectsListQueryKey("owner-a", "active");
+  client.setQueryData(currentKey, project);
+  client.setQueryData(otherProjectKey, { id: "proj-2", name: "Also mine" });
+  client.setQueryData(otherOwnerKey, { id: "proj-1", name: "Other" });
+  client.setQueryData(listKey, [project]);
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(() => useProject("proj-1"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherProjectKey)).toBeUndefined();
+    expect(client.getQueryData(otherOwnerKey)).toEqual({
+      id: "proj-1",
+      name: "Other",
+    });
+    expect(client.getQueryData(listKey)).toEqual([project]);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight project detail", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read"];
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
+    },
+  );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(() => useProject("proj-1"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("unresolved permissions still fetch project threads", async () => {
+  authState.permissions = null;
+  const client = makeClient();
+  mocks.fetch.mockResolvedValue(
+    new Response(JSON.stringify([{ thread_id: "t-1" }])),
+  );
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectThreads("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() =>
+      expect(result.current.data?.pages[0]?.[0]?.thread_id).toBe("t-1"),
+    );
+    expect(mocks.fetch).toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("explicit projects or threads read denial hides project threads and clears only this owner", async () => {
+  const client = makeClient();
+  const page = {
+    pages: [[{ thread_id: "t-1" }]],
+    pageParams: [0],
+  };
+  const currentKey = projectThreadsQueryKey("proj-1", "owner-a");
+  const otherProjectKey = projectThreadsQueryKey("proj-2", "owner-a");
+  const otherOwnerKey = projectThreadsQueryKey("proj-1", "owner-b");
+  const listKey = projectsListQueryKey("owner-a", "active");
+  const detailKey = projectDetailQueryKey("proj-1", "owner-a");
+  client.setQueryData(currentKey, page);
+  client.setQueryData(otherProjectKey, page);
+  client.setQueryData(otherOwnerKey, page);
+  client.setQueryData(listKey, [{ id: "proj-1" }]);
+  client.setQueryData(detailKey, { id: "proj-1", name: "Mine" });
+  authState.permissions = ["threads:read"];
+
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectThreads("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherProjectKey)).toBeUndefined();
+    expect(client.getQueryData(otherOwnerKey)).toEqual(page);
+    expect(client.getQueryData(listKey)).toEqual([{ id: "proj-1" }]);
+    expect(client.getQueryData(detailKey)).toEqual({
+      id: "proj-1",
+      name: "Mine",
+    });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking threads:read aborts an in-flight project thread list", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read", "threads:read"];
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
+    },
+  );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(
+    () => useInfiniteProjectThreads("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = ["projects:read"];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("caller-disabled project threads do not remove the owner cache", () => {
+  const client = makeClient();
+  const page = {
+    pages: [[{ thread_id: "t-1" }]],
+    pageParams: [0],
+  };
+  const key = projectThreadsQueryKey("proj-1", "owner-a");
+  client.setQueryData(key, page);
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectThreads("proj-1", { enabled: false }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(client.getQueryData(key)).toEqual(page);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
 test("useProjects forwards its query cancellation signal to the Gateway", async () => {
   const client = makeClient();
   mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ projects: [] })));
@@ -271,21 +546,116 @@ test("useProjects forwards its query cancellation signal to the Gateway", async 
   }
 });
 
-test("project documents abort and clear their cache when read access is revoked", async () => {
+test("unresolved permissions still fetch the project list", async () => {
+  authState.permissions = null;
   const client = makeClient();
-  let requestSignal: AbortSignal | null | undefined;
+  mocks.fetch.mockResolvedValue(
+    new Response(JSON.stringify({ projects: [{ id: "proj-1" }] })),
+  );
+  const { result, unmount } = renderHook(() => useProjects("active"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    await waitFor(() => expect(result.current.data?.[0]?.id).toBe("proj-1"));
+    expect(mocks.fetch).toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("explicit projects:read denial hides the list and clears only this owner", async () => {
+  const client = makeClient();
+  const currentKey = projectsListQueryKey("owner-a", "active");
+  const otherStatusKey = projectsListQueryKey("owner-a", "archived");
+  const otherOwnerKey = projectsListQueryKey("owner-b", "active");
+  client.setQueryData(currentKey, [{ id: "proj-1", name: "Mine" }]);
+  client.setQueryData(otherStatusKey, [{ id: "proj-2", name: "Archived" }]);
+  client.setQueryData(otherOwnerKey, [{ id: "proj-3", name: "Other" }]);
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(() => useProjects("active"), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherStatusKey)).toBeUndefined();
+    expect(client.getQueryData(otherOwnerKey)).toEqual([
+      { id: "proj-3", name: "Other" },
+    ]);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight project list", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read"];
   mocks.fetch.mockImplementation(
     (_url: RequestInfo | URL, init?: RequestInit) => {
-      requestSignal = init?.signal;
-      return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener(
-          "abort",
-          () => reject(new DOMException("Aborted", "AbortError")),
-          { once: true },
-        );
-      });
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
     },
   );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(
+    () => useProjects("active"),
+    {
+      wrapper: wrapperFor(client),
+    },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("unresolved permissions still fetch project documents", async () => {
+  authState.permissions = null;
+  const client = makeClient();
+  mocks.fetch.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        documents: [DOCUMENT],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      }),
+    ),
+  );
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectDocuments("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() =>
+      expect(result.current.data?.pages[0]?.documents[0]?.id).toBe("doc-1"),
+    );
+    expect(mocks.fetch).toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("caller-disabled project documents hide rows without removing the owner cache", async () => {
+  const client = makeClient();
+  mocks.fetch.mockImplementation(() => new Promise(() => undefined));
   const { result, rerender, unmount } = renderHook(
     ({ enabled }: { enabled: boolean }) =>
       useInfiniteProjectDocuments("proj-1", { enabled }),
@@ -294,14 +664,116 @@ test("project documents abort and clear their cache when read access is revoked"
   try {
     await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
     rerender({ enabled: false });
-
-    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
     expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(
+      client.getQueryState(projectDocumentsQueryKey("proj-1", "owner-a")),
+    ).toBeDefined();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("explicit projects:read denial hides documents and clears only this owner", async () => {
+  const client = makeClient();
+  const page = {
+    pages: [{ documents: [DOCUMENT], total: 1, limit: 100, offset: 0 }],
+    pageParams: [0],
+  };
+  const currentKey = projectDocumentsQueryKey("proj-1", "owner-a");
+  const otherProjectKey = projectDocumentsQueryKey("proj-2", "owner-a");
+  const otherOwnerKey = projectDocumentsQueryKey("proj-1", "owner-b");
+  const listKey = projectsListQueryKey("owner-a", "active");
+  const detailKey = projectDetailQueryKey("proj-1", "owner-a");
+  const threadsKey = projectThreadsQueryKey("proj-1", "owner-a");
+  client.setQueryData(currentKey, page);
+  client.setQueryData(otherProjectKey, page);
+  client.setQueryData(otherOwnerKey, page);
+  client.setQueryData(listKey, [{ id: "proj-1" }]);
+  client.setQueryData(detailKey, { id: "proj-1", name: "Mine" });
+  client.setQueryData(threadsKey, {
+    pages: [[{ thread_id: "t-1" }]],
+    pageParams: [0],
+  });
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectDocuments("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
     await waitFor(() =>
-      expect(
-        client.getQueryData(["projects", "documents", "proj-1"]),
-      ).toBeUndefined(),
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
     );
+    expect(client.getQueryData(otherProjectKey)).toBeUndefined();
+    expect(client.getQueryData(otherOwnerKey)).toEqual(page);
+    expect(client.getQueryData(listKey)).toEqual([{ id: "proj-1" }]);
+    expect(client.getQueryData(detailKey)).toEqual({
+      id: "proj-1",
+      name: "Mine",
+    });
+    expect(client.getQueryData(threadsKey)).toEqual({
+      pages: [[{ thread_id: "t-1" }]],
+      pageParams: [0],
+    });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight project document list", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read"];
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
+    },
+  );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(
+    () => useInfiniteProjectDocuments("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("disabled project documents keep the seeded owner cache", () => {
+  const client = makeClient();
+  const page = {
+    pages: [{ documents: [DOCUMENT], total: 1, limit: 100, offset: 0 }],
+    pageParams: [0],
+  };
+  const key = projectDocumentsQueryKey("proj-1", "owner-a");
+  client.setQueryData(key, page);
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectDocuments("proj-1", { enabled: false }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(client.getQueryData(key)).toEqual(page);
+    expect(mocks.fetch).not.toHaveBeenCalled();
   } finally {
     unmount();
     client.clear();
@@ -309,6 +781,7 @@ test("project documents abort and clear their cache when read access is revoked"
 });
 
 test("useInfiniteProjectThreadFiles pages the conversation-files view under its key", async () => {
+  authState.permissions = null;
   const client = makeClient();
   const body = { groups: [], next_offset: null, truncated: false };
   mocks.fetch.mockResolvedValue(new Response(JSON.stringify(body)));
@@ -329,12 +802,12 @@ test("useInfiniteProjectThreadFiles pages the conversation-files view under its 
     expect(mocks.fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(result.current.hasNextPage).toBe(false);
     expect(
-      client.getQueryData([
-        "projects",
-        "thread-files",
-        "proj-1",
-        { thread_limit: 10, file_limit: 25 },
-      ]),
+      client.getQueryData(
+        projectThreadFilesQueryKey("proj-1", "owner-a", {
+          thread_limit: 10,
+          file_limit: 25,
+        }),
+      ),
     ).toEqual(result.current.data);
   } finally {
     unmount();
@@ -408,6 +881,126 @@ test("useInfiniteProjectThreadFiles refetches every retained page on invalidatio
     // not duplicate the surviving group.
     const groups = result.current.data!.pages.flatMap((page) => page.groups);
     expect(groups.map((group) => group.thread_id)).toEqual(["t-b"]);
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("caller-disabled project thread files hide rows without removing the owner cache", () => {
+  const client = makeClient();
+  const page = {
+    pages: [{ groups: [], next_offset: null, truncated: false }],
+    pageParams: [0],
+  };
+  const key = projectThreadFilesQueryKey("proj-1", "owner-a");
+  client.setQueryData(key, page);
+  const { result, unmount } = renderHook(
+    () => useInfiniteProjectThreadFiles("proj-1", {}, { enabled: false }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(client.getQueryData(key)).toEqual(page);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("explicit denial hides thread files and clears only this owner", async () => {
+  const client = makeClient();
+  const page = {
+    pages: [{ groups: [], next_offset: null, truncated: false }],
+    pageParams: [0],
+  };
+  const currentKey = projectThreadFilesQueryKey("proj-1", "owner-a", {
+    thread_limit: 10,
+    file_limit: 25,
+  });
+  const otherOwnerKey = projectThreadFilesQueryKey("proj-1", "owner-b", {
+    thread_limit: 10,
+    file_limit: 25,
+  });
+  const listKey = projectsListQueryKey("owner-a", "active");
+  const detailKey = projectDetailQueryKey("proj-1", "owner-a");
+  const threadsKey = projectThreadsQueryKey("proj-1", "owner-a");
+  const documentsKey = projectDocumentsQueryKey("proj-1", "owner-a");
+  const configKey = projectConfigQueryKey("owner-a");
+  client.setQueryData(currentKey, page);
+  client.setQueryData(otherOwnerKey, page);
+  client.setQueryData(listKey, [{ id: "proj-1" }]);
+  client.setQueryData(detailKey, { id: "proj-1", name: "Mine" });
+  client.setQueryData(threadsKey, {
+    pages: [[{ thread_id: "t-1" }]],
+    pageParams: [0],
+  });
+  client.setQueryData(documentsKey, page);
+  client.setQueryData(configKey, { instructions_max_bytes: 1 });
+  // 只授予 projects:read，threads:read 被明确拒绝。
+  authState.permissions = ["projects:read"];
+
+  const { result, unmount } = renderHook(
+    () =>
+      useInfiniteProjectThreadFiles("proj-1", {
+        thread_limit: 10,
+        file_limit: 25,
+      }),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherOwnerKey)).toEqual(page);
+    expect(client.getQueryData(listKey)).toEqual([{ id: "proj-1" }]);
+    expect(client.getQueryData(detailKey)).toEqual({
+      id: "proj-1",
+      name: "Mine",
+    });
+    expect(client.getQueryData(threadsKey)).toEqual({
+      pages: [[{ thread_id: "t-1" }]],
+      pageParams: [0],
+    });
+    expect(client.getQueryData(documentsKey)).toEqual(page);
+    expect(client.getQueryData(configKey)).toEqual({
+      instructions_max_bytes: 1,
+    });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight thread-files list", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read", "threads:read"];
+  mocks.fetch.mockImplementation(
+    (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
+    },
+  );
+  const client = makeClient();
+  const { result, rerender, unmount } = renderHook(
+    () => useInfiniteProjectThreadFiles("proj-1"),
+    { wrapper: wrapperFor(client) },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = ["threads:read"];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
   } finally {
     unmount();
     client.clear();

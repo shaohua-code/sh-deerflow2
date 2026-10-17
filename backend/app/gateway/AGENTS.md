@@ -100,7 +100,7 @@ owner-scoped assistant version selection remains enabled.
 **Router map**:
 
 - `routers/auth.py` owns session/OIDC/PAT and session-only administrator behavior; preserve the middleware principal, CSRF/origin, and route-permission contracts.
-- `routers/threads.py`, `routers/runs.py`, `routers/feedback.py`, and `routers/artifacts.py` own LangGraph-compatible conversation, streaming, run history, feedback, and artifact routes. Keep owner checks and run/thread reservations at the Gateway boundary.
+- `routers/threads.py`, `routers/runs.py`, `routers/feedback.py`, and `routers/artifacts.py` own LangGraph-compatible conversation, streaming, run history, feedback, and artifact routes. Keep owner checks and run/thread reservations at the Gateway boundary. `GET /threads/{id}/summary` is the chat-header read: a stored thread row returns status, times, and metadata without materializing a checkpoint; only a checkpoint-only legacy thread falls back to the full read.
 - `routers/uploads.py`, `routers/projects.py`, and `routers/trash.py` own user-file and project-document routes. Keep paths server-derived, recheck ownership before reads/deletes, and preserve safe generic 5xx responses.
 - `routers/models.py`, `features.py`, `mcp.py`, `skills.py`, `memory.py`, `subagents.py`, and `integrations.py` expose the corresponding runtime capabilities. UI feature flags never replace server authorization.
 - Product-only endpoints live in `product/backend-extension/` and use the public extension API with separate DTOs and migrations; do not add product persistence to the Harness ORM.

@@ -28,10 +28,9 @@ const LarkPluginSettings = dynamic(() =>
 export function PluginGallery({ query }: { query: string }) {
   const { t } = useI18n();
   const { user } = useAuth();
-  const cacheScope = user?.id;
   const canReadLark =
     getPermissionState(user, PERMISSIONS.INTEGRATIONS_READ) !== "denied";
-  const lark = useLarkIntegrationStatus(canReadLark, cacheScope);
+  const lark = useLarkIntegrationStatus(canReadLark);
   const [filter, setFilter] = useState("all");
   const [localOpen, setLocalOpen] = useState(false);
   const [larkBusy, setLarkBusy] = useState(false);

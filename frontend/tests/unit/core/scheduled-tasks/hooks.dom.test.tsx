@@ -15,7 +15,19 @@ const mocks = rs.hoisted(() => ({
   update: rs.fn(),
 }));
 
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
 rs.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
+}));
 rs.mock("@/core/scheduled-tasks/api", () => ({
   createScheduledTask: mocks.create,
   deleteScheduledTask: mocks.delete,
@@ -33,6 +45,8 @@ import {
   useDeleteScheduledTask,
   usePauseScheduledTask,
   useResumeScheduledTask,
+  scheduledTasksQueryKey,
+  threadScheduledTasksQueryKey,
   useScheduledTasks,
   useThreadScheduledTasks,
   useTriggerScheduledTask,
@@ -69,15 +83,18 @@ afterEach(() => {
   mocks.fetchScheduledTasks.mockReset();
   mocks.fetchThreadScheduledTasks.mockReset();
   mocks.toastError.mockReset();
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
-it("does not expose or retain cached task lists after read permission is revoked", async () => {
+it("hides a caller-disabled task list without removing the owner cache", () => {
   const { client, Wrapper } = createWrapper();
-  client.setQueryData(["scheduled-tasks"], [{ id: "private-task" }]);
-  client.setQueryData(
-    ["scheduled-tasks", "thread", "thread-a"],
-    [{ id: "private-thread-task" }],
-  );
+  const cached = [{ id: "private-task" }];
+  const key = scheduledTasksQueryKey("owner-a");
+  const threadCached = [{ id: "private-thread-task" }];
+  const threadKey = threadScheduledTasksQueryKey("thread-a", "owner-a");
+  client.setQueryData(key, cached);
+  client.setQueryData(threadKey, threadCached);
 
   const { result, unmount } = renderHook(
     () => ({
@@ -88,15 +105,15 @@ it("does not expose or retain cached task lists after read permission is revoked
   );
   try {
     expect(result.current.all.data).toBeUndefined();
+    expect(result.current.all.isLoading).toBe(false);
+    expect(result.current.all.error).toBeNull();
     expect(result.current.thread.data).toBeUndefined();
+    expect(result.current.thread.isLoading).toBe(false);
+    expect(result.current.thread.error).toBeNull();
     expect(mocks.fetchScheduledTasks).not.toHaveBeenCalled();
     expect(mocks.fetchThreadScheduledTasks).not.toHaveBeenCalled();
-    await waitFor(() => {
-      expect(client.getQueryData(["scheduled-tasks"])).toBeUndefined();
-      expect(
-        client.getQueryData(["scheduled-tasks", "thread", "thread-a"]),
-      ).toBeUndefined();
-    });
+    expect(client.getQueryData(key)).toEqual(cached);
+    expect(client.getQueryData(threadKey)).toEqual(threadCached);
   } finally {
     unmount();
     client.clear();
@@ -104,6 +121,7 @@ it("does not expose or retain cached task lists after read permission is revoked
 });
 
 it("passes React Query cancellation signals to both authorized task inventories", async () => {
+  authState.permissions = null;
   mocks.fetchScheduledTasks.mockResolvedValue([]);
   mocks.fetchThreadScheduledTasks.mockResolvedValue([]);
   const { client, Wrapper } = createWrapper();
@@ -125,6 +143,142 @@ it("passes React Query cancellation signals to both authorized task inventories"
     expect(mocks.fetchThreadScheduledTasks.mock.calls[0]?.[1]).toBeInstanceOf(
       AbortSignal,
     );
+    expect(client.getQueryData(scheduledTasksQueryKey("owner-a"))).toEqual([]);
+    expect(
+      client.getQueryData(threadScheduledTasksQueryKey("thread-a", "owner-a")),
+    ).toEqual([]);
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it("clears only this owner's task list when threads:read is denied", async () => {
+  const { client, Wrapper } = createWrapper();
+  const cached = [{ id: "private-task" }];
+  const currentKey = scheduledTasksQueryKey("owner-a");
+  const otherKey = scheduledTasksQueryKey("owner-b");
+  const threadKey = ["scheduled-tasks", "thread", "thread-a"] as const;
+  const historyKey = [
+    "scheduled-tasks",
+    "runs",
+    "task-1",
+    "owner-a",
+    0,
+  ] as const;
+  client.setQueryData(currentKey, cached);
+  client.setQueryData(otherKey, cached);
+  client.setQueryData(threadKey, cached);
+  client.setQueryData(historyKey, { runs: [] });
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(() => useScheduledTasks(), {
+    wrapper: Wrapper,
+  });
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherKey)).toEqual(cached);
+    expect(client.getQueryData(threadKey)).toEqual(cached);
+    expect(client.getQueryData(historyKey)).toEqual({ runs: [] });
+    expect(mocks.fetchScheduledTasks).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it("aborts an in-flight task list when threads:read is revoked", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["threads:read"];
+  mocks.fetchScheduledTasks.mockImplementation((next: AbortSignal) => {
+    signal = next;
+    return new Promise(() => undefined);
+  });
+  const { client, Wrapper } = createWrapper();
+  const { result, rerender, unmount } = renderHook(() => useScheduledTasks(), {
+    wrapper: Wrapper,
+  });
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it("clears only this owner's thread tasks when threads:read is denied", async () => {
+  const { client, Wrapper } = createWrapper();
+  const cached = [{ id: "private-thread-task" }];
+  const currentKey = threadScheduledTasksQueryKey("thread-a", "owner-a");
+  const otherKey = threadScheduledTasksQueryKey("thread-a", "owner-b");
+  const listKey = scheduledTasksQueryKey("owner-a");
+  const historyKey = [
+    "scheduled-tasks",
+    "runs",
+    "task-1",
+    "owner-a",
+    0,
+  ] as const;
+  client.setQueryData(currentKey, cached);
+  client.setQueryData(otherKey, cached);
+  client.setQueryData(listKey, cached);
+  client.setQueryData(historyKey, { runs: [] });
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(
+    () => useThreadScheduledTasks("thread-a"),
+    { wrapper: Wrapper },
+  );
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherKey)).toEqual(cached);
+    expect(client.getQueryData(listKey)).toEqual(cached);
+    expect(client.getQueryData(historyKey)).toEqual({ runs: [] });
+    expect(mocks.fetchThreadScheduledTasks).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it("aborts an in-flight thread task list when threads:read is revoked", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["threads:read"];
+  mocks.fetchThreadScheduledTasks.mockImplementation(
+    (_threadId: string, next: AbortSignal) => {
+      signal = next;
+      return new Promise(() => undefined);
+    },
+  );
+  const { client, Wrapper } = createWrapper();
+  const { result, rerender, unmount } = renderHook(
+    () => useThreadScheduledTasks("thread-a"),
+    { wrapper: Wrapper },
+  );
+  try {
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
   } finally {
     unmount();
     client.clear();

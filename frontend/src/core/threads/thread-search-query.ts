@@ -54,16 +54,20 @@ export function buildThreadsSearchQueryOptions(
 ) {
   return {
     queryKey: ["threads", "search", params],
-    queryFn: async () => {
+    queryFn: async (context?: { signal?: AbortSignal }) => {
       const maxResults = params.limit;
       const initialOffset = params.offset ?? 0;
       const DEFAULT_PAGE_SIZE = 50;
+      // 只有 React Query 传入 AbortSignal 时才放进搜索请求，避免无信号调用多出一个 undefined 字段。
+      const signal = context?.signal;
 
       // Preserve prior semantics: if a non-positive limit is explicitly provided,
       // delegate to a single search call with the original parameters.
       if (maxResults !== undefined && maxResults <= 0) {
-        const response =
-          await apiClient.threads.search<AgentThreadState>(params);
+        const response = await apiClient.threads.search<AgentThreadState>({
+          ...params,
+          ...(signal ? { signal } : {}),
+        });
         return filterThreadSearchResults(response as AgentThread[], params);
       }
 
@@ -93,6 +97,7 @@ export function buildThreadsSearchQueryOptions(
           ...params,
           limit: currentLimit,
           offset,
+          ...(signal ? { signal } : {}),
         })) as AgentThread[];
 
         threads.push(...filterThreadSearchResults(response, params));

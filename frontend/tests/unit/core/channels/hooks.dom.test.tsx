@@ -10,7 +10,9 @@ const mocks = rs.hoisted(() => ({
   disconnectProvider: rs.fn(),
   listConnections: rs.fn(),
   listProviders: rs.fn(),
-  user: { current: { id: "owner-a" } },
+  user: {
+    current: { id: "owner-a", permissions: null as string[] | null },
+  },
 }));
 
 rs.mock("@/core/auth/AuthProvider", () => ({
@@ -83,7 +85,7 @@ afterEach(() => {
   mocks.disconnectProvider.mockReset();
   mocks.listConnections.mockReset();
   mocks.listProviders.mockReset();
-  mocks.user.current = { id: "owner-a" };
+  mocks.user.current = { id: "owner-a", permissions: null };
 });
 
 describe("channel query owner and permission boundaries", () => {
@@ -118,7 +120,7 @@ describe("channel query owner and permission boundaries", () => {
     expect(connections.result.current.connections).toEqual(ownerAConnections);
 
     act(() => {
-      mocks.user.current = { id: "owner-b" };
+      mocks.user.current = { id: "owner-b", permissions: null };
       providers.rerender();
       connections.rerender();
     });
@@ -138,16 +140,12 @@ describe("channel query owner and permission boundaries", () => {
     client.clear();
   });
 
-  it("hides and removes the current owner's caches when channels:read is denied", async () => {
+  it("hides caller-disabled channel lists without removing either owner cache", () => {
     const { client, Wrapper } = createWrapper();
-    client.setQueryData(
-      ["channelProviders", "owner-a"],
-      providerSnapshot("private-status"),
-    );
-    client.setQueryData(
-      ["channelConnections", "owner-a"],
-      [connection("private-connection")],
-    );
+    const providersCached = providerSnapshot("private-status");
+    const connectionsCached = [connection("private-connection")];
+    client.setQueryData(["channelProviders", "owner-a"], providersCached);
+    client.setQueryData(["channelConnections", "owner-a"], connectionsCached);
     client.setQueryData(
       ["channelProviders", "owner-b"],
       providerSnapshot("other-owner"),
@@ -164,20 +162,157 @@ describe("channel query owner and permission boundaries", () => {
     expect(providers.result.current.hasData).toBe(false);
     expect(connections.result.current.connections).toEqual([]);
     expect(connections.result.current.hasData).toBe(false);
-    await waitFor(() => {
-      expect(client.getQueryData(["channelProviders", "owner-a"])).toBe(
-        undefined,
-      );
-      expect(client.getQueryData(["channelConnections", "owner-a"])).toBe(
-        undefined,
-      );
-    });
+    expect(connections.result.current.isLoading).toBe(false);
+    expect(connections.result.current.error).toBeNull();
+    expect(client.getQueryData(["channelProviders", "owner-a"])).toEqual(
+      providersCached,
+    );
+    expect(client.getQueryData(["channelConnections", "owner-a"])).toEqual(
+      connectionsCached,
+    );
     expect(client.getQueryData(["channelProviders", "owner-b"])).toEqual(
       providerSnapshot("other-owner"),
     );
     expect(mocks.listProviders).not.toHaveBeenCalled();
     expect(mocks.listConnections).not.toHaveBeenCalled();
     client.clear();
+  });
+
+  it("still fetches providers while channels:read is unresolved", async () => {
+    mocks.user.current = { id: "owner-a", permissions: null };
+    mocks.listProviders.mockResolvedValueOnce(providerSnapshot("connected"));
+    const { client, Wrapper } = createWrapper();
+    const providers = renderHook(() => useChannelProviders(), {
+      wrapper: Wrapper,
+    });
+    try {
+      await waitFor(() => expect(providers.result.current.hasData).toBe(true));
+      expect(mocks.listProviders).toHaveBeenCalledTimes(1);
+      expect(client.getQueryData(["channelProviders", "owner-a"])).toEqual(
+        providerSnapshot("connected"),
+      );
+    } finally {
+      providers.unmount();
+      client.clear();
+    }
+  });
+
+  it("clears only this owner's provider list when channels:read is denied", async () => {
+    const { client, Wrapper } = createWrapper();
+    const cached = providerSnapshot("private-status");
+    const connections = [connection("private-connection")];
+    client.setQueryData(["channelProviders", "owner-a"], cached);
+    client.setQueryData(["channelProviders", "owner-b"], cached);
+    client.setQueryData(["channelConnections", "owner-a"], connections);
+    mocks.user.current = { id: "owner-a", permissions: [] };
+
+    const providers = renderHook(() => useChannelProviders(), {
+      wrapper: Wrapper,
+    });
+    try {
+      expect(providers.result.current.providers).toEqual([]);
+      expect(providers.result.current.hasData).toBe(false);
+      expect(providers.result.current.isLoading).toBe(false);
+      expect(providers.result.current.error).toBeNull();
+      await waitFor(() =>
+        expect(client.getQueryData(["channelProviders", "owner-a"])).toBe(
+          undefined,
+        ),
+      );
+      expect(client.getQueryData(["channelProviders", "owner-b"])).toEqual(
+        cached,
+      );
+      expect(client.getQueryData(["channelConnections", "owner-a"])).toEqual(
+        connections,
+      );
+      expect(mocks.listProviders).not.toHaveBeenCalled();
+    } finally {
+      providers.unmount();
+      client.clear();
+    }
+  });
+
+  it("hides a caller-disabled provider list without removing the owner cache", () => {
+    const { client, Wrapper } = createWrapper();
+    const cached = providerSnapshot("private-status");
+    client.setQueryData(["channelProviders", "owner-a"], cached);
+    mocks.user.current = { id: "owner-a", permissions: ["channels:read"] };
+
+    const providers = renderHook(() => useChannelProviders(false), {
+      wrapper: Wrapper,
+    });
+    try {
+      expect(providers.result.current.providers).toEqual([]);
+      expect(providers.result.current.hasData).toBe(false);
+      expect(providers.result.current.isLoading).toBe(false);
+      expect(providers.result.current.error).toBeNull();
+      expect(client.getQueryData(["channelProviders", "owner-a"])).toEqual(
+        cached,
+      );
+      expect(mocks.listProviders).not.toHaveBeenCalled();
+    } finally {
+      providers.unmount();
+      client.clear();
+    }
+  });
+
+  it("still fetches connections while channels:read is unresolved", async () => {
+    mocks.user.current = { id: "owner-a", permissions: null };
+    mocks.listConnections.mockResolvedValueOnce([connection("connection-a")]);
+    const { client, Wrapper } = createWrapper();
+    const connections = renderHook(() => useChannelConnections(), {
+      wrapper: Wrapper,
+    });
+    try {
+      await waitFor(() =>
+        expect(connections.result.current.hasData).toBe(true),
+      );
+      expect(mocks.listConnections).toHaveBeenCalledTimes(1);
+      expect(mocks.listConnections.mock.calls[0]?.[0]).toBeInstanceOf(
+        AbortSignal,
+      );
+      expect(client.getQueryData(["channelConnections", "owner-a"])).toEqual([
+        connection("connection-a"),
+      ]);
+    } finally {
+      connections.unmount();
+      client.clear();
+    }
+  });
+
+  it("clears only this owner's connections when channels:read is denied", async () => {
+    const { client, Wrapper } = createWrapper();
+    const providersCached = providerSnapshot("private-status");
+    const connectionsCached = [connection("private-connection")];
+    client.setQueryData(["channelProviders", "owner-a"], providersCached);
+    client.setQueryData(["channelConnections", "owner-a"], connectionsCached);
+    client.setQueryData(["channelConnections", "owner-b"], connectionsCached);
+    mocks.user.current = { id: "owner-a", permissions: [] };
+
+    const connections = renderHook(() => useChannelConnections(), {
+      wrapper: Wrapper,
+    });
+    try {
+      expect(connections.result.current.connections).toEqual([]);
+      expect(connections.result.current.hasData).toBe(false);
+      expect(connections.result.current.isLoading).toBe(false);
+      expect(connections.result.current.error).toBeNull();
+      await waitFor(() =>
+        expect(client.getQueryData(["channelConnections", "owner-a"])).toBe(
+          undefined,
+        ),
+      );
+      expect(client.getQueryData(["channelConnections", "owner-b"])).toEqual(
+        connectionsCached,
+      );
+      expect(client.getQueryData(["channelProviders", "owner-a"])).toEqual(
+        providersCached,
+      );
+      expect(mocks.listConnections).not.toHaveBeenCalled();
+    } finally {
+      connections.unmount();
+      client.clear();
+    }
   });
 
   it("passes cancellation signals to both authorized directory reads", async () => {
@@ -229,7 +364,7 @@ describe("channel query owner and permission boundaries", () => {
       const mutationPromise =
         mutation.result.current.mutateAsync("owner-a-connection");
       await disconnectStarted;
-      mocks.user.current = { id: "owner-b" };
+      mocks.user.current = { id: "owner-b", permissions: null };
       mutation.rerender();
       finishDisconnect();
       await mutationPromise;

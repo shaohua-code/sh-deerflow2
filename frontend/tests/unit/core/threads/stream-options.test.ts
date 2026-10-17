@@ -147,8 +147,17 @@ test("disables thread data reads and hides cached data when access is revoked", 
 
   expect(historyQueryOptions?.enabled).toBe(false);
   expect(streamOptions?.threadId).toBeUndefined();
+  expect(metadataQueryOptions?.queryKey).toEqual([
+    "thread",
+    "metadata",
+    "private-thread",
+    null,
+    false,
+  ]);
   expect(metadataQueryOptions?.enabled).toBe(false);
   expect(metadataResult?.data).toBeUndefined();
+  expect(metadataResult?.isLoading).toBe(false);
+  expect(metadataResult?.error).toBeNull();
   loadMore?.();
   expect(fetchNextPage).not.toHaveBeenCalled();
 });

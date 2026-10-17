@@ -4,12 +4,25 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 
 const mocks = rs.hoisted(() => ({ fetch: rs.fn(), get: rs.fn() }));
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
+}));
 rs.mock("@/core/api/fetcher", () => ({ fetch: mocks.fetch }));
 rs.mock("@/core/api", () => ({
   getAPIClient: () => ({ threads: { get: mocks.get } }),
 }));
 
 import {
+  threadMetadataQueryKey,
   useMoveThreadToProject,
   useThreadMetadata,
 } from "@/core/threads/hooks";
@@ -22,6 +35,8 @@ const original = {
 afterEach(() => {
   cleanup();
   rs.resetAllMocks();
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
 test("move updates only affiliation and marks inactive metadata stale", async () => {
@@ -61,18 +76,29 @@ for (const cached of [false, true]) {
       const client = new QueryClient({
         defaultOptions: { queries: { retry: false } },
       });
-      const key = ["thread", "metadata", "chat", false];
+      const key = threadMetadataQueryKey("chat", authState.userId, false);
       if (cached) client.setQueryData(key, original);
       const moved = {
         ...original,
         metadata: { ...original.metadata, deerflow_project_id: projectId },
       };
-      let finishOldRead!: (value: typeof original) => void;
-      const oldRead = new Promise<typeof original>((resolve) => {
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200 });
+      let finishOldRead!: (value: Response) => void;
+      const oldRead = new Promise<Response>((resolve) => {
         finishOldRead = resolve;
       });
-      mocks.get.mockReturnValueOnce(oldRead).mockResolvedValue(moved);
-      mocks.fetch.mockResolvedValue(new Response(JSON.stringify(moved)));
+      let summaryReads = 0;
+      mocks.fetch.mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/summary")) {
+          summaryReads += 1;
+          return summaryReads === 1
+            ? oldRead
+            : Promise.resolve(jsonResponse(moved));
+        }
+        return Promise.resolve(jsonResponse(moved));
+      });
       const wrapper = ({ children }: PropsWithChildren) => (
         <QueryClientProvider client={client}>{children}</QueryClientProvider>
       );
@@ -84,7 +110,7 @@ for (const cached of [false, true]) {
         { wrapper },
       );
       try {
-        await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(summaryReads).toBe(1));
         await act(async () => {
           await result.current.move.mutateAsync({
             threadId: "chat",
@@ -92,7 +118,7 @@ for (const cached of [false, true]) {
           });
         });
         await act(async () => {
-          finishOldRead(original);
+          finishOldRead(jsonResponse(original));
           await oldRead;
         });
         await waitFor(() => {
@@ -101,7 +127,7 @@ for (const cached of [false, true]) {
           );
           expect(result.current.metadata.isFetching).toBe(false);
         });
-        expect(mocks.get).toHaveBeenCalledTimes(2);
+        expect(summaryReads).toBe(2);
         expect(client.getQueryData(key)).toEqual(moved);
       } finally {
         unmount();

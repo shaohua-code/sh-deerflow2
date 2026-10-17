@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { toast } from "sonner";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 
 import {
@@ -16,74 +18,127 @@ import {
   type ScheduledTaskPayload,
 } from "./api";
 
-const SCHEDULED_TASKS_QUERY_KEY = ["scheduled-tasks"] as const;
+export function scheduledTasksQueryKey(userId: string | null | undefined) {
+  // owner 位于 scheduled-tasks 之后；["scheduled-tasks"] 仍能失效全部账号，含线程任务和运行历史。
+  return ["scheduled-tasks", userId ?? null] as const;
+}
 
-export function useScheduledTasks({ enabled }: { enabled: boolean }) {
+export function isOwnerScheduledTasksQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 2 段才是 owner。thread 与 runs 不是账号 id，不能拿来按账号清理。
+  return queryKey[0] === "scheduled-tasks" && queryKey[1] === userId;
+}
+
+export function useScheduledTasks({ enabled }: { enabled?: boolean } = {}) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/scheduled-tasks 要求 threads:read 与 threads:read data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
   const queryClient = useQueryClient();
-  useEffect(() => {
-    if (enabled) return;
+  const callerEnabled = (enabled ?? true) && !accessDenied;
+  const queryKey = scheduledTasksQueryKey(userId);
 
-    // 撤销 threads:read 后停止拉取并删除该账号可见的任务目录缓存。
-    void queryClient.cancelQueries({
-      queryKey: SCHEDULED_TASKS_QUERY_KEY,
-      exact: true,
-    });
-    queryClient.removeQueries({
-      queryKey: SCHEDULED_TASKS_QUERY_KEY,
-      exact: true,
-    });
-  }, [enabled, queryClient]);
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的任务目录。调用方停用不能清空该账号缓存，也不能波及线程任务或运行历史。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerScheduledTasksQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const query = useQuery({
-    queryKey: SCHEDULED_TASKS_QUERY_KEY,
+    queryKey,
     queryFn: ({ signal }) => fetchScheduledTasks(signal),
     refetchInterval: 15000,
     refetchIntervalInBackground: false,
-    enabled,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled,
   });
-  return enabled
-    ? query
-    : {
-        ...query,
-        data: undefined,
-        error: null,
-        isLoading: false,
-        isFetching: false,
-      };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的任务目录。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    };
+  }
+  return query;
+}
+
+export function threadScheduledTasksQueryKey(
+  threadId: string | null | undefined,
+  userId: string | null | undefined,
+) {
+  // owner 位于 thread 与 threadId 之后；["scheduled-tasks", "thread", threadId] 与 ["scheduled-tasks"] 仍能失效全部账号。
+  return [
+    "scheduled-tasks",
+    "thread",
+    threadId ?? null,
+    userId ?? null,
+  ] as const;
+}
+
+export function isOwnerThreadScheduledTasksQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。目录第 2 段是账号，运行历史第 2 段是 runs。
+  return (
+    queryKey[0] === "scheduled-tasks" &&
+    queryKey[1] === "thread" &&
+    queryKey[3] === userId
+  );
 }
 
 export function useThreadScheduledTasks(
   threadId: string | null | undefined,
-  { enabled }: { enabled: boolean },
+  { enabled }: { enabled?: boolean } = {},
 ) {
-  const active = enabled && Boolean(threadId);
-  const queryKey = useMemo(
-    () => ["scheduled-tasks", "thread", threadId] as const,
-    [threadId],
-  );
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/threads/{id}/scheduled-tasks 要求 threads:read 与线程归属；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
   const queryClient = useQueryClient();
-  useEffect(() => {
-    if (active || !threadId) return;
+  const callerEnabled = Boolean(threadId) && (enabled ?? true) && !accessDenied;
+  const queryKey = threadScheduledTasksQueryKey(threadId, userId);
 
-    // 线程读取权限变化时取消该线程的任务列表，避免旧结果晚到后回填缓存。
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [active, queryClient, queryKey, threadId]);
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的线程任务。调用方停用不能清空该账号缓存，也不能波及任务目录或运行历史。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerThreadScheduledTasksQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const query = useQuery({
     queryKey,
     queryFn: ({ signal }) => fetchThreadScheduledTasks(threadId!, signal),
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled,
   });
-  return active
-    ? query
-    : {
-        ...query,
-        data: undefined,
-        error: null,
-        isLoading: false,
-        isFetching: false,
-      };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的线程任务。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    };
+  }
+  return query;
 }
 
 export function useCreateScheduledTask() {

@@ -7,7 +7,19 @@ const mocks = rs.hoisted(() => ({
   install: rs.fn(),
   loadStatus: rs.fn(),
 }));
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
 
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
+}));
 rs.mock("@/core/integrations/lark/api", () => ({
   completeLarkAuthorization: rs.fn(),
   completeLarkConfiguration: rs.fn(),
@@ -69,6 +81,8 @@ afterEach(() => {
   cleanup();
   mocks.install.mockReset();
   mocks.loadStatus.mockReset();
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
 describe("Lark integration status permissions and owner cache", () => {
@@ -77,9 +91,11 @@ describe("Lark integration status permissions and owner cache", () => {
     const userAStatus = status("user-a-version");
     const userBStatus = status("user-b-version");
     client.setQueryData(larkIntegrationQueryKey("user-a"), userAStatus);
+    authState.userId = "user-b";
+    authState.permissions = null;
     mocks.loadStatus.mockResolvedValueOnce(userBStatus);
 
-    const query = renderHook(() => useLarkIntegrationStatus(true, "user-b"), {
+    const query = renderHook(() => useLarkIntegrationStatus(true), {
       wrapper: Wrapper,
     });
 
@@ -100,34 +116,94 @@ describe("Lark integration status permissions and owner cache", () => {
     }
   });
 
-  it("hides and removes status data and cancels reads when access is denied", async () => {
-    const { client, Wrapper } = createWrapper();
-    const key = larkIntegrationQueryKey("user-a");
-    client.setQueryData(key, status("private-status"));
-    const query = renderHook(() => useLarkIntegrationStatus(false, "user-a"), {
-      wrapper: Wrapper,
-    });
-
-    try {
-      expect(query.result.current.data).toBeUndefined();
-      expect(mocks.loadStatus).not.toHaveBeenCalled();
-      await waitFor(() => expect(client.getQueryData(key)).toBeUndefined());
-    } finally {
-      query.unmount();
-      client.clear();
-    }
-  });
-
-  it("passes React Query cancellation signals to authorized status reads", async () => {
-    const { client, Wrapper } = createWrapper();
+  it("still fetches status while integrations:read is unresolved", async () => {
+    authState.userId = "user-a";
+    authState.permissions = null;
     mocks.loadStatus.mockResolvedValueOnce(status("v1"));
-    const query = renderHook(() => useLarkIntegrationStatus(true, "user-a"), {
+    const { client, Wrapper } = createWrapper();
+    const query = renderHook(() => useLarkIntegrationStatus(), {
       wrapper: Wrapper,
     });
 
     try {
       await waitFor(() => expect(query.result.current.isSuccess).toBe(true));
       expect(mocks.loadStatus.mock.calls[0]?.[0]).toBeInstanceOf(AbortSignal);
+      expect(client.getQueryData(larkIntegrationQueryKey("user-a"))).toEqual(
+        status("v1"),
+      );
+    } finally {
+      query.unmount();
+      client.clear();
+    }
+  });
+
+  it("hides a caller-disabled status without removing the owner cache", () => {
+    const { client, Wrapper } = createWrapper();
+    const cached = status("private-status");
+    const key = larkIntegrationQueryKey("owner-a");
+    client.setQueryData(key, cached);
+    const query = renderHook(() => useLarkIntegrationStatus(false), {
+      wrapper: Wrapper,
+    });
+
+    try {
+      expect(query.result.current.data).toBeUndefined();
+      expect(query.result.current.isLoading).toBe(false);
+      expect(query.result.current.error).toBeNull();
+      expect(mocks.loadStatus).not.toHaveBeenCalled();
+      expect(client.getQueryData(key)).toEqual(cached);
+    } finally {
+      query.unmount();
+      client.clear();
+    }
+  });
+
+  it("clears only this owner's status when integrations:read is denied", async () => {
+    const { client, Wrapper } = createWrapper();
+    const cached = status("private-status");
+    const currentKey = larkIntegrationQueryKey("owner-a");
+    const otherKey = larkIntegrationQueryKey("owner-b");
+    client.setQueryData(currentKey, cached);
+    client.setQueryData(otherKey, cached);
+    authState.permissions = [];
+    const query = renderHook(() => useLarkIntegrationStatus(), {
+      wrapper: Wrapper,
+    });
+
+    try {
+      expect(query.result.current.data).toBeUndefined();
+      expect(query.result.current.isLoading).toBe(false);
+      expect(query.result.current.error).toBeNull();
+      await waitFor(() =>
+        expect(client.getQueryData(currentKey)).toBeUndefined(),
+      );
+      expect(client.getQueryData(otherKey)).toEqual(cached);
+      expect(mocks.loadStatus).not.toHaveBeenCalled();
+    } finally {
+      query.unmount();
+      client.clear();
+    }
+  });
+
+  it("aborts an in-flight status read when integrations:read is revoked", async () => {
+    let signal: AbortSignal | undefined;
+    authState.permissions = ["integrations:read"];
+    mocks.loadStatus.mockImplementation((next: AbortSignal) => {
+      signal = next;
+      return new Promise(() => undefined);
+    });
+    const { client, Wrapper } = createWrapper();
+    const query = renderHook(() => useLarkIntegrationStatus(), {
+      wrapper: Wrapper,
+    });
+
+    try {
+      await waitFor(() => expect(signal?.aborted).toBe(false));
+      authState.permissions = [];
+      query.rerender();
+      await waitFor(() => expect(signal?.aborted).toBe(true));
+      expect(query.result.current.data).toBeUndefined();
+      expect(query.result.current.error).toBeNull();
     } finally {
       query.unmount();
       client.clear();
@@ -138,6 +214,7 @@ describe("Lark integration status permissions and owner cache", () => {
     const { client, Wrapper } = createWrapper();
     const userAStatus = status("user-a-old-status");
     const userBStatus = status("user-b-status");
+    authState.userId = "user-a";
     client.setQueryData(larkIntegrationQueryKey("user-a"), userAStatus);
     client.setQueryData(larkIntegrationQueryKey("user-b"), userBStatus);
     const installedStatus = status("installed-for-a");
@@ -147,7 +224,7 @@ describe("Lark integration status permissions and owner cache", () => {
     });
 
     try {
-      await mutation.result.current.mutateAsync({ cacheScope: "user-a" });
+      await mutation.result.current.mutateAsync({ cacheScope: "user-b" });
       expect(
         client.getQueryState(larkIntegrationQueryKey("user-a"))?.isInvalidated,
       ).toBe(true);

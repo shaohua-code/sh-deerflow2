@@ -1286,10 +1286,23 @@ async def move_thread(thread_id: ThreadId, body: ThreadMoveRequest, request: Req
     )
 
 
-@router.get("/{thread_id}", response_model=ThreadResponse)
-@require_permission("threads", "read", owner_check=True)
-async def get_thread(thread_id: ThreadId, request: Request) -> ThreadResponse:
-    """Get thread info from metadata plus the graph's materialized state."""
+def _thread_summary_response(thread_id: str, record: dict) -> ThreadResponse:
+    """投影仓储行。标题只用 display_name，避免为了页头去物化 checkpoint。"""
+    display_name = record.get("display_name")
+    metadata = record.get("metadata") or {}
+    return ThreadResponse(
+        thread_id=str(record.get("thread_id") or thread_id),
+        status=record.get("status", "idle"),
+        created_at=coerce_iso(record.get("created_at", "")),
+        updated_at=coerce_iso(record.get("updated_at", "")),
+        metadata=metadata if isinstance(metadata, dict) else {},
+        values={"title": display_name} if display_name else {},
+        interrupts={},
+    )
+
+
+async def _read_thread_detail(thread_id: ThreadId, request: Request) -> ThreadResponse:
+    """读取会话元数据，并在需要时物化 checkpoint。"""
     from app.gateway.deps import get_thread_store
 
     thread_store = get_thread_store(request)
@@ -1337,6 +1350,29 @@ async def get_thread(thread_id: ThreadId, request: Request) -> ThreadResponse:
         metadata=record.get("metadata", {}),
         values=serialize_channel_values_for_api(snapshot.values),
     )
+
+
+@router.get("/{thread_id}/summary", response_model=ThreadResponse)
+@require_permission("threads", "read", owner_check=True)
+async def get_thread_summary(thread_id: ThreadId, request: Request) -> ThreadResponse:
+    """返回页头所需的仓储摘要。
+
+    已有 thread_meta 行时不读取 checkpoint。只有旧的、仅存在于
+    checkpoint 的会话才回退到完整读取，避免被误报为不存在。
+    """
+    from app.gateway.deps import get_thread_store
+
+    record = await get_thread_store(request).get(thread_id)
+    if record is not None:
+        return _thread_summary_response(thread_id, record)
+    return await _read_thread_detail(thread_id, request)
+
+
+@router.get("/{thread_id}", response_model=ThreadResponse)
+@require_permission("threads", "read", owner_check=True)
+async def get_thread(thread_id: ThreadId, request: Request) -> ThreadResponse:
+    """Get thread info from metadata plus the graph's materialized state."""
+    return await _read_thread_detail(thread_id, request)
 
 
 @router.get("/{thread_id}/goal", response_model=ThreadGoalResponse)

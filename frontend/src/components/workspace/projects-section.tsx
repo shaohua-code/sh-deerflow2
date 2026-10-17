@@ -44,11 +44,11 @@ import { useCreateProject, useProjects, type Project } from "@/core/projects";
 import { useLocalSettings } from "@/core/settings";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { useInfiniteThreads } from "@/core/threads/hooks";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import { flattenThreadBranches } from "@/core/threads/thread-branch-tree";
 import { buildThreadListModel } from "@/core/threads/thread-list-model";
 import type { AgentThread } from "@/core/threads/types";
 import { pathOfThread, projectIdOfThread } from "@/core/threads/utils";
-import { env } from "@/env";
 import { isIMEComposing } from "@/lib/ime";
 
 import { ThreadSidebarItem } from "./recent-chat-list";
@@ -158,10 +158,7 @@ function GroupedProjectList() {
   const { data: activeProjects } = useProjects("active");
   const { data: archivedProjects } = useProjects("archived");
   const { data: infiniteThreads } = useInfiniteThreads(
-    {
-      archived:
-        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
-    },
+    workspaceRecentThreadListParams(),
     { enabled: access.canReadThreads },
   );
   const { thread_id: threadIdFromPath } = useParams<{

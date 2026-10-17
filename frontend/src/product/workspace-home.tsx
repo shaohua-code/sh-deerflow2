@@ -26,12 +26,18 @@ import { useAgentsApiEnabled } from "@/core/agents";
 import type { Agent } from "@/core/agents";
 import { listAgents } from "@/core/agents/api";
 import { useAuth } from "@/core/auth/AuthProvider";
-import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  getPermissionState,
+  hasPermission,
+  PERMISSIONS,
+} from "@/core/auth/permissions";
 import type { Locale } from "@/core/i18n";
 import { useI18n } from "@/core/i18n/hooks";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { searchThreads } from "@/core/threads/api";
+import { useInfiniteThreads } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import {
   agentNameOfThread,
   pathOfThread,
@@ -48,12 +54,57 @@ const RECENT_FILE_LIMIT = 5;
 const ACTIVE_TASK_LIMIT = 5;
 const RECENT_AGENT_LIMIT = 3;
 const DEFAULT_AGENT_ID = "lead_agent";
+const DASHBOARD_DIRECTORY_STALE_TIME_MS = 30_000;
+
+function isOwnerDashboardThreadQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "product" &&
+    queryKey[1] === "dashboard-active-threads" &&
+    queryKey[2] === userId
+  );
+}
+
+function isOwnerDashboardAgentQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "product" &&
+    queryKey[1] === "dashboard-agents" &&
+    queryKey[2] === userId
+  );
+}
+
+function isOwnerDashboardFileQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  return (
+    queryKey[0] === "product" &&
+    queryKey[1] === "dashboard-files" &&
+    queryKey[2] === userId
+  );
+}
 
 export function WorkspaceHome() {
   const { locale, t } = useI18n();
   const copy = getProductCopy(locale);
   const brandName = useProductBrandName(locale);
   const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // POST /threads/search 只要求 threads:read；权限字段缺失时继续请求，不能把未知当成拒绝。
+  const threadsReadDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  // 文件目录同时要求 threads:read 与 projects:read；任一明确拒绝即停止，未知权限继续请求。
+  const filesReadDenied =
+    threadsReadDenied ||
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
+  // GET /api/agents 只要求 agents:read；权限字段缺失时继续请求，不能把未知当成拒绝。
+  const agentsReadDenied =
+    getPermissionState(user, PERMISSIONS.AGENTS_READ) === "denied";
   const queryClient = useQueryClient();
   const staticMode = isStaticWebsiteOnly();
   // 后端仅下发经过 allowlist 的产品开关；失败时保留默认入口，API 权限仍由 Gateway 决定。
@@ -79,19 +130,40 @@ export function WorkspaceHome() {
 
   useEffect(() => {
     // 权限在工作台打开期间可能被撤销；隐藏页面内容的同时清掉各自的数据缓存。
-    if (!canReadThreads) {
-      queryClient.removeQueries({ queryKey: ["product", "dashboard-threads"] });
-      queryClient.removeQueries({
-        queryKey: ["product", "dashboard-active-threads"],
-      });
+    if (threadsReadDenied) {
+      // 最近会话由侧栏无限列表按账号清理。这里只取消当前账号的进行中任务。
+      const ownerQueries = {
+        predicate: (query: { queryKey: readonly unknown[] }) =>
+          isOwnerDashboardThreadQuery(query.queryKey, userId),
+      };
+      void queryClient.cancelQueries(ownerQueries);
+      queryClient.removeQueries(ownerQueries);
     }
-    if (!canReadAgents) {
-      queryClient.removeQueries({ queryKey: ["product", "dashboard-agents"] });
+    if (agentsReadDenied) {
+      // 只取消并清理当前账号的常用智能体。调用方停用或入口关闭不能清空该账号缓存，也不能波及其他 owner。
+      const ownerAgentQueries = {
+        predicate: (query: { queryKey: readonly unknown[] }) =>
+          isOwnerDashboardAgentQuery(query.queryKey, userId),
+      };
+      void queryClient.cancelQueries(ownerAgentQueries);
+      queryClient.removeQueries(ownerAgentQueries);
     }
-    if (!canReadFiles) {
-      queryClient.removeQueries({ queryKey: ["product", "dashboard-files"] });
+    if (filesReadDenied) {
+      // 只取消并清理当前账号的最近文件。调用方停用不能清空该账号缓存，也不能波及其他 owner。
+      const ownerFileQueries = {
+        predicate: (query: { queryKey: readonly unknown[] }) =>
+          isOwnerDashboardFileQuery(query.queryKey, userId),
+      };
+      void queryClient.cancelQueries(ownerFileQueries);
+      queryClient.removeQueries(ownerFileQueries);
     }
-  }, [canReadAgents, canReadFiles, canReadThreads, queryClient]);
+  }, [
+    agentsReadDenied,
+    filesReadDenied,
+    queryClient,
+    threadsReadDenied,
+    userId,
+  ]);
 
   // 能力探测失败时保留前往可重试错误页的入口，但暂不读取自建 Agent 目录。
   // 浏览器上次缓存的关闭值不能被当成这次 Gateway 的明确关闭结果。
@@ -122,24 +194,23 @@ export function WorkspaceHome() {
           ? "mt-8 grid gap-3 sm:grid-cols-2"
           : "mt-8 grid gap-3";
   const showDashboardInsights = showRecentThreads || showAgentInsights;
-  const recentThreadsQuery = useQuery<AgentThread[]>({
-    queryKey: [
-      "product",
-      "dashboard-threads",
-      staticMode ? "demo" : (user?.id ?? null),
-    ],
-    queryFn: ({ signal }) =>
-      searchThreads({ archived: false, limit: 50, offset: 0, signal }),
-    enabled: showRecentThreads && (staticMode ? true : Boolean(user?.id)),
-    staleTime: 0,
-    retry: false,
-  });
+  // 与侧栏共用第一页，避免总览再发一次相同的未归档搜索。
+  const recentThreadsQuery = useInfiniteThreads(
+    workspaceRecentThreadListParams(),
+    {
+      enabled:
+        showChats && (staticMode || userId !== null) && !threadsReadDenied,
+    },
+  );
   // 查询库保留上次成功的数据；后台刷新失败时先展示这份快照，首次读取失败才显示整块错误态。
-  const recentThreadPool = recentThreadsQuery.data ?? [];
+  // 明确撤权或入口关闭时，同一帧不使用仍留在缓存里的会话行。
+  const recentThreadPool = showRecentThreads
+    ? (recentThreadsQuery.data?.pages[0] ?? [])
+    : [];
   const recentThreads = recentThreadPool.slice(0, 5);
   // 只查当前用户仍处于 busy 状态的会话；缓存按账号分区，短间隔刷新让状态跟上 Gateway。
   const activeTasksQuery = useQuery<AgentThread[]>({
-    queryKey: ["product", "dashboard-active-threads", user?.id ?? null],
+    queryKey: ["product", "dashboard-active-threads", userId],
     queryFn: ({ signal }) =>
       searchThreads({
         archived: false,
@@ -148,7 +219,7 @@ export function WorkspaceHome() {
         offset: 0,
         signal,
       }),
-    enabled: showRecentThreads && Boolean(user?.id) && !staticMode,
+    enabled: showChats && userId !== null && !staticMode && !threadsReadDenied,
     staleTime: 0,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
@@ -156,20 +227,34 @@ export function WorkspaceHome() {
   });
   // Agent 目录可能包含当前账号的自建定义，因此也使用账号分区缓存并在静态演示中关闭。
   const agentsDirectoryQuery = useQuery<Agent[]>({
-    queryKey: ["product", "dashboard-agents", user?.id ?? null],
-    queryFn: listAgents,
-    enabled: showAgentInsights && Boolean(user?.id) && !staticMode,
-    staleTime: 0,
+    queryKey: ["product", "dashboard-agents", userId],
+    queryFn: ({ signal }) => listAgents({ signal }),
+    // 入口和能力开关可能关闭；不能把未知权限写成拒绝，明确撤权时不请求。
+    enabled:
+      showChats &&
+      (features?.agents ?? true) &&
+      agentsApiEnabled &&
+      !agentsCapabilityError &&
+      !agentsCapabilityLoading &&
+      canReadThreads &&
+      canCreateRuns &&
+      userId !== null &&
+      !staticMode &&
+      !agentsReadDenied,
+    staleTime: DASHBOARD_DIRECTORY_STALE_TIME_MS,
     retry: false,
   });
-  const activeTasks = activeTasksQuery.data ?? [];
+  const activeTasks = showRecentThreads ? (activeTasksQuery.data ?? []) : [];
   // 使用频次只从当前用户最近 50 个会话摘要计算，不新建另一份行为统计数据。
   const recentAgentUsage = new Map<string, number>();
   for (const thread of recentThreadPool) {
     const agentName = agentNameOfThread(thread) ?? DEFAULT_AGENT_ID;
     recentAgentUsage.set(agentName, (recentAgentUsage.get(agentName) ?? 0) + 1);
   }
-  const frequentAgents = (agentsDirectoryQuery.data ?? [])
+  const frequentAgentSource = showAgentInsights
+    ? (agentsDirectoryQuery.data ?? [])
+    : [];
+  const frequentAgents = frequentAgentSource
     .filter((agent) => agent.name !== DEFAULT_AGENT_ID)
     .map((agent) => ({
       agent,
@@ -185,14 +270,22 @@ export function WorkspaceHome() {
   const defaultAgentUsage = recentAgentUsage.get(DEFAULT_AGENT_ID) ?? 0;
   // Query key 按登录用户隔离；文件内容和权限仍由 Gateway 的 artifact URL 负责。
   const recentFilesQuery = useQuery({
-    queryKey: ["product", "dashboard-files", user?.id ?? null],
+    queryKey: ["product", "dashboard-files", userId],
     queryFn: ({ signal }) =>
       fetchProductFiles(RECENT_FILE_LIMIT, 0, "", signal),
-    enabled: showRecentFiles && Boolean(user?.id) && !staticMode,
-    staleTime: 0,
+    // 文件开关可能关闭；不能把未知权限写成拒绝，任一所需权限被明确拒绝时不请求。
+    enabled:
+      features?.files === true &&
+      userId !== null &&
+      !staticMode &&
+      !filesReadDenied,
+    staleTime: DASHBOARD_DIRECTORY_STALE_TIME_MS,
     retry: false,
   });
-  const recentFiles = recentFilesQuery.data?.files ?? [];
+  // 明确撤权或文件入口关闭时，同一帧不使用仍留在缓存里的文件行。
+  const recentFiles = showRecentFiles
+    ? (recentFilesQuery.data?.files ?? [])
+    : [];
   const showCoverageNote =
     recentFilesQuery.data?.truncated === true ||
     (recentFilesQuery.data?.failed_count ?? 0) > 0 ||

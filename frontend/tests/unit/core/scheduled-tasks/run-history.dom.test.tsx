@@ -3,12 +3,29 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
+}));
+
 rs.mock("@/core/scheduled-tasks/api", () => ({
   fetchScheduledTaskRuns: rs.fn(),
 }));
 
 import { fetchScheduledTaskRuns } from "@/core/scheduled-tasks/api";
-import { useScheduledTaskRunHistory } from "@/core/scheduled-tasks/run-history";
+import {
+  scheduledTaskRunHistoryQueryKey,
+  useScheduledTaskRunHistory,
+} from "@/core/scheduled-tasks/run-history";
 import type { ScheduledTaskRun } from "@/core/scheduled-tasks/types";
 
 const fetchRuns = rs.mocked(fetchScheduledTaskRuns);
@@ -33,6 +50,8 @@ afterEach(() => {
   cleanup();
   clients.splice(0).forEach((client) => client.clear());
   fetchRuns.mockReset();
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
 test("a full final page does not expose the next-page sentinel", async () => {
@@ -111,7 +130,10 @@ test("an empty older page retains a route back to the latest records", async () 
 test("disabled run history hides cached rows and does not issue a request", () => {
   const testWrapper = wrapper();
   const client = clients.at(-1)!;
-  client.setQueryData(["scheduled-tasks", "runs", "task-a", 0], rows(1));
+  client.setQueryData(
+    scheduledTaskRunHistoryQueryKey("owner-a", "task-a", 0),
+    rows(1),
+  );
 
   const { result, unmount } = renderHook(
     () => useScheduledTaskRunHistory("task-a", { enabled: false }),
@@ -124,4 +146,51 @@ test("disabled run history hides cached rows and does not issue a request", () =
   } finally {
     unmount();
   }
+});
+
+test("revoking runs:read hides and clears only this owner's history", async () => {
+  const testWrapper = wrapper();
+  const client = clients.at(-1)!;
+  const currentKey = scheduledTaskRunHistoryQueryKey("owner-a", "task-a", 0);
+  const otherKey = scheduledTaskRunHistoryQueryKey("owner-b", "task-a", 0);
+  client.setQueryData(currentKey, rows(1, "mine"));
+  client.setQueryData(otherKey, rows(1, "other"));
+  authState.permissions = ["threads:read"];
+
+  const { result } = renderHook(() => useScheduledTaskRunHistory("task-a"), {
+    wrapper: testWrapper,
+  });
+
+  expect(result.current.accessDenied).toBe(true);
+  expect(result.current.data).toBeUndefined();
+  await waitFor(() => {
+    expect(client.getQueryData(currentKey)).toBeUndefined();
+  });
+  expect(client.getQueryData(otherKey)).toEqual(rows(1, "other"));
+  expect(fetchRuns).not.toHaveBeenCalled();
+});
+
+test("revoking threads:read aborts an in-flight history read", async () => {
+  let signal: AbortSignal | undefined;
+  fetchRuns.mockImplementation((_taskId, page) => {
+    signal = page?.signal;
+    return new Promise(() => undefined);
+  });
+  authState.permissions = ["threads:read", "runs:read"];
+  const { result, rerender } = renderHook(
+    () => useScheduledTaskRunHistory("task-a"),
+    { wrapper: wrapper() },
+  );
+
+  await waitFor(() => {
+    expect(signal?.aborted).toBe(false);
+  });
+  authState.permissions = ["runs:read"];
+  rerender();
+
+  await waitFor(() => {
+    expect(result.current.accessDenied).toBe(true);
+    expect(signal?.aborted).toBe(true);
+  });
+  expect(result.current.data).toBeUndefined();
 });

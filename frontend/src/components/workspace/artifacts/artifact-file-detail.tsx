@@ -62,6 +62,7 @@ import {
   resolveStoredArtifactLanguage,
 } from "@/core/artifacts/viewer";
 import { useAuth } from "@/core/auth/AuthProvider";
+import { PERMISSIONS } from "@/core/auth/permissions";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { findToolCallResult } from "@/core/messages/utils";
@@ -219,6 +220,7 @@ export function ArtifactFileDetail({
     loadFullContent,
     isLoading,
     error,
+    accessDenied,
   } = useArtifactContent({
     threadId,
     filepath: filepathFromProps,
@@ -579,7 +581,8 @@ export function ArtifactFileDetail({
                 />
               </>
             )}
-            {!isEditing &&
+            {!accessDenied &&
+              !isEditing &&
               !isWriteFile &&
               filepath.endsWith(".skill") &&
               isAdmin && (
@@ -596,7 +599,7 @@ export function ArtifactFileDetail({
                   />
                 </Tooltip>
               )}
-            {!isEditing && !isWriteFile && (
+            {!accessDenied && !isEditing && !isWriteFile && (
               <ArtifactAction
                 icon={SquareArrowOutUpRightIcon}
                 label={t.common.openInNewWindow}
@@ -638,7 +641,7 @@ export function ArtifactFileDetail({
                 tooltip={t.clipboard.copyToClipboard}
               />
             )}
-            {!isEditing && !isWriteFile && (
+            {!accessDenied && !isEditing && !isWriteFile && (
               <ArtifactAction
                 icon={DownloadIcon}
                 label={t.common.download}
@@ -692,86 +695,98 @@ export function ArtifactFileDetail({
           </div>
         )}
         <div className="min-h-0 flex-1">
-          {error && (
-            <ArtifactPreviewError
-              filepath={filepath}
-              threadId={threadId}
-              isMock={isMock}
-              message={t.artifactPreview.previewFailed}
-              downloadLabel={t.common.download}
-            />
-          )}
-          {artifactViewState.canPreview &&
-            !error &&
-            (isTabular || effectiveViewMode === "preview") &&
-            (!isLoading || isTabular) &&
-            (!truncated || language === "markdown" || isTabular) &&
-            (language === "markdown" || language === "html" || isTabular) && (
-              <ArtifactFilePreview
-                content={editorContent}
-                language={language ?? "text"}
-                scrollKey={`${threadId}:${filepathFromProps}`}
-                url={url}
-                truncated={truncated}
-                active={effectiveViewMode === "preview" && !isLoading}
-              />
-            )}
-          {isCodeFile &&
-            !error &&
-            effectiveViewMode === "code" &&
-            !truncated &&
-            !isLoading && (
-              <CodeEditor
-                className="size-full resize-none rounded-none border-none"
-                value={editorContent ?? ""}
-                readonly={!isEditing}
-                disabled={thread.isLoading || isSaving}
-                autoFocus={isEditing}
-                onChange={(nextContent) => {
-                  setDrafts((current) => ({
-                    ...current,
-                    [filepath]: {
-                      ...(current[filepath] ?? activeDraft),
-                      draftContent: nextContent,
-                    },
-                  }));
-                }}
-                onSave={() => void handleSave()}
-                language={language}
-              />
-            )}
-          {isCodeFile &&
-            !error &&
-            truncated &&
-            effectiveViewMode === "code" && (
-              <pre className="size-full overflow-auto p-4 font-mono text-sm whitespace-pre-wrap">
-                {visibleContent}
-              </pre>
-            )}
-          {!isCodeFile && canPreviewInBrowser && (
-            <iframe
-              className="size-full"
-              // PDFs render WITHOUT the sandbox attribute: Chromium blocks
-              // its built-in PDF viewer inside ``sandbox=""``. This is safe
-              // because the endpoint declares ``application/pdf`` and sends
-              // ``X-Content-Type-Options: nosniff``, so the bytes cannot be
-              // reinterpreted as active markup, and the PDFium viewer
-              // exposes no same-origin script surface. Active content
-              // (HTML/XML family) never reaches this branch — the backend
-              // serves it as an attachment.
-              sandbox={getFileExtension(filepath) === "pdf" ? undefined : ""}
-              src={urlOfArtifact({ filepath, threadId, isMock })}
-              // Accessible name for the frame (WCAG frame titles); the PDF
-              // branch must not be located by a bare ``iframe:not([title])``.
-              title={getFileName(filepath)}
-            />
-          )}
-          {!isCodeFile && !canPreviewInBrowser && (
-            <ArtifactDownloadFallback
-              filepath={filepath}
-              threadId={threadId}
-              isMock={isMock}
-            />
+          {accessDenied ? (
+            <p className="text-muted-foreground p-6 text-sm">
+              {t.agents.permissionRequired(PERMISSIONS.THREADS_READ)}
+            </p>
+          ) : (
+            <>
+              {error && (
+                <ArtifactPreviewError
+                  filepath={filepath}
+                  threadId={threadId}
+                  isMock={isMock}
+                  message={t.artifactPreview.previewFailed}
+                  downloadLabel={t.common.download}
+                />
+              )}
+              {artifactViewState.canPreview &&
+                !error &&
+                (isTabular || effectiveViewMode === "preview") &&
+                (!isLoading || isTabular) &&
+                (!truncated || language === "markdown" || isTabular) &&
+                (language === "markdown" ||
+                  language === "html" ||
+                  isTabular) && (
+                  <ArtifactFilePreview
+                    content={editorContent}
+                    language={language ?? "text"}
+                    scrollKey={`${threadId}:${filepathFromProps}`}
+                    url={url}
+                    truncated={truncated}
+                    active={effectiveViewMode === "preview" && !isLoading}
+                  />
+                )}
+              {isCodeFile &&
+                !error &&
+                effectiveViewMode === "code" &&
+                !truncated &&
+                !isLoading && (
+                  <CodeEditor
+                    className="size-full resize-none rounded-none border-none"
+                    value={editorContent ?? ""}
+                    readonly={!isEditing}
+                    disabled={thread.isLoading || isSaving}
+                    autoFocus={isEditing}
+                    onChange={(nextContent) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [filepath]: {
+                          ...(current[filepath] ?? activeDraft),
+                          draftContent: nextContent,
+                        },
+                      }));
+                    }}
+                    onSave={() => void handleSave()}
+                    language={language}
+                  />
+                )}
+              {isCodeFile &&
+                !error &&
+                truncated &&
+                effectiveViewMode === "code" && (
+                  <pre className="size-full overflow-auto p-4 font-mono text-sm whitespace-pre-wrap">
+                    {visibleContent}
+                  </pre>
+                )}
+              {!isCodeFile && canPreviewInBrowser && (
+                <iframe
+                  className="size-full"
+                  // PDFs render WITHOUT the sandbox attribute: Chromium blocks
+                  // its built-in PDF viewer inside ``sandbox=""``. This is safe
+                  // because the endpoint declares ``application/pdf`` and sends
+                  // ``X-Content-Type-Options: nosniff``, so the bytes cannot be
+                  // reinterpreted as active markup, and the PDFium viewer
+                  // exposes no same-origin script surface. Active content
+                  // (HTML/XML family) never reaches this branch — the backend
+                  // serves it as an attachment.
+                  sandbox={
+                    getFileExtension(filepath) === "pdf" ? undefined : ""
+                  }
+                  src={urlOfArtifact({ filepath, threadId, isMock })}
+                  // Accessible name for the frame (WCAG frame titles); the PDF
+                  // branch must not be located by a bare ``iframe:not([title])``.
+                  title={getFileName(filepath)}
+                />
+              )}
+              {!isCodeFile && !canPreviewInBrowser && (
+                <ArtifactDownloadFallback
+                  filepath={filepath}
+                  threadId={threadId}
+                  isMock={isMock}
+                />
+              )}
+            </>
           )}
         </div>
       </ArtifactContent>

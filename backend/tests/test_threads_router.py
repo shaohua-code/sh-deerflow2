@@ -1434,6 +1434,99 @@ def test_get_thread_preserves_metadata_status_without_checkpoint(stored_status: 
     assert response.json()["status"] == stored_status
 
 
+def test_thread_summary_uses_store_row_without_checkpoint() -> None:
+    """有仓储行时，页头摘要不能去物化 checkpoint。"""
+    app, store, _checkpointer = _build_thread_app()
+    thread_id = "thread-with-summary"
+
+    async def _seed() -> None:
+        await store.aput(
+            THREADS_NS,
+            thread_id,
+            {
+                "thread_id": thread_id,
+                "status": "idle",
+                "display_name": "季度报告",
+                "created_at": "2026-07-18T00:00:00+00:00",
+                "updated_at": "2026-07-18T01:00:00+00:00",
+                "metadata": {"deerflow_archived": False, "deerflow_project_id": "project-1"},
+            },
+        )
+
+    asyncio.run(_seed())
+    accessor = AsyncMock(side_effect=AssertionError("summary must not read the checkpoint"))
+
+    with (
+        patch(
+            "app.gateway.routers.threads.abuild_checkpoint_state_accessor",
+            new=accessor,
+        ),
+        TestClient(app) as client,
+    ):
+        response = client.get(f"/api/threads/{thread_id}/summary")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "idle"
+    assert body["values"] == {"title": "季度报告"}
+    assert body["metadata"]["deerflow_project_id"] == "project-1"
+    accessor.assert_not_called()
+
+
+def test_thread_summary_falls_back_to_checkpoint_without_store_row() -> None:
+    """没有仓储行的旧会话仍回退到 checkpoint，不能被摘要接口报成 404。"""
+    app, _store, _checkpointer = _build_thread_app()
+    thread_id = "checkpoint-only-thread"
+    snapshot = SimpleNamespace(
+        values={"title": "旧会话"},
+        config={"configurable": {"thread_id": thread_id, "checkpoint_ns": "", "checkpoint_id": "ckpt-1"}},
+        parent_config=None,
+        metadata={"created_at": "2026-07-18T00:00:00+00:00"},
+        next=(),
+        tasks=(),
+        created_at="2026-07-18T00:00:00+00:00",
+    )
+    accessor = _FakeStateAccessor(snapshot)
+
+    with (
+        patch(
+            "app.gateway.routers.threads.abuild_checkpoint_state_accessor",
+            new=AsyncMock(return_value=(accessor, snapshot.config)),
+        ),
+        TestClient(app) as client,
+    ):
+        response = client.get(f"/api/threads/{thread_id}/summary")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["values"]["title"] == "旧会话"
+
+
+def test_thread_summary_returns_404_without_store_or_checkpoint() -> None:
+    """仓储和 checkpoint 都没有这条会话时，摘要仍返回 404。"""
+    app, _store, _checkpointer = _build_thread_app()
+    thread_id = "missing-thread"
+    snapshot = SimpleNamespace(
+        values={},
+        config={"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+        parent_config=None,
+        metadata={},
+        next=(),
+        tasks=(),
+        created_at="",
+    )
+
+    with (
+        patch(
+            "app.gateway.routers.threads.abuild_checkpoint_state_accessor",
+            new=AsyncMock(return_value=(_FakeStateAccessor(snapshot), snapshot.config)),
+        ),
+        TestClient(app) as client,
+    ):
+        response = client.get(f"/api/threads/{thread_id}/summary")
+
+    assert response.status_code == 404, response.text
+
+
 @pytest.mark.parametrize("key", [THREAD_PINNED_METADATA_KEY, "deerflow_archived"])
 def test_patch_thread_pin_returns_iso_and_preserves_updated_at(key) -> None:
     """A pin/unpin PATCH must not bump ``updated_at``.

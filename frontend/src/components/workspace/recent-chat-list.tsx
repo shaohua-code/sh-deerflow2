@@ -61,6 +61,7 @@ import {
   usePinThread,
   useRenameThread,
 } from "@/core/threads/hooks";
+import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
 import {
   flattenThreadBranches,
   type ThreadBranchEntry,
@@ -457,13 +458,9 @@ export function RecentChatList() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteThreads(
-    {
-      archived:
-        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ? undefined : false,
-    },
-    { enabled: access.canReadThreads },
-  );
+  } = useInfiniteThreads(workspaceRecentThreadListParams(), {
+    enabled: access.canReadThreads,
+  });
   // Project discovery doubles as the exclusion oracle for grouped mode: an
   // assigned thread may leave this flat list ONLY when its project group can
   // actually render in `ProjectsSection`. Any query error (or not-yet-loaded

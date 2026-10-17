@@ -3,6 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 
+const authState = rs.hoisted(() => ({
+  permissions: null as string[] | null,
+}));
+
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: { id: "owner-a", permissions: authState.permissions },
+  }),
+}));
+
 rs.mock("@/core/artifacts/loader", () => ({
   loadArtifactContent: rs.fn(),
   loadArtifactContentFromToolCall: rs.fn(),
@@ -51,6 +61,7 @@ describe("ArtifactViewer", () => {
   afterEach(() => {
     cleanup();
     mockedLoadArtifactContent.mockReset();
+    authState.permissions = null;
   });
 
   it("renders the markdown artifact with the app's markdown renderer", async () => {
@@ -62,24 +73,30 @@ describe("ArtifactViewer", () => {
       );
     });
     expect(container.textContent).not.toContain("# Quarterly report");
-    expect(mockedLoadArtifactContent).toHaveBeenCalledWith({
-      filepath,
-      threadId,
-      isMock: false,
-      full: false,
-    });
+    expect(mockedLoadArtifactContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filepath,
+        threadId,
+        isMock: false,
+        full: false,
+        signal: expect.any(AbortSignal),
+      }),
+    );
   });
 
   it("loads the mock artifact source when opened from a mock thread", async () => {
     renderViewer({ isMock: true });
 
     await waitFor(() => {
-      expect(mockedLoadArtifactContent).toHaveBeenCalledWith({
-        filepath,
-        threadId,
-        isMock: true,
-        full: false,
-      });
+      expect(mockedLoadArtifactContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filepath,
+          threadId,
+          isMock: true,
+          full: false,
+          signal: expect.any(AbortSignal),
+        }),
+      );
     });
   });
 
@@ -102,12 +119,15 @@ describe("ArtifactViewer", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("Everything.");
     });
-    expect(mockedLoadArtifactContent).toHaveBeenLastCalledWith({
-      filepath,
-      threadId,
-      isMock: false,
-      full: true,
-    });
+    expect(mockedLoadArtifactContent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filepath,
+        threadId,
+        isMock: false,
+        full: true,
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(screen.queryByRole("button", { name: "Load full file" })).toBe(null);
   });
 
@@ -120,5 +140,16 @@ describe("ArtifactViewer", () => {
     expect(download.getAttribute("href")).toBe(
       urlOfArtifact({ filepath, threadId, download: true }),
     );
+  });
+
+  it("hides source and download links when threads:read is denied", async () => {
+    authState.permissions = [];
+
+    renderViewer();
+
+    expect(await screen.findByText(/threads:read/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /download/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /view source/i })).toBeNull();
+    expect(mockedLoadArtifactContent).not.toHaveBeenCalled();
   });
 });

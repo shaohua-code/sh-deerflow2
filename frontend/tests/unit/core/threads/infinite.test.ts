@@ -319,12 +319,7 @@ describe("invalidateStoppedThreadCaches", () => {
     expect(queryKeys()).toContainEqual(["threads", "search"]);
     expect(queryKeys()).toContainEqual(INFINITE_THREADS_QUERY_KEY_PREFIX);
     expect(queryKeys()).toContainEqual(["thread", "thread-1"]);
-    expect(queryKeys()).toContainEqual([
-      "thread",
-      "metadata",
-      "thread-1",
-      false,
-    ]);
+    expect(queryKeys()).toContainEqual(["thread", "metadata", "thread-1"]);
     expect(queryKeys()).toContainEqual([...PROJECTS_QUERY_KEY, "threads"]);
   });
 
@@ -355,12 +350,7 @@ describe("invalidateStoppedThreadCaches", () => {
     expect(queryKeys()).toContainEqual(["threads", "search"]);
     expect(queryKeys()).toContainEqual(INFINITE_THREADS_QUERY_KEY_PREFIX);
     expect(queryKeys()).not.toContainEqual(["thread", "thread-1"]);
-    expect(queryKeys()).not.toContainEqual([
-      "thread",
-      "metadata",
-      "thread-1",
-      true,
-    ]);
+    expect(queryKeys()).not.toContainEqual(["thread", "metadata", "thread-1"]);
     expect(queryKeys()).toContainEqual([...PROJECTS_QUERY_KEY, "threads"]);
   });
 
@@ -372,12 +362,7 @@ describe("invalidateStoppedThreadCaches", () => {
     await stopThreadAndInvalidateCaches(client, stop, "thread-1", false);
 
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(queryKeys()).toContainEqual([
-      "thread",
-      "metadata",
-      "thread-1",
-      false,
-    ]);
+    expect(queryKeys()).toContainEqual(["thread", "metadata", "thread-1"]);
   });
 
   test("still refreshes caches when SDK stop rejects", async () => {
@@ -392,12 +377,7 @@ describe("invalidateStoppedThreadCaches", () => {
     ).rejects.toThrow("cancel failed");
 
     expect(queryKeys()).toContainEqual(["threads", "search"]);
-    expect(queryKeys()).toContainEqual([
-      "thread",
-      "metadata",
-      "thread-1",
-      false,
-    ]);
+    expect(queryKeys()).toContainEqual(["thread", "metadata", "thread-1"]);
   });
 
   test("schedules sidebar refetch even if stopped thread id is not known", async () => {

@@ -189,4 +189,23 @@ describe("loadArtifactContent", () => {
     expect(typeof loaded.sha256).toBe("string");
     expect(loaded.sha256).toHaveLength(8);
   });
+
+  it("forwards the caller abort signal to the artifact request", async () => {
+    const controller = new AbortController();
+    const fetchMock = rs.fn(
+      async () => new Response("content", { status: 200 }),
+    );
+    rs.stubGlobal("fetch", fetchMock);
+
+    await loadArtifactContent({
+      filepath: "/mnt/user-data/outputs/report.md",
+      threadId: "thread-1",
+      signal: controller.signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });

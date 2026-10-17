@@ -2,7 +2,7 @@
 
 `components/theme-provider.tsx` 统一管理产品主题偏好和根元素 class。保留 `theme` localStorage 键的兼容性，在系统主题或跨标签存储变化时更新主题，并要求所有消费者从本地模块导入 `useTheme`。`components/theme-bootstrap.tsx` 在根布局中通过 `next/script` 的 `beforeInteractive` 策略，于 hydration 前同步应用保存的主题。不要通过 `useServerInsertedHTML` 回调返回原生 `<script>`，那会在 React 渲染期间触发脚本节点警告。公开首页继续强制深色，但不覆盖用户保存的偏好。
 
-`core/skills/hooks.ts` 的 `useSkills(enabled)` 是技能目录唯一的前端读取入口。技能中心、聊天输入提示和历史技能引用都要把 `skills:read` 结果传入；明确撤权时隐藏返回数据、取消携带 AbortSignal 的请求并清理目录缓存。技能创建入口调用新对话运行，需要 `runs:create`；档案安装、技能开关则遵循各自的 `skills:write`、`skills:admin` 与管理员角色要求。
+`useSkills` 按账号缓存技能目录并传递 AbortSignal；`skills:read` 明确拒绝时只清理该账号，调用方停用不清理。创建需要 `runs:create`；安装与开关遵循 `skills:write`、`skills:admin` 与管理员角色。
 
 记忆设置页的 `core/memory/hooks.ts` query key 必须包含认证用户 ID；明确撤销 `memory:read` 或切换账号时取消请求并清除旧 owner 缓存。记忆读取、导出和写入 API 都携带 `X-Expected-User-Id`，Gateway 在访问记忆存储前核对当前会话身份。Mutation 只失效发起操作的账号缓存，不把迟到响应直接写回缓存；导入草稿、事实编辑/删除和清空确认也绑定 owner，账号切换时清除，导出请求取消且忽略迟到回调。继续兼容不带此请求头的旧 API 客户端。
 
@@ -10,7 +10,7 @@
 
 项目资料附加到对话后的待发送附件由 `core/projects/composer-attach.ts` 暂存于 `sessionStorage`；v2 键同时包含认证用户 ID 与 thread ID。项目页在服务端附加成功后传入当前 owner，输入框按同一 owner 读取；账号/会话切换时旧附件不得显示或写入新键。旧版仅含 thread ID 的键无法证明归属，保留但不读取或自动迁移。
 
-项目和回收站的 React Query GET 请求必须消费并向 fetch 传递 `AbortSignal`。撤销 `projects:read` 时，`product/workspace-query-boundary.tsx` 取消并清除 `projects` 与 `trash/documents` 查询前缀；单项目详情、会话、资料和回收站 hooks 还会在自身禁用时清除精确缓存，返回值同步屏蔽旧数据。`useProjects` 的状态列表会被分组侧栏、移动菜单和回收站选择器共享；不能只因某个视图暂时不需要列表就删掉共享缓存。聊天页的项目徽标读取也必须受 `projects:read` 控制。
+项目和回收站 GET 必须传 `AbortSignal`。撤销 `projects:read` 时，工作台边界只取消并清除当前 owner 的项目读缓存和回收站；调用方停用只隐藏、不删该账号缓存。`useProjects` 列表被侧栏、移动菜单和回收站选择器共享，某个视图暂时不用时不能删掉。聊天页项目徽标也受 `projects:read` 控制。
 
 账号数据导出由 `product/data-export.ts` 在浏览器内完成。用户取消或离开页面时，要把同一个 `AbortSignal` 传给所有支持取消的清单、历史、文件列表、项目分页、偏好/记忆读取和附件下载 API；批量 helper 必须在 `Promise.allSettled` 后再次检查信号，不能把 `AbortError` 记为普通的部分导出失败，也不能继续请求下一页或批次。
 
@@ -26,6 +26,7 @@
    requests and receives the complete content. The Gateway retains range
    ownership and returns 206/416 through `FileResponse`.
    Run archive manifest/download routes require `runs:read` plus thread owner checks. Partition manifest cache by user, hide it when denied, cancel and remove that owner's cached manifests on revoke, and pass AbortSignal through the request. Abort an in-flight archive download on owner change, permission revoke, or unmount; Gateway remains authoritative.
+   Formal artifact body reads (`GET /threads/{id}/artifacts/{path}`) require `threads:read` and thread owner checks. Key that cache by owner, hide text and in-memory write-file drafts on explicit denial, cancel and drop that owner's artifact queries, and pass AbortSignal through. Hide open, download, iframe, and skill-install actions in the same frame. Unknown permission snapshots stay compatible; Gateway remains authoritative.
 3. `useThreadHistory` merges paged history, checkpoint state, and live stream rows by canonical message identity. Preserve the backend's thread-global `seq`: history pages copy it to `deerflow_seq`, and Gateway `values` frames stamp it on persisted messages. It is server-owned and must never be written into checkpoints. Normalize the reserved `__user` suffix only for human identities, so optimistic `local-human-*` inputs match their server echo. Keep latest visible content, the earliest valid positive safe-integer seq per identity, and known `run_id` / `turn_duration` through replacements; a hidden control copy supplies seq only when no visible copy has one. Render positioned rows in ascending seq order, then weave no-seq segments around identity anchors without changing their local order; live-only and rescued positioned rows may anchor adjacent no-seq segments. Do not time-sort.
 
    Context compaction can keep a protected first input and recent tail while the loaded page covers only a recent window. Rescue every retained visible committed identity across rolling checkpoints with a run-scoped ledger. A rescued row whose seq is below the loaded window belongs before that page, decided before anchor weaving—even if checkpoint and page share no identity. Never drop it or append it to the tail; unloaded gaps remain recoverable by paging. Preserve preceding steps carried by rescued seq anchors. No-seq streaming rows use the weave path, and optimistic rows remain last. History invalidation keeps loaded pages and their ordering positions.
@@ -35,6 +36,7 @@
    The exported `useThreadRuns` and `useRunDetail` hooks also call `runs.list/get`, which require `runs:read`; give each a distinct owner-scoped query key, hide and clear that owner's cache on explicit revoke, and pass React Query's AbortSignal to the SDK. Preserve stopped-run invalidation for both keys.
 
    On local submit, snapshot the thread, checkpoint baseline, canonical history identities, maximum trusted seq, and existing transient-bridge identities. Anchor the submitted human turn: restore baseline/page-confirmed messages in their known positions and move only speculative non-baseline AI/tool steps behind it; persisted steps from the current run also remain after their human. Keep the anchor scoped to its thread through finish, stop, or stream error because the settled SDK frame may retain transient order. Replace it on the next submit; clear it on thread switch or replay-gap recovery.
+
 4. Stop actions call the LangGraph SDK stream stop path; `core/threads/hooks.ts` invalidates current-thread, thread-history, token-usage, and sidebar/search caches immediately and schedules one follow-up refetch because SDK stop may finish via abort + fire-and-forget cancel before backend title finalization commits
 5. TanStack Query manages server state. `UserPreferencesBoundary` preserves
    workspace SSR and initializes the account cache before browser paint; only
@@ -64,10 +66,7 @@
    `DELETE /api/mcp/config/servers/{server_name}` mutations. Delete names are
    percent-encoded, including legacy empty and slash-containing names; every
    successful mutation invalidates `["mcpConfig"]` only after the response.
-   MCP 配置 `GET /api/mcp/config` 同样要求 `mcp:admin`；读取 hook 接收调用方权限，
-   明确拒绝时不请求，并同步隐藏配置、取消 GET 和清除旧查询缓存。API 透传
-   React Query 的 AbortSignal。权限未知时保留旧 Gateway 兼容行为；mutation 成功后
-   仍按既有查询缓存契约刷新服务器状态。Gateway 负责最终授权。
+   MCP 配置按账号缓存；`mcp:admin` 明确拒绝时只清理该账号，停用不清理，权限未知仍请求并传递 AbortSignal。写入仍失效 `["mcpConfig"]`。
    Current-chat MCP background tasks use `core/background-tasks`: show the header
    trigger only for persisted non-mock threads when `/api/features` reports the
    startup-scoped `mcp_tasks` capability and `threads:read` is not explicitly
@@ -88,20 +87,20 @@
    bounded error and attempt count; retryable failures use backend backoff,
    while a permanent rejection or exhausted five-attempt budget is shown as
    stopped rather than implying that retries will continue.
-    Their GET hooks consume React Query's AbortSignal and cancel/remove the
-    thread-and-user scoped list/detail cache when `threads:read` is revoked;
-    cancellation mutations must not write returned task data back into a cache.
+   Their GET hooks consume React Query's AbortSignal and cancel/remove the
+   thread-and-user scoped list/detail cache when `threads:read` is revoked;
+   cancellation mutations must not write returned task data back into a cache.
    Explicit durable native-subagent batches use `core/subagent-batches` and
    `ThreadSubagentBatches`. `/api/features` reports SQL-repository availability
    separately from the startup worker. A running worker exposes the trigger on
    both default and Custom Agent chat pages; a stopped worker keeps threads with
    durable history visible in read-only mode for inspection and JSONL export,
    while deployments with neither a worker nor history keep the trigger hidden.
-    Batch history and item pages require `threads:read`, are keyed by both thread
-    and authenticated user, consume React Query's AbortSignal, and clear their
-    scoped caches when reads are disabled. Pause/resume/cancel/retry requires
-    `threads:write`; mutation variables carry the initiating user scope so a
-    late success invalidates only that user's cached history.
+   Batch history and item pages require `threads:read`, are keyed by both thread
+   and authenticated user, consume React Query's AbortSignal, and clear their
+   scoped caches when reads are disabled. Pause/resume/cancel/retry requires
+   `threads:write`; mutation variables carry the initiating user scope so a
+   late success invalidates only that user's cached history.
    The panel renders bounded progress and incrementally paged item previews, controls pause/resume/cancel,
    retries failed items, and exports JSONL. Worker-dependent mutations stay
    disabled in read-only history mode, and persisted progress is normalized to
@@ -109,9 +108,7 @@
    fixed page size and an explicit load-more control; full results remain available
    only through JSONL export. The panel must not infer batch mode from prompt text
    or inject the complete result set into chat state.
-   Capability Center > Plugins > Lark status requires `integrations:read`; its
-   query cache is scoped by the authenticated user ID, forwards AbortSignal, and
-   clears the scoped snapshot when permission is denied. Local generations only
+   Lark status keys the owner, passes AbortSignal, and clears only that owner on `integrations:read` denial; disable does not clear it. Local generations only
    suppress stale React callbacks; server-issued Lark flow generations must be passed through every
    config/auth completion and across switch-or-register to authorization chains
    so backend cross-tab ordering remains authoritative.
@@ -132,12 +129,12 @@
 
 Project moves in `core/threads/hooks.ts` cancel all per-thread metadata query
 variants after the write succeeds, merge only `deerflow_project_id`, then
-invalidate/refetch that metadata prefix. This fences delayed pre-move reads and
-restarts initial reads that have no cached snapshot. Search and project-thread
-lists are invalidated on settlement. Keep the delayed-read regression in
-`tests/unit/core/threads/move-thread.dom.test.tsx` for moves and removal.
+invalidate/refetch that metadata prefix. Delayed pre-move reads stay fenced.
+Search and project-thread lists are invalidated on settlement. Keep the
+delayed-read regression in `tests/unit/core/threads/move-thread.dom.test.tsx`.
+`useThreadMetadata`, `useInfiniteThreads` and `useThreads` key owner after prefix, forward AbortSignal and clear that owner on `threads:read` denial; unresolved still fetches. Dashboard and projects clear only that owner. Chat headers call `GET /api/threads/{id}/summary`: a stored thread row skips checkpoint materialization, and a checkpoint-only legacy thread falls back to the full read. While that summary is pending, show the matching row from the signed-in user's infinite thread list. Workspace home reuses that same first page for recent chats and agent-usage counts; keep the separate busy-status poll. Agent directory and recent-file queries stay fresh for 30 seconds.
 
-The chat header keeps `ContextUsageBadge` mounted while usage is unavailable. `useThreadTokenUsage` requires `threads:read`, keys cache by owner and thread, forwards AbortSignal, and hides/cancels/removes all usage snapshots for that owner on explicit denial. Retain placeholders only when response thread and owner match.
+The chat header keeps `ContextUsageBadge` mounted while usage is unavailable. `useThreadTokenUsage` requires `threads:read`, keys cache by owner and thread, forwards AbortSignal, and clears that owner on explicit denial. Retain placeholders only when response thread and owner match.
 
 Settings skill uploads reject archives larger than 100 MiB before starting the
 request and disable the hidden file input while an install is pending. The API
@@ -158,7 +155,7 @@ Auth UI note: the login page's "keep me signed in" option submits only `remember
 
 `/goal` and `/compact` are InputBox commands. Goal status reads; clear/set writes; setting also starts the condition as a run. On project-scoped new chats, precreate the thread before goal PUT because that endpoint materializes rows and an unassigned idempotent row will not later gain the project. Per-thread AbortController cancels stale goal/compact requests on switch or unmount. `GoalStatus` reflects `AgentThreadState.goal` with optimistic updates. Compact summarizes older context, skips welcome/empty chats, and Gateway rejects active runs. Rename shares serialized state writes; keep its dialog open on 409. Preflight goal GET with `threads:read`, set/clear with `threads:write`, and set also with `runs:create`; preserve the draft on denial and allow unresolved legacy snapshots. Manual compact requires `threads:write`, except the welcome no-op.
 
-Goal command permissions follow the Gateway route guards: `/goal` status requires `threads:read`; `/goal clear` and `/goal <condition>` require `threads:write`; setting a goal also requires `runs:create` because it immediately starts a run. The composer checks each grant before making the request and keeps the command draft when access is denied. Missing permission snapshots remain compatible with older Gateways; the Gateway remains the authorization boundary.
+The composer rechecks those grants before the request and keeps the draft when denied. Unresolved snapshots stay compatible; the Gateway remains the authorization boundary.
 
 Manual `/compact` calls `POST /api/threads/{thread_id}/compact`, whose Gateway route requires `threads:write`. Skip this permission check only for the welcome-mode no-op (it does not call the API); otherwise preflight before starting the request, show the localized permission message, and reject the submit so `/compact` stays in the composer for retry.
 
@@ -180,7 +177,6 @@ Edit-and-rerun is deliberately latest-turn-only. `core/messages/utils.ts::getLat
 Generic tool details get the explicit `Debug` flag from `MessageGroup`; previews mount only while expanded. `tool-detail-preview.ts` caps text/visits at 12,000 and depth at six, counting JSON syntax and truncation markers. Keep text raw (never `JSON.parse`); format objects/arrays only on expansion and preserve specialized renderers. Preserve empty vs missing payload and ToolMessage status. Copy the displayed preview via the shared clipboard fallback and reset feedback after two seconds. Truncated JSON stays valid; keep complete UTF-16 pairs and original keys. Cycles/accessors/depth limits must not hide later siblings; arrays stop when the text budget is exhausted. Shared `getToolCallKind` routes rendering/result conversion, and disclosure names include tool plus call ID.
 
 Array previews coalesce consecutive generated markers only at the end into one omitted-suffix notice. The serializer tracks marker provenance and complete entry boundaries; it must not deduplicate literal ellipsis values or shift the indices of later real elements. A cycle/accessor/depth-limit tail can therefore share one notice while the same markers in the middle retain their positions.
-
 
 ### Key Patterns
 
@@ -230,7 +226,7 @@ The thread history API returns feedback as row metadata. Keep it on `RunMessage`
 
 InputBox auxiliary model requests follow their own Gateway grants: follow-up suggestions read conversation content and require threads:read; pre-send polishing calls a model and requires runs:create. Do not issue suggestions without read access; clear displayed suggestions and discard late responses when access is revoked. Gate polishing on runs:create itself, not the general send flag: a first project-scoped send may also require threads:write. Disable model requests with localized guidance when runs:create is denied, abort in-flight requests on revocation, and keep the local undo action available because it makes no Gateway request.
 
-频道目录按 channels:read/write/admin 控制可见性和 mutation；配置读取只返回凭据掩码。`GET /api/channels/providers` 返回当前账号的连接状态，`GET /api/channels/connections` 返回当前账号连接，所以两个 query key 都必须包含认证用户 ID。明确撤销 `channels:read` 时同步隐藏结果、取消 GET 并清理该 owner 的两份缓存；GET API 透传 React Query 的 AbortSignal。个人连接/断开只失效发起账号缓存；管理员更改部署级运行配置或全局断开 provider 时，需失效所有 owner 的 provider/connection 缓存。连接轮询跟随 owner 与读取权限，在切号、撤权或卸载时停止。Gateway 路由守卫仍是最终授权边界。
+频道目录按 channels:read/write/admin 控制可见性和 mutation；配置读取只返回凭据掩码。`GET /api/channels/providers` 返回当前账号的连接状态，`GET /api/channels/connections` 返回当前账号连接，所以两个 query key 都必须包含认证用户 ID。目录和连接撤权只清各自的 owner 缓存，停用都不清。GET 透传 AbortSignal。个人连接/断开只失效发起账号缓存；管理员更改部署级运行配置或全局断开 provider 时，需失效所有 owner 的 provider/connection 缓存。连接轮询跟随 owner 与读取权限，在切号、撤权或卸载时停止。Gateway 路由守卫仍是最终授权边界。
 
 `core/workspace-changes/hooks.ts` 读取的 Gateway 路由要求 `runs:read` 和 thread owner 校验。query key 按认证用户 ID 分区，GET 消费 React Query 的 AbortSignal；明确撤权时首帧隐藏结果、取消请求并清理该 owner 的所有运行变更缓存。Gateway 仍是最终授权边界。
 
@@ -256,13 +252,7 @@ Delete preflight requires a fresh, user-scoped capability read; unknown/failure 
   cache short-lived and refresh on focus so grants/revocations apply without a
   new sign-in. Include user ID in the query key, pass React Query's AbortSignal
   to Gateway, and never show/cache the prior account's models after a switch.
-- `core/agents/hooks.ts` accepts an enabled state for Agent list/detail reads.
-  Agent list and detail query keys include the authenticated owner ID because
-  Gateway data is owner-scoped. When `agents:read` is explicitly denied, hide
-  results in the same render, cancel and remove that owner's Agent cache, and
-  keep mutation invalidation tied to the owner who started the write. Direct
-  Agent-chat routes must show the missing permission and must not leave a
-  disabled query's old Agent data visible.
+- `useAgents` and `useAgent` key the owner and pass AbortSignal. List `agents:read` denial clears that owner's list and details; detail denial clears details only. Disable clears neither. Writes invalidate only the initiating account. Direct Agent-chat routes must show the missing permission.
 - `src/app/workspace/chats/[thread_id]/page.tsx` owns composer busy-state wiring.
 - `src/app/workspace/chats/[thread_id]/page.tsx` owns branch-from-turn submission and navigation; sidecar `MessageList` instances do not receive the branch action. Branch failures use `t.conversation.branchFailed`; Gateway details remain diagnostic only.
 - `core/threads/thread-branch-tree.ts` projects only loaded, same-pin branch lineage into Recent chats. Missing, malformed, cross-pin, self, or cyclic parents stay top-level; unpinned groups follow their freshest descendant while pinned root order stays stable. `recent-chat-list.tsx` caps visual indentation without changing the recursive order.
@@ -296,4 +286,4 @@ Dirty settings sections share one confirmation flow; after continuing, restore t
 
 Project/file UI mirrors projects:read/write/delete and thread permissions; explicit denial hides stale query data, destructive submit rechecks permission, and Gateway owner/data-scope remains final. `GET /api/projects/config` also requires `projects:read`: every `useProjectsConfig` caller must pass its current grant, and the hook cancels/removes the shared config query on denial while forwarding the query AbortSignal. The project page owns this permission-aware query so revocation is observed even when a child tab unmounts; keep the default server-limit fallback for older Gateways.
 
-Scheduled tasks use threads:read/write/delete and runs:create/read/cancel according to the operation; a bound thread also requires threads:read and its owner/data-scope. `useScheduledTasks` and `useThreadScheduledTasks` require the current read grant, pass React Query's AbortSignal to their GETs, and cancel/remove exact list caches when read is revoked. Agent selectors reuse `useAgents(enabled)` so they inherit the same signal and `agents:read` cache-clearing contract. Revoke clears cached results and drafts; centralize the map in core/scheduled-tasks/permissions.ts.
+Scheduled tasks use threads:read/write/delete and runs:create/read/cancel according to the operation; a bound thread also requires threads:read and its owner/data-scope. `useScheduledTasks` and thread task lists key the owner, pass AbortSignal and clear only that owner on `threads:read` denial; disable does not clear them. Run history also requires `runs:read`, keys pages by owner, and clears that owner's pages when either grant is denied. Agent selectors reuse `useAgents(enabled)` so they inherit the same signal and `agents:read` cache-clearing contract. Revoke clears cached results and drafts; centralize the map in core/scheduled-tasks/permissions.ts.

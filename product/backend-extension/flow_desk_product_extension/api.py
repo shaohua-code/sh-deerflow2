@@ -370,9 +370,10 @@ def build_router(
         query: Annotated[str, Query(max_length=200)] = "",
         refresh: Annotated[bool, Query()] = False,
     ) -> dict[str, Any]:
-        """读取产品数据库的 owner 快照，首次访问或过期时通过 Gateway reader 更新。
+        """读取产品数据库的 owner 快照。
 
-        refresh=true 可请求立即重建快照；内容 URL 仍由 Gateway 下载路由再次校验 owner。
+        已有快照过期时先返回当前页，目录重建在后台进行。还没有快照，
+        或 refresh=true 时，仍等待本次扫描。内容 URL 仍由 Gateway 下载路由再次校验 owner。
         """
         user_id = _authenticated_user_id(request)
         await _require_file_catalog_access(request)

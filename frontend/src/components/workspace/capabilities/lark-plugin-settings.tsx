@@ -153,7 +153,7 @@ function LarkIntegrationCard({
   const canInstallIntegration =
     isAdmin && canConnectIntegration && canAdminIntegration;
   const { data, isLoading, error, refetch, isFetching } =
-    useLarkIntegrationStatus(canReadIntegration, cacheScope);
+    useLarkIntegrationStatus(canReadIntegration);
   const install = useInstallLarkIntegration();
   const startConfig = useStartLarkConfiguration();
   const completeConfig = useCompleteLarkConfiguration();

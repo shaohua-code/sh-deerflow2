@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
 import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 
 import {
   configureChannelProvider,
@@ -48,39 +49,36 @@ function invalidateAllChannelState(
   });
 }
 
-function clearOwnerChannelState(
-  queryClient: ReturnType<typeof useQueryClient>,
-  userId: string | null | undefined,
-) {
-  const providerKey = channelProviderQueryKey(userId);
-  const connectionKey = channelConnectionsQueryKey(userId);
-  void queryClient.cancelQueries({ queryKey: providerKey });
-  void queryClient.cancelQueries({ queryKey: connectionKey });
-  queryClient.removeQueries({ queryKey: providerKey });
-  queryClient.removeQueries({ queryKey: connectionKey });
-}
-
 export function useChannelProviders(queryEnabled = true) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  // GET /api/channels/providers 要求 channels:read 与 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.CHANNELS_READ) === "denied";
   const queryClient = useQueryClient();
+  // 调用方停用不是撤权，不能拿来清空该账号的渠道目录。
+  const callerEnabled = queryEnabled && !accessDenied;
+  const queryKey = channelProviderQueryKey(userId);
+
   useEffect(() => {
-    if (queryEnabled) return;
-    clearOwnerChannelState(queryClient, userId);
-  }, [queryClient, queryEnabled, userId]);
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的渠道目录。连接缓存和其他账号保持不动。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [accessDenied, queryClient, queryKey]);
 
   const query = useQuery({
-    queryKey: channelProviderQueryKey(userId),
+    queryKey,
     queryFn: ({ signal }) => listChannelProviders(signal),
-    enabled: queryEnabled,
+    enabled: callerEnabled,
   });
   return {
-    enabled: queryEnabled ? (query.data?.enabled ?? false) : false,
-    providers: queryEnabled ? (query.data?.providers ?? []) : [],
-    isLoading: queryEnabled && query.isLoading,
-    isFetching: queryEnabled && query.isFetching,
-    hasData: queryEnabled && query.data !== undefined,
-    error: queryEnabled ? query.error : null,
+    enabled: callerEnabled ? (query.data?.enabled ?? false) : false,
+    providers: callerEnabled ? (query.data?.providers ?? []) : [],
+    isLoading: callerEnabled && query.isLoading,
+    isFetching: callerEnabled && query.isFetching,
+    hasData: callerEnabled && query.data !== undefined,
+    error: callerEnabled ? query.error : null,
     refetch: query.refetch,
   };
 }
@@ -88,23 +86,32 @@ export function useChannelProviders(queryEnabled = true) {
 export function useChannelConnections(queryEnabled = true) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  // GET /api/channels/connections 要求 channels:read 与 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.CHANNELS_READ) === "denied";
   const queryClient = useQueryClient();
+  // 调用方停用不是撤权，不能清空该账号的连接或渠道目录。
+  const callerEnabled = queryEnabled && !accessDenied;
+  const queryKey = channelConnectionsQueryKey(userId);
+
   useEffect(() => {
-    if (queryEnabled) return;
-    clearOwnerChannelState(queryClient, userId);
-  }, [queryClient, queryEnabled, userId]);
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的连接。渠道目录和其他账号保持不动。
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  }, [accessDenied, queryClient, queryKey]);
 
   const query = useQuery({
-    queryKey: channelConnectionsQueryKey(userId),
+    queryKey,
     queryFn: ({ signal }) => listChannelConnections(signal),
-    enabled: queryEnabled,
+    enabled: callerEnabled,
   });
   return {
-    connections: queryEnabled ? (query.data ?? []) : [],
-    isLoading: queryEnabled && query.isLoading,
-    isFetching: queryEnabled && query.isFetching,
-    hasData: queryEnabled && query.data !== undefined,
-    error: queryEnabled ? query.error : null,
+    connections: callerEnabled ? (query.data ?? []) : [],
+    isLoading: callerEnabled && query.isLoading,
+    isFetching: callerEnabled && query.isFetching,
+    hasData: callerEnabled && query.data !== undefined,
+    error: callerEnabled ? query.error : null,
     refetch: query.refetch,
   };
 }

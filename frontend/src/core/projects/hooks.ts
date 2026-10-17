@@ -7,8 +7,10 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 
+import { useAuth } from "../auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "../auth/permissions";
 import { isStaticWebsiteOnly } from "../static-mode";
 import { INFINITE_THREADS_QUERY_KEY_PREFIX } from "../threads/hooks";
 
@@ -26,6 +28,18 @@ import {
   listProjectThreads,
   patchProject,
   PROJECTS_QUERY_KEY,
+  isOwnerProjectDetailQuery,
+  isOwnerProjectListQuery,
+  isOwnerProjectConfigQuery,
+  isOwnerProjectDocumentsQuery,
+  isOwnerProjectThreadFilesQuery,
+  isOwnerProjectThreadsQuery,
+  projectConfigQueryKey,
+  projectDetailQueryKey,
+  projectDocumentsQueryKey,
+  projectThreadFilesQueryKey,
+  projectThreadsQueryKey,
+  projectsListQueryKey,
   promoteThreadFile,
   restoreProject,
   uploadProjectDocument,
@@ -61,45 +75,47 @@ function invalidateProjectCaches(
   }
 }
 
-/**
- * Stop a permission-scoped read and discard its cached result as soon as its
- * owner disables the query. The returned hook data is masked synchronously;
- * this effect also prevents a later permission grant from reviving old rows.
- */
-function useClearQueryWhenInactive(
-  queryKey: readonly unknown[],
-  active: boolean,
-) {
-  const queryClient = useQueryClient();
-  useEffect(() => {
-    if (active) return;
-
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [active, queryClient, queryKey]);
-}
-
 export function useProjects(
   status?: ProjectStatus,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ) {
-  const active = enabled && !isStaticWebsiteOnly();
-  const queryKey = useMemo(
-    () => [...PROJECTS_QUERY_KEY, { status }] as const,
-    [status],
-  );
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects 只要求 projects:read；权限字段缺失时继续请求，不能把未知当成拒绝。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = projectsListQueryKey(userId, status);
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的项目列表。调用方停用不能清空该账号缓存，也不能波及其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectListQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useQuery<Project[]>({
     queryKey,
     queryFn: ({ signal }) => listProjects(status, { signal }),
-    // Static-demo mode has no Gateway; never fire project requests there.
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  // A disabled query can still hold an earlier successful result in cache.
-  // Never expose that result after a permission revocation.
-  return active ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的项目行。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
-
-const PROJECTS_CONFIG_QUERY_KEY = [...PROJECTS_QUERY_KEY, "config"] as const;
 
 /**
  * Server-configured projects limits (``GET /api/projects/config``). Callers
@@ -109,52 +125,73 @@ const PROJECTS_CONFIG_QUERY_KEY = [...PROJECTS_QUERY_KEY, "config"] as const;
  * ``projects:read`` grant so revocation can cancel the request and clear cache.
  */
 export function useProjectsConfig({ enabled }: { enabled: boolean }) {
-  const active = enabled && !isStaticWebsiteOnly();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects/config 只要求 projects:read；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
   const queryClient = useQueryClient();
-  useEffect(() => {
-    if (active) return;
+  // 调用方必须传入读取状态。停用只隐藏，不能清空该账号缓存。
+  const callerEnabled = enabled && !isStaticWebsiteOnly();
+  const queryKey = projectConfigQueryKey(userId);
 
-    // 撤销 projects:read 后取消配置读取并清掉旧查询，避免继续展示或复用授权前结果。
-    void queryClient.cancelQueries({
-      queryKey: PROJECTS_CONFIG_QUERY_KEY,
-      exact: true,
-    });
-    queryClient.removeQueries({
-      queryKey: PROJECTS_CONFIG_QUERY_KEY,
-      exact: true,
-    });
-  }, [active, queryClient]);
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的项目配置，不能波及列表、详情、会话、资料或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectConfigQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const query = useQuery<ProjectsConfig>({
-    queryKey: PROJECTS_CONFIG_QUERY_KEY,
+    queryKey,
     queryFn: ({ signal }) => getProjectsConfig({ signal }),
     retry: false,
     // Config changes only via server redeploy; a stale read is harmless next
     // to the 422 guard of last resort.
     staleTime: 5 * 60_000,
-    enabled: active,
+    enabled: callerEnabled && !accessDenied,
   });
-  return active
-    ? query
-    : {
-        ...query,
-        data: undefined,
-        error: null,
-        isLoading: false,
-        isFetching: false,
-      };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的项目配置。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    };
+  }
+  return query;
 }
 
 export function useProject(
   id: string,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ) {
-  const active = enabled && !isStaticWebsiteOnly();
-  const queryKey = useMemo(
-    () => [...PROJECTS_QUERY_KEY, "detail", id] as const,
-    [id],
-  );
-  useClearQueryWhenInactive(queryKey, active);
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects/{id} 要求 projects:read 与项目归属；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = projectDetailQueryKey(id, userId);
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的项目详情。调用方停用不能清空该账号缓存，也不能波及其他 owner 或项目列表。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectDetailQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useQuery<Project>({
     queryKey,
     queryFn: ({ signal }) => getProject(id, { signal }),
@@ -163,9 +200,19 @@ export function useProject(
     // backoff (~7s) in "loading" first. Matches useThreadMetadata /
     // useThreadTokenUsage.
     retry: false,
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  return active ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的项目详情。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export const PROJECT_THREADS_PAGE_SIZE = 100;
@@ -178,14 +225,29 @@ export const PROJECT_THREADS_PAGE_SIZE = 100;
  */
 export function useInfiniteProjectThreads(
   id: string,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ): ProjectThreadsQueryResult {
-  const active = enabled && !isStaticWebsiteOnly();
-  const queryKey = useMemo(
-    () => [...PROJECTS_QUERY_KEY, "threads", id] as const,
-    [id],
-  );
-  useClearQueryWhenInactive(queryKey, active);
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects/{id}/threads 同时要求 projects:read 与 threads:read；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied" ||
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = projectThreadsQueryKey(id, userId);
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的项目会话。调用方停用不能清空该账号缓存，也不能波及列表、详情或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectThreadsQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useInfiniteQuery<
     ProjectThread[],
     Error,
@@ -205,11 +267,19 @@ export function useInfiniteProjectThreads(
       lastPage.length === PROJECT_THREADS_PAGE_SIZE
         ? allPages.reduce((total, page) => total + page.length, 0)
         : undefined,
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  return active
-    ? query
-    : ({ ...query, data: undefined } as ProjectThreadsQueryResult);
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的项目会话。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    } as ProjectThreadsQueryResult;
+  }
+  return query;
 }
 
 export type ProjectThreadsQueryResult = UseInfiniteQueryResult<
@@ -282,14 +352,28 @@ export const PROJECT_DOCUMENTS_PAGE_SIZE = 100;
  */
 export function useInfiniteProjectDocuments(
   projectId: string,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ) {
-  const active = enabled && !isStaticWebsiteOnly();
-  const queryKey = useMemo(
-    () => [...PROJECTS_QUERY_KEY, "documents", projectId] as const,
-    [projectId],
-  );
-  useClearQueryWhenInactive(queryKey, active);
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects/{id}/documents 要求 projects:read、项目归属与 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = projectDocumentsQueryKey(projectId, userId);
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的项目资料。调用方停用不能清空该账号缓存，也不能波及列表、详情、会话或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectDocumentsQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useInfiniteQuery<
     ProjectDocumentListResponse,
     Error,
@@ -309,9 +393,19 @@ export function useInfiniteProjectDocuments(
       const loaded = lastPage.offset + lastPage.documents.length;
       return loaded < lastPage.total ? loaded : undefined;
     },
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  return active ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的项目资料。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 /**
@@ -330,20 +424,32 @@ export function useInfiniteProjectThreadFiles(
     thread_limit,
     file_limit,
   }: { thread_limit?: number; file_limit?: number } = {},
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled }: { enabled?: boolean } = {},
 ) {
-  const active = enabled && !isStaticWebsiteOnly();
-  const queryKey = useMemo(
-    () =>
-      [
-        ...PROJECTS_QUERY_KEY,
-        "thread-files",
-        projectId,
-        { thread_limit, file_limit },
-      ] as const,
-    [file_limit, projectId, thread_limit],
-  );
-  useClearQueryWhenInactive(queryKey, active);
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/projects/{id}/thread-files 同时要求 projects:read 与 threads:read，并校验项目归属与两项 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied" ||
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = projectThreadFilesQueryKey(projectId, userId, {
+    thread_limit,
+    file_limit,
+  });
+
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的会话文件。调用方停用不能清空该账号缓存，也不能波及列表、详情、会话、资料、配置或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerProjectThreadFilesQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useInfiniteQuery<
     ProjectThreadFilesResponse,
     Error,
@@ -361,10 +467,19 @@ export function useInfiniteProjectThreadFiles(
         signal,
       }),
     getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
-    // Static-demo mode has no Gateway; never fire project requests there.
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  return active ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的会话文件。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export function useUploadProjectDocument(projectId: string) {

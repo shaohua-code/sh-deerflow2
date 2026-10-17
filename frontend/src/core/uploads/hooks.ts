@@ -3,7 +3,10 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect } from "react";
+
+import { useAuth } from "../auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "../auth/permissions";
 
 import {
   deleteUploadedFile,
@@ -14,6 +17,46 @@ import {
   type UploadResponse,
 } from "./api";
 
+export function uploadedFilesQueryKey(
+  threadId: string,
+  userId: string | null | undefined,
+) {
+  // owner 位于 list 与 thread 之后；["uploads", "list", threadId] 仍能失效该线程的全部账号。
+  return ["uploads", "list", threadId, userId ?? null] as const;
+}
+
+export function isOwnerUploadedFilesQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。额度等其它 uploads 命名空间的第 2 段不是 list。
+  return (
+    queryKey[0] === "uploads" &&
+    queryKey[1] === "list" &&
+    queryKey[3] === userId
+  );
+}
+
+export function uploadLimitsQueryKey(
+  threadId: string,
+  userId: string | null | undefined,
+) {
+  // owner 位于 limits 与 thread 之后；["uploads", "limits", threadId] 仍能失效该线程的全部账号。
+  return ["uploads", "limits", threadId, userId ?? null] as const;
+}
+
+export function isOwnerUploadLimitsQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。上传列表的第 2 段是 list，不会被这个谓词命中。
+  return (
+    queryKey[0] === "uploads" &&
+    queryKey[1] === "limits" &&
+    queryKey[3] === userId
+  );
+}
+
 /**
  * Hook to load the gateway-enforced upload limits.
  * Callers must pass the current threads:read grant. Validation still falls back
@@ -21,40 +64,48 @@ import {
  */
 export function useUploadLimits(
   threadId: string,
-  options: { enabled: boolean },
+  { enabled }: { enabled?: boolean } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/threads/{id}/uploads/limits 要求 threads:read 与 owner check；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
   const queryClient = useQueryClient();
-  const active = Boolean(threadId) && options.enabled;
-  const queryKey = useMemo(
-    () => ["uploads", "limits", threadId] as const,
-    [threadId],
-  );
+  const callerEnabled = Boolean(threadId) && (enabled ?? true) && !accessDenied;
+  const queryKey = uploadLimitsQueryKey(threadId, userId);
 
   useEffect(() => {
-    if (active) return;
-
-    // 撤销 threads:read 后取消在途请求并清除旧额度，不能继续用授权前缓存校验附件。
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [active, queryClient, queryKey]);
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的上传额度。调用方停用不能清空该账号缓存，也不能波及上传列表或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerUploadLimitsQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const query = useQuery({
     queryKey,
     queryFn: ({ signal }) => getUploadLimits(threadId, signal),
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled,
     retry: false,
     staleTime: 60_000,
   });
 
-  return active
-    ? query
-    : {
-        ...query,
-        data: undefined,
-        error: null,
-        isLoading: false,
-        isFetching: false,
-      };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的上传额度。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    };
+  }
+  return query;
 }
 
 /**
@@ -75,42 +126,50 @@ export function useUploadFiles(threadId: string) {
 }
 
 /**
- * 读取当前线程的上传文件。调用方必须传入 threads:read 权限，撤权后会取消请求并清除旧目录缓存。
+ * 读取当前线程的上传文件。GET 要求 threads:read 与线程归属。
  */
 export function useUploadedFiles(
   threadId: string,
-  { enabled }: { enabled: boolean },
+  { enabled }: { enabled?: boolean } = {},
 ) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/threads/{id}/uploads/list 要求 threads:read 与 owner check；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
   const queryClient = useQueryClient();
-  const active = Boolean(threadId) && enabled;
-  const queryKey = useMemo(
-    () => ["uploads", "list", threadId] as const,
-    [threadId],
-  );
+  const callerEnabled = Boolean(threadId) && (enabled ?? true) && !accessDenied;
+  const queryKey = uploadedFilesQueryKey(threadId, userId);
 
   useEffect(() => {
-    if (active) return;
-
-    // 撤销 threads:read 后停止目录读取，并清除授权前缓存的文件名和路径。
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.removeQueries({ queryKey, exact: true });
-  }, [active, queryClient, queryKey]);
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的上传列表。调用方停用不能清空该账号缓存，也不能波及额度或其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerUploadedFilesQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
 
   const query = useQuery({
     queryKey,
     queryFn: ({ signal }) => listUploadedFiles(threadId, signal),
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled,
   });
 
-  return active
-    ? query
-    : {
-        ...query,
-        data: undefined,
-        error: null,
-        isLoading: false,
-        isFetching: false,
-      };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的上传列表。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    };
+  }
+  return query;
 }
 
 /**

@@ -47,6 +47,138 @@ export type ProjectThreadFilesResponse = {
 
 export const PROJECTS_QUERY_KEY = ["projects"] as const;
 
+export function projectsListQueryKey(
+  userId: string | null | undefined,
+  status?: ProjectStatus,
+) {
+  // owner 位于 projects 前缀之后、状态参数之前；写入侧 ["projects"] 仍能失效全部账号。
+  return [...PROJECTS_QUERY_KEY, userId ?? null, { status }] as const;
+}
+
+export function isOwnerProjectListQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  const filter = queryKey[2];
+  // 只匹配项目列表。详情、会话、资料和配置的第 2 段是命名空间，不是 owner。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === userId &&
+    typeof filter === "object" &&
+    filter !== null &&
+    !Array.isArray(filter)
+  );
+}
+
+export function projectDetailQueryKey(
+  projectId: string,
+  userId: string | null | undefined,
+) {
+  // owner 位于 detail 与项目 id 之后；["projects", "detail", id] 与 ["projects"] 仍能失效全部账号。
+  return [...PROJECTS_QUERY_KEY, "detail", projectId, userId ?? null] as const;
+}
+
+export function isOwnerProjectDetailQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。列表的第 2 段是 owner，不会被这个谓词命中。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === "detail" &&
+    queryKey[3] === userId
+  );
+}
+
+export function projectThreadsQueryKey(
+  projectId: string,
+  userId: string | null | undefined,
+) {
+  // owner 位于 threads 与项目 id 之后；["projects", "threads", id] 与 ["projects"] 仍能失效全部账号。
+  return [...PROJECTS_QUERY_KEY, "threads", projectId, userId ?? null] as const;
+}
+
+export function isOwnerProjectThreadsQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。列表第 2 段是 owner，详情第 2 段是 detail，都不会被命中。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === "threads" &&
+    queryKey[3] === userId
+  );
+}
+
+export function projectDocumentsQueryKey(
+  projectId: string,
+  userId: string | null | undefined,
+) {
+  // owner 位于 documents 与项目 id 之后；["projects", "documents", id] 与 ["projects"] 仍能失效全部账号。
+  return [
+    ...PROJECTS_QUERY_KEY,
+    "documents",
+    projectId,
+    userId ?? null,
+  ] as const;
+}
+
+export function isOwnerProjectDocumentsQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。列表、详情和会话的第 2 段都不是 documents，不会被命中。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === "documents" &&
+    queryKey[3] === userId
+  );
+}
+
+export function projectConfigQueryKey(userId: string | null | undefined) {
+  // owner 位于 config 之后；["projects", "config"] 与 ["projects"] 仍能失效全部账号。
+  return [...PROJECTS_QUERY_KEY, "config", userId ?? null] as const;
+}
+
+export function isOwnerProjectConfigQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 3 段才是 owner。列表第 2 段是 owner 且第 3 段是状态对象，不会被命中。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === "config" &&
+    queryKey[2] === userId
+  );
+}
+
+export function projectThreadFilesQueryKey(
+  projectId: string,
+  userId: string | null | undefined,
+  params: { thread_limit?: number; file_limit?: number } = {},
+) {
+  // owner 位于 thread-files 与项目 id 之后、分页参数之前；["projects", "thread-files", id] 与 ["projects"] 仍能失效全部账号。
+  return [
+    ...PROJECTS_QUERY_KEY,
+    "thread-files",
+    projectId,
+    userId ?? null,
+    { thread_limit: params.thread_limit, file_limit: params.file_limit },
+  ] as const;
+}
+
+export function isOwnerProjectThreadFilesQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 4 段才是 owner。列表、详情、会话、资料和配置的第 2 段都不是 thread-files。
+  return (
+    queryKey[0] === PROJECTS_QUERY_KEY[0] &&
+    queryKey[1] === "thread-files" &&
+    queryKey[3] === userId
+  );
+}
+
 /** ``GET /api/projects/config`` payload (spec §6.5). */
 export type ProjectsConfig = {
   instructions_max_bytes: number;

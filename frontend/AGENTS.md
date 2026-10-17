@@ -59,7 +59,7 @@ E2E tests use Playwright/Chromium, mock APIs through page.route, and cover real 
 
 The dedicated `run-history.ts` hook replaces the unpaged runs hook. Show counts
 only after a successful history read, never during initial loading or errors.
-Scheduled run history uses task/page query keys and the existing live offset API.
+Scheduled run history requires `threads:read` and `runs:read`. Cache keys include the task, owner, and page; explicit denial hides rows and clears that owner's history. The live offset API is unchanged.
 Fetch 51 rows to display 50 plus a next-page sentinel; never append pages. Only
 page zero polls or refreshes on focus/reconnect. Task switches reset to page zero,
 and consumed AbortSignals cancel obsolete reads. Live offsets are not snapshots;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -100,13 +101,13 @@ describe("WorkspaceQueryBoundary", () => {
 
     function ProjectAndTrashData() {
       const project = useQuery({
-        queryKey: ["projects", { status: "active" }],
+        queryKey: ["projects", mocks.userId, { status: "active" }],
         queryFn: () => mocks.fetchOwnerData("projects"),
         enabled: mocks.canReadProjects,
         staleTime: Infinity,
       });
       const trash = useQuery({
-        queryKey: ["trash", "documents"],
+        queryKey: ["trash", "documents", mocks.userId],
         queryFn: () => mocks.fetchOwnerData("trash"),
         enabled: mocks.canReadProjects,
         staleTime: Infinity,
@@ -143,5 +144,257 @@ describe("WorkspaceQueryBoundary", () => {
       </WorkspaceQueryBoundary>,
     );
     await waitFor(() => expect(mocks.fetchOwnerData).toHaveBeenCalledTimes(4));
+  });
+
+  it("clears only the current owner's project threads when project read is revoked", async () => {
+    mocks.fetchOwnerData.mockImplementation((scope: string) =>
+      Promise.resolve(`private ${scope}`),
+    );
+
+    function ProjectThreadData() {
+      const client = useQueryClient();
+      const [stamp, setStamp] = useState(0);
+      useQuery({
+        queryKey: ["projects", "threads", "proj-1", mocks.userId],
+        queryFn: () => mocks.fetchOwnerData("threads"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      useQuery({
+        queryKey: ["projects", "threads", "proj-1", "other"],
+        queryFn: () => Promise.resolve("other threads"),
+        staleTime: Infinity,
+      });
+      const aliceCached = client.getQueryData([
+        "projects",
+        "threads",
+        "proj-1",
+        "alice",
+      ]);
+      const otherCached = client.getQueryData([
+        "projects",
+        "threads",
+        "proj-1",
+        "other",
+      ]);
+      return (
+        <>
+          <button type="button" onClick={() => setStamp((value) => value + 1)}>
+            读取缓存
+          </button>
+          <p>{aliceCached ? "alice-cached" : "alice-cleared"}</p>
+          <p>{otherCached ? "other-cached" : "other-cleared"}</p>
+          <p>{stamp}</p>
+        </>
+      );
+    }
+
+    const view = render(
+      <WorkspaceQueryBoundary>
+        <ProjectThreadData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(await screen.findByText("alice-cached")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+
+    mocks.canReadProjects = false;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectThreadData />
+      </WorkspaceQueryBoundary>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取缓存" }));
+    expect(screen.getByText("alice-cleared")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+  });
+
+  it("clears only the current owner's project documents when project read is revoked", async () => {
+    mocks.fetchOwnerData.mockImplementation((scope: string) =>
+      Promise.resolve(`private ${scope}`),
+    );
+
+    function ProjectDocumentData() {
+      const client = useQueryClient();
+      const [stamp, setStamp] = useState(0);
+      useQuery({
+        queryKey: ["projects", "documents", "proj-1", mocks.userId],
+        queryFn: () => mocks.fetchOwnerData("documents"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      useQuery({
+        queryKey: ["projects", "documents", "proj-1", "other"],
+        queryFn: () => Promise.resolve("other documents"),
+        staleTime: Infinity,
+      });
+      const aliceCached = client.getQueryData([
+        "projects",
+        "documents",
+        "proj-1",
+        "alice",
+      ]);
+      const otherCached = client.getQueryData([
+        "projects",
+        "documents",
+        "proj-1",
+        "other",
+      ]);
+      return (
+        <>
+          <button type="button" onClick={() => setStamp((value) => value + 1)}>
+            读取缓存
+          </button>
+          <p>{aliceCached ? "alice-cached" : "alice-cleared"}</p>
+          <p>{otherCached ? "other-cached" : "other-cleared"}</p>
+          <p>{stamp}</p>
+        </>
+      );
+    }
+
+    const view = render(
+      <WorkspaceQueryBoundary>
+        <ProjectDocumentData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(await screen.findByText("alice-cached")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+
+    mocks.canReadProjects = false;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectDocumentData />
+      </WorkspaceQueryBoundary>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取缓存" }));
+    expect(screen.getByText("alice-cleared")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+  });
+
+  it("clears only the current owner's project config when project read is revoked", async () => {
+    mocks.fetchOwnerData.mockImplementation((scope: string) =>
+      Promise.resolve(`private ${scope}`),
+    );
+
+    function ProjectConfigData() {
+      const client = useQueryClient();
+      const [stamp, setStamp] = useState(0);
+      useQuery({
+        queryKey: ["projects", "config", mocks.userId],
+        queryFn: () => mocks.fetchOwnerData("config"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      useQuery({
+        queryKey: ["projects", "config", "other"],
+        queryFn: () => Promise.resolve("other config"),
+        staleTime: Infinity,
+      });
+      const aliceCached = client.getQueryData(["projects", "config", "alice"]);
+      const otherCached = client.getQueryData(["projects", "config", "other"]);
+      return (
+        <>
+          <button type="button" onClick={() => setStamp((value) => value + 1)}>
+            读取缓存
+          </button>
+          <p>{aliceCached ? "alice-cached" : "alice-cleared"}</p>
+          <p>{otherCached ? "other-cached" : "other-cleared"}</p>
+          <p>{stamp}</p>
+        </>
+      );
+    }
+
+    const view = render(
+      <WorkspaceQueryBoundary>
+        <ProjectConfigData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(await screen.findByText("alice-cached")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+
+    mocks.canReadProjects = false;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectConfigData />
+      </WorkspaceQueryBoundary>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取缓存" }));
+    expect(screen.getByText("alice-cleared")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+  });
+
+  it("clears only the current owner's project thread files when project read is revoked", async () => {
+    mocks.fetchOwnerData.mockImplementation((scope: string) =>
+      Promise.resolve(`private ${scope}`),
+    );
+
+    function ProjectThreadFileData() {
+      const client = useQueryClient();
+      const [stamp, setStamp] = useState(0);
+      useQuery({
+        queryKey: [
+          "projects",
+          "thread-files",
+          "proj-1",
+          mocks.userId,
+          { thread_limit: 20, file_limit: 50 },
+        ],
+        queryFn: () => mocks.fetchOwnerData("thread-files"),
+        enabled: mocks.canReadProjects,
+        staleTime: Infinity,
+      });
+      useQuery({
+        queryKey: [
+          "projects",
+          "thread-files",
+          "proj-1",
+          "other",
+          { thread_limit: 20, file_limit: 50 },
+        ],
+        queryFn: () => Promise.resolve("other files"),
+        staleTime: Infinity,
+      });
+      const aliceCached = client.getQueryData([
+        "projects",
+        "thread-files",
+        "proj-1",
+        "alice",
+        { thread_limit: 20, file_limit: 50 },
+      ]);
+      const otherCached = client.getQueryData([
+        "projects",
+        "thread-files",
+        "proj-1",
+        "other",
+        { thread_limit: 20, file_limit: 50 },
+      ]);
+      return (
+        <>
+          <button type="button" onClick={() => setStamp((value) => value + 1)}>
+            读取缓存
+          </button>
+          <p>{aliceCached ? "alice-cached" : "alice-cleared"}</p>
+          <p>{otherCached ? "other-cached" : "other-cleared"}</p>
+          <p>{stamp}</p>
+        </>
+      );
+    }
+
+    const view = render(
+      <WorkspaceQueryBoundary>
+        <ProjectThreadFileData />
+      </WorkspaceQueryBoundary>,
+    );
+    expect(await screen.findByText("alice-cached")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
+
+    mocks.canReadProjects = false;
+    view.rerender(
+      <WorkspaceQueryBoundary>
+        <ProjectThreadFileData />
+      </WorkspaceQueryBoundary>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取缓存" }));
+    expect(screen.getByText("alice-cleared")).toBeDefined();
+    expect(screen.getByText("other-cached")).toBeDefined();
   });
 });

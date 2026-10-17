@@ -153,6 +153,7 @@ class ProductSettingsStore:
         self._owner_data_deleter: Any | None = None
         self._owner_data_authorizer: Any | None = None
         self._data_job_worker: Any | None = None
+        self._file_catalog_refresh_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, deps: ExtensionRuntimeDeps) -> None:
         """Gateway 启动期先完成自有迁移，再开放产品设置 API。"""
@@ -196,6 +197,13 @@ class ProductSettingsStore:
 
     async def stop(self) -> None:
         """释放 Gateway 注入的引用；Engine 生命周期仍归 Gateway 所有。"""
+        # 先结束目录重建，避免关闭 session 后后台任务再写快照。
+        refresh_tasks = tuple(self._file_catalog_refresh_tasks)
+        for task in refresh_tasks:
+            task.cancel()
+        if refresh_tasks:
+            await asyncio.gather(*refresh_tasks, return_exceptions=True)
+        self._file_catalog_refresh_tasks.clear()
         if self._data_job_worker is not None:
             await self._data_job_worker.stop()
             self._data_job_worker = None
@@ -1346,7 +1354,11 @@ class ProductSettingsStore:
         query: str = "",
         refresh: bool = False,
     ) -> CachedOwnerFilePage | None:
-        """读取自有数据库里的 owner 快照，过期时通过 Gateway reader 有界重建。"""
+        """读取自有数据库里的 owner 快照。
+
+        已有快照过期时先返回这一页，目录重建放到后台。还没有快照，
+        或调用方要求手动刷新时，仍等待本次扫描结束。
+        """
         if not owner_user_id or len(owner_user_id) > 255:
             raise ValueError("Invalid file catalog owner")
         if not 1 <= limit <= _FILE_CATALOG_LIMIT:
@@ -1361,28 +1373,11 @@ class ProductSettingsStore:
             force=refresh,
         )
         if refresh_token is not None:
-            reader = self._owner_data_reader
-            list_files = getattr(reader, "list_files", None)
-            try:
-                if not callable(list_files):
-                    raise RuntimeError("Owner file catalog reader is unavailable")
-                # 扩展只请求一次 Gateway 有界目录；搜索和小页翻页由产品数据库完成。
-                host_page = await list_files(
-                    user_id=owner_user_id,
-                    limit=_FILE_CATALOG_LIMIT,
-                    offset=0,
-                    query="",
-                )
-                if host_page is None:
-                    raise RuntimeError("Owner file catalog reader is unavailable")
-                await self._publish_file_catalog_snapshot(
-                    owner_user_id,
-                    refresh_token,
-                    host_page,
-                )
-            except Exception:
-                # reader 或目录扫描失败时保留旧快照；异常正文可能含宿主细节，不返回浏览器。
-                await self._fail_file_catalog_refresh(owner_user_id, refresh_token)
+            # 小页读取不能等待整份目录扫描；第一次建档和手动刷新除外。
+            if not refresh and await self._owner_file_catalog_has_snapshot(owner_user_id):
+                self._start_file_catalog_refresh(owner_user_id, refresh_token)
+            else:
+                await self._rebuild_file_catalog_snapshot(owner_user_id, refresh_token)
 
         return await self._read_owner_file_catalog_page(
             owner_user_id,
@@ -1436,6 +1431,54 @@ class ProductSettingsStore:
                 .values(indexed_at=now - _FILE_CATALOG_TTL)
             )
             return True
+
+    def _start_file_catalog_refresh(self, owner_user_id: str, refresh_token: str) -> None:
+        """在当前事件循环里重建目录，不让这次小页请求等扫描结束。"""
+        task = asyncio.create_task(
+            self._rebuild_file_catalog_snapshot(owner_user_id, refresh_token)
+        )
+        self._file_catalog_refresh_tasks.add(task)
+        task.add_done_callback(self._file_catalog_refresh_tasks.discard)
+
+    async def wait_for_file_catalog_refreshes(self) -> None:
+        """等待已经开始的目录重建。关闭和测试用它确认新快照已经落库。"""
+        pending = tuple(self._file_catalog_refresh_tasks)
+        if pending:
+            await asyncio.gather(*pending)
+
+    async def _owner_file_catalog_has_snapshot(self, owner_user_id: str) -> bool:
+        session_factory = self._require_session_factory()
+        async with session_factory() as session:
+            snapshot_id = await session.scalar(
+                select(file_catalog_state.c.snapshot_id).where(
+                    file_catalog_state.c.owner_user_id == owner_user_id
+                )
+            )
+        return snapshot_id is not None
+
+    async def _rebuild_file_catalog_snapshot(self, owner_user_id: str, refresh_token: str) -> None:
+        """用 Gateway reader 重建快照。失败时保留旧页，不把宿主异常返回浏览器。"""
+        reader = self._owner_data_reader
+        list_files = getattr(reader, "list_files", None)
+        try:
+            if not callable(list_files):
+                raise RuntimeError("Owner file catalog reader is unavailable")
+            # 扩展只请求一次 Gateway 有界目录；搜索和小页翻页由产品数据库完成。
+            host_page = await list_files(
+                user_id=owner_user_id,
+                limit=_FILE_CATALOG_LIMIT,
+                offset=0,
+                query="",
+            )
+            if host_page is None:
+                raise RuntimeError("Owner file catalog reader is unavailable")
+            await self._publish_file_catalog_snapshot(
+                owner_user_id,
+                refresh_token,
+                host_page,
+            )
+        except Exception:
+            await self._fail_file_catalog_refresh(owner_user_id, refresh_token)
 
     async def _claim_file_catalog_refresh(
         self,

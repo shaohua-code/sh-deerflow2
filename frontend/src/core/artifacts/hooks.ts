@@ -1,9 +1,46 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useThread } from "@/components/workspace/messages/context";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "@/core/auth/permissions";
 
 import { loadArtifactContent, loadArtifactContentFromToolCall } from "./loader";
+
+const ARTIFACT_QUERY_KEY = ["artifact"] as const;
+
+export function artifactContentQueryKey(
+  userId: string | null | undefined,
+  filepath: string,
+  threadId: string,
+  isMock: boolean,
+  fullContentRequested: boolean,
+) {
+  return [
+    ...ARTIFACT_QUERY_KEY,
+    userId ?? null,
+    filepath,
+    threadId,
+    isMock,
+    fullContentRequested,
+  ] as const;
+}
+
+function useArtifactReadAccess() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // 正式产物 GET 要求 threads:read；权限字段缺失时保持旧 Gateway 兼容。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.THREADS_READ) === "denied";
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!accessDenied) return;
+    const queryKey = [...ARTIFACT_QUERY_KEY, userId] as const;
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }, [accessDenied, queryClient, userId]);
+  return { userId, accessDenied };
+}
 
 export function useArtifactContent({
   filepath,
@@ -25,6 +62,7 @@ export function useArtifactContent({
   const fullContentRequested =
     fullContentSelection?.filepath === filepath &&
     fullContentSelection.threadId === threadId;
+  const { userId, accessDenied } = useArtifactReadAccess();
   const content = useMemo(() => {
     if (isWriteFile) {
       return loadArtifactContentFromToolCall({ url: filepath, thread });
@@ -33,16 +71,23 @@ export function useArtifactContent({
   }, [filepath, isWriteFile, thread]);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["artifact", filepath, threadId, isMock, fullContentRequested],
-    queryFn: () => {
+    queryKey: artifactContentQueryKey(
+      userId,
+      filepath,
+      threadId,
+      isMock,
+      fullContentRequested,
+    ),
+    queryFn: ({ signal }) => {
       return loadArtifactContent({
         filepath,
         threadId,
         isMock,
         full: fullContentRequested,
+        signal,
       });
     },
-    enabled,
+    enabled: (enabled ?? true) && !accessDenied,
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
@@ -63,16 +108,18 @@ export function useArtifactContent({
   }, [filepath, threadId]);
 
   return {
-    content: isWriteFile ? content : data?.content,
-    url: isWriteFile ? undefined : data?.url,
-    sha256: isWriteFile ? undefined : data?.sha256,
-    truncated: isWriteFile ? false : (data?.truncated ?? false),
-    previewBytes: isWriteFile ? undefined : data?.previewBytes,
-    totalBytes: isWriteFile ? undefined : data?.totalBytes,
+    // 明确撤权时同一帧隐藏正文，包括仍留在消息里的 write-file 草稿。
+    content: accessDenied ? undefined : isWriteFile ? content : data?.content,
+    url: accessDenied || isWriteFile ? undefined : data?.url,
+    sha256: accessDenied || isWriteFile ? undefined : data?.sha256,
+    truncated: accessDenied || isWriteFile ? false : (data?.truncated ?? false),
+    previewBytes: accessDenied || isWriteFile ? undefined : data?.previewBytes,
+    totalBytes: accessDenied || isWriteFile ? undefined : data?.totalBytes,
     fullContentRequested,
     loadFullContent,
-    isLoading,
-    error,
+    isLoading: accessDenied ? false : isLoading,
+    error: accessDenied ? null : error,
+    accessDenied,
   };
 }
 
@@ -100,16 +147,25 @@ export function useStandaloneArtifactContent({
   const fullContentRequested =
     fullContentSelection?.filepath === filepath &&
     fullContentSelection.threadId === threadId;
+  const { userId, accessDenied } = useArtifactReadAccess();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["artifact", filepath, threadId, isMock, fullContentRequested],
-    queryFn: () =>
+    queryKey: artifactContentQueryKey(
+      userId,
+      filepath,
+      threadId,
+      isMock,
+      fullContentRequested,
+    ),
+    queryFn: ({ signal }) =>
       loadArtifactContent({
         filepath,
         threadId,
         isMock,
         full: fullContentRequested,
+        signal,
       }),
+    enabled: !accessDenied,
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
@@ -119,14 +175,15 @@ export function useStandaloneArtifactContent({
   }, [filepath, threadId]);
 
   return {
-    content: data?.content,
-    url: data?.url,
-    truncated: data?.truncated ?? false,
-    previewBytes: data?.previewBytes,
-    totalBytes: data?.totalBytes,
+    content: accessDenied ? undefined : data?.content,
+    url: accessDenied ? undefined : data?.url,
+    truncated: accessDenied ? false : (data?.truncated ?? false),
+    previewBytes: accessDenied ? undefined : data?.previewBytes,
+    totalBytes: accessDenied ? undefined : data?.totalBytes,
     fullContentRequested,
     loadFullContent,
-    isLoading,
-    error,
+    isLoading: accessDenied ? false : isLoading,
+    error: accessDenied ? null : error,
+    accessDenied,
   };
 }

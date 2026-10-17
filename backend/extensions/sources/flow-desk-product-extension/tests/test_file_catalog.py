@@ -199,6 +199,73 @@ def test_manual_refresh_inside_cooldown_keeps_snapshot_and_reports_deferred() ->
     asyncio.run(run())
 
 
+def test_stale_catalog_returns_existing_page_before_rescan_finishes(monkeypatch) -> None:
+    """已有快照过期时，小页先返回旧数据，扫描完成前不能挡住响应。"""
+    monkeypatch.setattr(settings_module, "_FILE_CATALOG_TTL", timedelta(0))
+    monkeypatch.setattr(settings_module, "_FILE_CATALOG_REFRESH_INTERVAL", timedelta(0))
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        class _GatedReader:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def list_files(self, *, user_id: str, limit: int, offset: int, query: str = ""):
+                del user_id, limit, offset, query
+                self.calls += 1
+                if self.calls == 1:
+                    return OwnerFilePage(
+                        files=(_entry("upload:a", "Alpha.pdf"),),
+                        total=1,
+                        has_more=False,
+                        next_offset=None,
+                    )
+                self.started.set()
+                await self.release.wait()
+                return OwnerFilePage(
+                    files=(_entry("upload:c", "current.csv"),),
+                    total=1,
+                    has_more=False,
+                    next_offset=None,
+                )
+
+        reader = _GatedReader()
+        store = ProductSettingsStore()
+        try:
+            await store.start(
+                ExtensionRuntimeDeps(
+                    session_factory=session_factory,
+                    owner_data_reader=reader,
+                )
+            )
+            first = await store.list_owner_files("user-a", limit=5, offset=0)
+            assert first is not None
+            assert [file.name for file in first.files] == ["Alpha.pdf"]
+
+            cached = await store.list_owner_files("user-a", limit=5, offset=0)
+            assert cached is not None
+            assert [file.name for file in cached.files] == ["Alpha.pdf"]
+            assert reader.release.is_set() is False
+            await asyncio.wait_for(reader.started.wait(), timeout=2)
+
+            reader.release.set()
+            await store.wait_for_file_catalog_refreshes()
+            updated = await store.list_owner_files("user-a", limit=5, offset=0)
+            assert updated is not None
+            assert [file.name for file in updated.files] == ["current.csv"]
+        finally:
+            reader.release.set()
+            await store.wait_for_file_catalog_refreshes()
+            await store.stop()
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_gateway_delete_invalidates_only_the_owner_cached_entry() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite://")

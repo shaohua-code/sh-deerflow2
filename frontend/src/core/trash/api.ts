@@ -17,6 +17,23 @@ export type TrashListResponse = {
 
 export const TRASH_QUERY_KEY = ["trash", "documents"] as const;
 
+export function trashDocumentsQueryKey(userId: string | null | undefined) {
+  // owner 位于 documents 之后；["trash", "documents"] 仍能失效全部账号。
+  return [...TRASH_QUERY_KEY, userId ?? null] as const;
+}
+
+export function isOwnerTrashDocumentsQuery(
+  queryKey: readonly unknown[],
+  userId: string | null,
+) {
+  // 第 3 段才是 owner。写入侧前缀 ["trash", "documents"] 不能拿来按账号清理。
+  return (
+    queryKey[0] === TRASH_QUERY_KEY[0] &&
+    queryKey[1] === TRASH_QUERY_KEY[1] &&
+    queryKey[2] === userId
+  );
+}
+
 /**
  * Restore conflict (HTTP 409): the trashed row's content file is missing or
  * damaged (``content_missing``, spec §8.3), so the row stays in trash. The UI

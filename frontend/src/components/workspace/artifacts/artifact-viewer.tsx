@@ -7,6 +7,7 @@ import { useStandaloneArtifactContent } from "@/core/artifacts/hooks";
 import { getTabularDelimiter } from "@/core/artifacts/preview";
 import { urlOfArtifact } from "@/core/artifacts/utils";
 import { resolveStoredArtifactLanguage } from "@/core/artifacts/viewer";
+import { PERMISSIONS } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
 import { getFileIcon, getFileName } from "@/core/utils/files";
 
@@ -39,6 +40,7 @@ export function ArtifactViewer({
     loadFullContent,
     isLoading,
     error,
+    accessDenied,
   } = useStandaloneArtifactContent({ filepath, threadId, isMock });
 
   const isLoadingFullContent = fullContentRequested && isLoading;
@@ -57,29 +59,33 @@ export function ArtifactViewer({
             {filepath}
           </div>
         </div>
-        <Button variant="ghost" size="sm" asChild>
-          <a
-            href={urlOfArtifact({ filepath, threadId, isMock })}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLinkIcon className="size-4" />
-            {t.artifactPreview.viewSource}
-          </a>
-        </Button>
-        <Button variant="outline" size="sm" asChild>
-          <a
-            href={urlOfArtifact({
-              filepath,
-              threadId,
-              isMock,
-              download: true,
-            })}
-          >
-            <DownloadIcon className="size-4" />
-            {t.common.download}
-          </a>
-        </Button>
+        {!accessDenied && (
+          <Button variant="ghost" size="sm" asChild>
+            <a
+              href={urlOfArtifact({ filepath, threadId, isMock })}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLinkIcon className="size-4" />
+              {t.artifactPreview.viewSource}
+            </a>
+          </Button>
+        )}
+        {!accessDenied && (
+          <Button variant="outline" size="sm" asChild>
+            <a
+              href={urlOfArtifact({
+                filepath,
+                threadId,
+                isMock,
+                download: true,
+              })}
+            >
+              <DownloadIcon className="size-4" />
+              {t.common.download}
+            </a>
+          </Button>
+        )}
       </header>
 
       {truncated && !isTabular && (
@@ -105,7 +111,11 @@ export function ArtifactViewer({
       <main
         className={`mx-auto min-h-0 w-full flex-1 overflow-hidden ${isTabular ? "" : "max-w-4xl"}`}
       >
-        {error ? (
+        {accessDenied ? (
+          <p className="text-muted-foreground p-6 text-sm">
+            {t.agents.permissionRequired(PERMISSIONS.THREADS_READ)}
+          </p>
+        ) : error ? (
           <p className="text-muted-foreground p-6 text-sm">
             {t.artifactPreview.previewFailed}
           </p>

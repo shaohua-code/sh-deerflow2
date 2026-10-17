@@ -7,10 +7,22 @@ const mocks = rs.hoisted(() => ({
   fetch: rs.fn(),
   isStatic: rs.fn(() => false),
 }));
+const authState = rs.hoisted(() => ({
+  userId: "owner-a" as string | null,
+  permissions: null as string[] | null,
+}));
 rs.mock("@/core/api/fetcher", () => ({ fetch: mocks.fetch }));
 rs.mock("@/core/config", () => ({ getBackendBaseURL: () => "/backend" }));
 rs.mock("@/core/static-mode", () => ({
   isStaticWebsiteOnly: mocks.isStatic,
+}));
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user:
+      authState.userId === null
+        ? null
+        : { id: authState.userId, permissions: authState.permissions },
+  }),
 }));
 
 import {
@@ -19,6 +31,7 @@ import {
   usePurgeDocument,
   useRestoreDocument,
 } from "@/core/trash/hooks";
+import { trashDocumentsQueryKey } from "@/core/trash/api";
 
 const DOCUMENT = {
   id: "doc-1",
@@ -51,9 +64,12 @@ afterEach(() => {
   cleanup();
   rs.resetAllMocks();
   mocks.isStatic.mockReturnValue(false);
+  authState.userId = "owner-a";
+  authState.permissions = null;
 });
 
 test("useInfiniteTrashDocuments pages the trash list under the trash key", async () => {
+  authState.permissions = null;
   const client = makeClient();
   const trashed = {
     ...DOCUMENT,
@@ -101,7 +117,7 @@ test("useInfiniteTrashDocuments pages the trash list under the trash key", async
       ).toHaveLength(2),
     );
     expect(result.current.hasNextPage).toBe(false);
-    expect(client.getQueryData(["trash", "documents"])).toEqual(
+    expect(client.getQueryData(trashDocumentsQueryKey("owner-a"))).toEqual(
       result.current.data,
     );
   } finally {
@@ -128,18 +144,23 @@ test("useInfiniteTrashDocuments does not fire in static-demo mode", async () => 
   }
 });
 
-test("useInfiniteTrashDocuments masks cached data when disabled", () => {
+test("caller-disabled trash documents hide rows without removing the owner cache", () => {
   const client = makeClient();
-  client.setQueryData(["trash", "documents"], {
+  const page = {
     pages: [{ documents: [{ ...DOCUMENT, name: "private.pdf" }] }],
     pageParams: [0],
-  });
+  };
+  const key = trashDocumentsQueryKey("owner-a");
+  client.setQueryData(key, page);
   const { result, unmount } = renderHook(
     () => useInfiniteTrashDocuments({ enabled: false }),
     { wrapper: wrapperFor(client) },
   );
   try {
     expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(client.getQueryData(key)).toEqual(page);
     expect(mocks.fetch).not.toHaveBeenCalled();
   } finally {
     unmount();
@@ -147,35 +168,58 @@ test("useInfiniteTrashDocuments masks cached data when disabled", () => {
   }
 });
 
-test("useInfiniteTrashDocuments aborts and clears its cache when access is revoked", async () => {
+test("explicit projects:read denial hides trash and clears only this owner", async () => {
   const client = makeClient();
-  let requestSignal: AbortSignal | null | undefined;
+  const page = {
+    pages: [{ documents: [{ ...DOCUMENT, name: "private.pdf" }] }],
+    pageParams: [0],
+  };
+  const currentKey = trashDocumentsQueryKey("owner-a");
+  const otherOwnerKey = trashDocumentsQueryKey("owner-b");
+  client.setQueryData(currentKey, page);
+  client.setQueryData(otherOwnerKey, page);
+  authState.permissions = [];
+
+  const { result, unmount } = renderHook(() => useInfiniteTrashDocuments(), {
+    wrapper: wrapperFor(client),
+  });
+  try {
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(currentKey)).toBeUndefined(),
+    );
+    expect(client.getQueryData(otherOwnerKey)).toEqual(page);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+test("revoking projects:read aborts an in-flight trash list", async () => {
+  let signal: AbortSignal | undefined;
+  authState.permissions = ["projects:read"];
   mocks.fetch.mockImplementation(
     (_url: RequestInfo | URL, init?: RequestInit) => {
-      requestSignal = init?.signal;
-      return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener(
-          "abort",
-          () => reject(new DOMException("Aborted", "AbortError")),
-          { once: true },
-        );
-      });
+      signal = init?.signal ?? undefined;
+      return new Promise(() => undefined);
     },
   );
+  const client = makeClient();
   const { result, rerender, unmount } = renderHook(
-    ({ enabled }: { enabled: boolean }) =>
-      useInfiniteTrashDocuments({ enabled }),
-    { initialProps: { enabled: true }, wrapper: wrapperFor(client) },
+    () => useInfiniteTrashDocuments(),
+    { wrapper: wrapperFor(client) },
   );
   try {
-    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
-    rerender({ enabled: false });
-
-    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    await waitFor(() => expect(signal?.aborted).toBe(false));
+    authState.permissions = [];
+    rerender();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
     expect(result.current.data).toBeUndefined();
-    await waitFor(() =>
-      expect(client.getQueryData(["trash", "documents"])).toBeUndefined(),
-    );
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.error).toBeNull();
   } finally {
     unmount();
     client.clear();

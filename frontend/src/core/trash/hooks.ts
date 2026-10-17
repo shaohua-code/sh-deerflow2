@@ -7,15 +7,19 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
+import { useAuth } from "../auth/AuthProvider";
+import { getPermissionState, PERMISSIONS } from "../auth/permissions";
 import { PROJECTS_QUERY_KEY } from "../projects/api";
 import { isStaticWebsiteOnly } from "../static-mode";
 
 import {
   emptyTrash,
+  isOwnerTrashDocumentsQuery,
   listTrashDocuments,
   purgeTrashDocument,
   restoreTrashDocument,
   TRASH_QUERY_KEY,
+  trashDocumentsQueryKey,
   type TrashListResponse,
 } from "./api";
 import type { EmptyTrashResult, RestoreDocumentResult } from "./types";
@@ -38,17 +42,28 @@ export const TRASH_DOCUMENTS_PAGE_SIZE = 100;
  * button (same convention as the project shelf).
  */
 export function useInfiniteTrashDocuments({
-  enabled = true,
+  enabled,
 }: { enabled?: boolean } = {}) {
-  const active = enabled && !isStaticWebsiteOnly();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  // GET /api/trash/documents 要求 projects:read 与项目集合 data scope；权限字段缺失时继续请求。
+  const accessDenied =
+    getPermissionState(user, PERMISSIONS.PROJECTS_READ) === "denied";
   const queryClient = useQueryClient();
-  useEffect(() => {
-    if (active) return;
+  const callerEnabled = (enabled ?? true) && !isStaticWebsiteOnly();
+  const queryKey = trashDocumentsQueryKey(userId);
 
-    // 撤销项目读取权限后，停止回收站请求并清除先前授权时的列表缓存。
-    void queryClient.cancelQueries({ queryKey: TRASH_QUERY_KEY, exact: true });
-    queryClient.removeQueries({ queryKey: TRASH_QUERY_KEY, exact: true });
-  }, [active, queryClient]);
+  useEffect(() => {
+    if (!accessDenied) return;
+    // 只取消并清理当前账号的回收站。调用方停用不能清空该账号缓存，也不能波及其他 owner。
+    const ownerQueries = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isOwnerTrashDocumentsQuery(query.queryKey, userId),
+    };
+    void queryClient.cancelQueries(ownerQueries);
+    queryClient.removeQueries(ownerQueries);
+  }, [accessDenied, queryClient, userId]);
+
   const query = useInfiniteQuery<
     TrashListResponse,
     Error,
@@ -56,7 +71,7 @@ export function useInfiniteTrashDocuments({
     readonly unknown[],
     number
   >({
-    queryKey: TRASH_QUERY_KEY,
+    queryKey,
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) =>
       listTrashDocuments({
@@ -68,12 +83,19 @@ export function useInfiniteTrashDocuments({
       const loaded = lastPage.offset + lastPage.documents.length;
       return loaded < lastPage.total ? loaded : undefined;
     },
-    // Static-demo mode has no Gateway; never fire trash requests there.
-    enabled: active,
+    // enabled 可能缺省；不能写成 enabled && !accessDenied，否则 undefined 会被 TanStack 当成 true。
+    enabled: callerEnabled && !accessDenied,
   });
-  // Disabled permission queries can still have cached rows from an earlier
-  // render. Mask them immediately when the caller revokes read access.
-  return active ? query : { ...query, data: undefined };
+  // 明确撤权或调用方停用时，同一帧不返回仍留在缓存里的回收站列表。
+  if (!callerEnabled || accessDenied) {
+    return {
+      ...query,
+      data: undefined,
+      isLoading: false,
+      error: null,
+    };
+  }
+  return query;
 }
 
 export function useRestoreDocument() {
