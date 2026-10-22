@@ -2,8 +2,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
 import { useI18n } from "@/core/i18n/hooks";
-import { SafeStreamdown } from "@/core/streamdown/components";
+import {
+  SafeStreamdown,
+  toStreamdownComponents,
+} from "@/core/streamdown/components";
 import { fetchProductRuntimeVersion } from "@/product/api";
 import { getProductCopy } from "@/product/copy";
 import { APP_VERSION } from "@/version";
@@ -22,7 +26,16 @@ export function AboutSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <SafeStreamdown>{getAboutMarkdown(locale)}</SafeStreamdown>
+      <SafeStreamdown
+        components={toStreamdownComponents({
+          // Product copy is trusted, but Streamdown's default <a> still
+          // injects a block overlay inside <p>. Use the same phrasing-level
+          // anchor as chat/memory markdown.
+          a: createMarkdownLinkComponent(),
+        })}
+      >
+        {getAboutMarkdown(locale)}
+      </SafeStreamdown>
       <section className="border-border/70 rounded-xl border p-4">
         <h2 className="text-sm font-semibold">{copy.runtimeVersions}</h2>
         <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">

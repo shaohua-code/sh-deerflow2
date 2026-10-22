@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { artifactMarkdownPlugins } from "@/components/workspace/artifacts/markdown-preview-plugins";
 import { ArtifactLink } from "@/components/workspace/citations/artifact-link";
 import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
+import { getAboutMarkdown } from "@/components/workspace/settings/about-content";
 import {
   SafeStreamdown,
   streamdownPlugins,
@@ -122,6 +123,29 @@ test("does not add heading anchors to the shared streamdown plugin config", () =
   ].join("");
 
   expect(html).not.toContain('id="summary"');
+});
+
+test("paragraph links do not nest a link-safety overlay inside p", () => {
+  // About settings (and any SafeStreamdown without an `a` override) used to
+  // hydrate a Streamdown confirmation <div> under the markdown <p>, which
+  // is invalid HTML. The clipboard-safe wrapper must keep that overlay off.
+  const html = renderSharedMarkdown(
+    "本产品基于 [DeerFlow](https://github.com/bytedance/deer-flow) 构建。",
+  );
+
+  expect(html).not.toContain("link-safety");
+  expect(html).not.toContain('data-streamdown="link-safet');
+  // A block overlay inside the paragraph is the hydration failure mode.
+  expect(html).not.toMatch(/<p\b[^>]*>(?:(?!<\/p>)[\s\S])*<div/);
+});
+
+test("about markdown renders a native external anchor without a block overlay", () => {
+  const html = renderMemorySummaryMarkdown(getAboutMarkdown("zh-CN"));
+
+  expect(html).toContain('href="https://github.com/bytedance/deer-flow"');
+  expect(html).toContain("<a ");
+  expect(html).not.toContain("link-safety");
+  expect(html).not.toMatch(/<p\b[^>]*>(?:(?!<\/p>)[\s\S])*<div/);
 });
 
 // Stored-XSS payload: hostile markdown that must not degrade into an

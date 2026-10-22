@@ -8,6 +8,13 @@ import { installClipboardFallback } from "@/core/clipboard";
 
 export type ClipboardSafeStreamdownProps = ComponentProps<typeof Streamdown>;
 
+// Streamdown's default link renderer mounts a confirmation overlay as a
+// <div> inside the markdown <p>/<a>. That is invalid HTML and hydrates
+// differently on the client (isOpen=true) vs the server. This app already
+// sanitizes hrefs via createMarkdownLinkComponent / rehype-sanitize, so
+// keep the overlay off unless a caller opts back in.
+const DISABLED_LINK_SAFETY = { enabled: false } as const;
+
 // Only patch browser globals in client context; skip during SSR
 if (typeof document !== "undefined") {
   installClipboardFallback();
@@ -56,6 +63,7 @@ class StreamdownFallbackBoundary extends Component<
 
 export function ClipboardSafeStreamdown({
   children,
+  linkSafety = DISABLED_LINK_SAFETY,
   ...props
 }: ClipboardSafeStreamdownProps) {
   // Strip leaked system-internal tags (<memory>, <system-reminder>, etc.)
@@ -66,7 +74,9 @@ export function ClipboardSafeStreamdown({
 
   return (
     <StreamdownFallbackBoundary raw={sanitizedChildren}>
-      <Streamdown {...props}>{sanitizedChildren}</Streamdown>
+      <Streamdown linkSafety={linkSafety} {...props}>
+        {sanitizedChildren}
+      </Streamdown>
     </StreamdownFallbackBoundary>
   );
 }
