@@ -56,12 +56,8 @@ rs.mock("@langchain/langgraph-sdk/react", () => ({
   },
 }));
 
-test("updates rendered thread state without receiving a values frame", async () => {
-  const { useThreadStream } = await import("@/core/threads/hooks");
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  const wrapper = ({ children }: { children: ReactNode }) =>
+function createWrapper(queryClient: QueryClient) {
+  return ({ children }: { children: ReactNode }) =>
     createElement(
       QueryClientProvider,
       { client: queryClient },
@@ -77,6 +73,45 @@ test("updates rendered thread state without receiving a values frame", async () 
         children,
       ),
     );
+}
+
+test("does not re-render-loop while a live stream has no message identities yet", async () => {
+  const previousMessages = streamMockState.values.messages;
+  streamMockState.values = {
+    ...streamMockState.values,
+    messages: [],
+  };
+  try {
+    const { useThreadStream } = await import("@/core/threads/hooks");
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const { result, rerender } = renderHook(
+      () =>
+        useThreadStream({
+          context: DEFAULT_LOCAL_SETTINGS.context,
+          isMock: true,
+          threadId: "thread-empty",
+        }),
+      { wrapper: createWrapper(queryClient) },
+    );
+    rerender();
+    rerender();
+    expect(result.current.thread.messages).toEqual([]);
+  } finally {
+    streamMockState.values = {
+      ...streamMockState.values,
+      messages: previousMessages,
+    };
+  }
+});
+
+test("updates rendered thread state without receiving a values frame", async () => {
+  const { useThreadStream } = await import("@/core/threads/hooks");
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const wrapper = createWrapper(queryClient);
   const { rerender, result } = renderHook(
     () =>
       useThreadStream({

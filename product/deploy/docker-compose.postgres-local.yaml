@@ -1,0 +1,39 @@
+# Standalone Postgres for host `make dev` / uvicorn.
+# The production overlay (docker-compose.postgres.yaml) only patches the
+# Gateway container and keeps 5432 inside the compose network, so it cannot
+# be used alone. This file is a complete postgres service for the host
+# Gateway at 127.0.0.1:8001.
+#
+# Host port 5433 avoids clashing with other local Postgres containers that
+# already publish 5432. Do not bind 0.0.0.0.
+#
+# From the repo root:
+#   docker compose --env-file .env --project-name deer-flow \
+#     -f product/deploy/docker-compose.postgres-local.yaml up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flow-desk-postgres
+    environment:
+      POSTGRES_DB: deerflow
+      POSTGRES_USER: deerflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - product-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deerflow -d deerflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+volumes:
+  product-postgres-data:
+
+networks:
+  deer-flow:
+    driver: bridge

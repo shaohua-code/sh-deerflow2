@@ -1347,8 +1347,12 @@ export function pruneConfirmedTransientMessages(
 
 function getMessagesAfterBaseline(
   messages: Message[],
-  baselineMessageIds: ReadonlySet<string>,
+  baselineMessageIds: ReadonlySet<string> | null,
 ): Message[] {
+  // 尚未拍下基线时不过滤：首帧把当前消息都算 pending，等 null→Set 收敛后再按身份排除。
+  if (baselineMessageIds === null) {
+    return messages;
+  }
   return messages.filter((message) => {
     const id = messageIdentity(message);
     return !id || !baselineMessageIds.has(id);
@@ -2056,7 +2060,8 @@ export function useThreadStream({
         setTransientHistoryOrder([]);
         setTransientHistoryThreadId(null);
         summarizedRef.current = new Set<string>();
-        setPendingUsageBaselineMessageIds(new Set());
+        // null = 尚未拍基线，下一轮 isLoading 时再快照；空 Set 会与「未拍」混淆并渲染循环。
+        setPendingUsageBaselineMessageIds(null);
         setLocalTurnAnchor(null);
         tasksRef.current = {};
         setTasks({});
@@ -2259,9 +2264,11 @@ export function useThreadStream({
   // Streaming baseline of already-persisted message identities, used to treat
   // only new messages as "pending" for token usage. 渲染期派生
   //（pendingUsageMessages）需要读取，同步改 state；写方为流回调与提交回调。
+  // null = 尚未拍下 token-usage 基线；空 Set 表示「已拍且当时没有身份」。
+  // P354 用 size===0 当「未拍」守卫，空快照每次 new Set() 都换引用，条件无法自灭。
   const [pendingUsageBaselineMessageIds, setPendingUsageBaselineMessageIds] =
-    useState<Set<string>>(() => new Set());
-  const pendingUsageBaselineMessageIdsRef = useRef<Set<string>>(new Set());
+    useState<Set<string> | null>(null);
+  const pendingUsageBaselineMessageIdsRef = useRef<Set<string> | null>(null);
 
   // 异步回调读取镜像：渲染期不写，commit 后统一同步（读取方均为回调）。
   useEffect(() => {
@@ -2299,7 +2306,7 @@ export function useThreadStream({
       order: EMPTY_MESSAGE_IDENTITIES,
     });
     setPrevHumanMsgCount(humanMessageCount);
-    setPendingUsageBaselineMessageIds(new Set());
+    setPendingUsageBaselineMessageIds(null);
   }
 
   // Reset thread-local pending UI state when switching between threads so
@@ -2351,8 +2358,8 @@ export function useThreadStream({
   // When streaming starts without a baseline (e.g. reconnection, run started
   // from another client, or page reload mid-stream), snapshot the current
   // messages so only *new* messages are treated as "pending" for token usage.
-  // 渲染期收敛：baseline 已存在时条件不成立，自灭。
-  if (thread.isLoading && pendingUsageBaselineMessageIds.size === 0) {
+  // 渲染期收敛：用 null 表示未拍。空身份集合也是合法快照，拍完后不再 setState。
+  if (thread.isLoading && pendingUsageBaselineMessageIds === null) {
     setPendingUsageBaselineMessageIds(
       new Set(
         persistedMessages

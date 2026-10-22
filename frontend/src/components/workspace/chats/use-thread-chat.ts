@@ -32,9 +32,8 @@ const NEW_CHAT_SCOPE_UNSET = Symbol("deerflow.newChatScopeUnset");
 export function useThreadChat() {
   const { thread_id: threadIdFromPath } = useParams<{ thread_id: string }>();
   const pathname = usePathname();
-  // Render-time values use the committed browser URL. The sync logic below
-  // intentionally watches the reactive pathname so client navigation still
-  // schedules a reset when window.location is stale during render.
+  // 渲染期身份与返回值都看已提交的浏览器 URL。Next usePathname 在
+  // history.replaceState 后会落后一拍，不能用来决定是否还在 /new。
   const actualPathname =
     typeof window === "undefined" ? pathname : window.location.pathname;
   const isNewPath = actualPathname.endsWith("/new");
@@ -56,19 +55,23 @@ export function useThreadChat() {
     () => threadIdFromPath === "new",
   );
 
-  // 路由身份同步：官方 adjusting-state-when-props-change 模式替代 effect 内
-  // 同步 setState（避免级联渲染）。每个字段仅在偏离期望值时更新，条件自灭，
-  // 无渲染循环；返回值在同一次提交内即为新值，比旧 effect 快一拍。
-  if (pathname.endsWith("/new")) {
-    const nextThreadId = newThreadId ?? uuid();
+  // 路由身份同步看已提交的浏览器 URL（isNewPath），不要用 Next usePathname。
+  // onStart 用 history.replaceState 把地址改成真实 thread 后，路由树不重挂，
+  // usePathname/useParams 仍可能停在 /new；若按 pathname 再 mint，会覆盖刚
+  // 创建的 id 并把 isNewThread 拉回 true，正在流的回复从 UI 消失。
+  // 每个字段仅在偏离期望值时更新，条件自灭。
+  if (isNewPath) {
+    // 只在尚未铸造时 mint；函数式 updater 保证编译器/严格模式重跑不会每次 uuid()。
+    // 不要写成 `newThreadId ?? uuid()` 再去和 threadId 比较——newThreadId 仍为
+    // null 时每次渲染都是新 id，会触发 Too many re-renders。
     if (newThreadId === null) {
-      setNewThreadId(nextThreadId);
+      setNewThreadId((current) => current ?? uuid());
     }
     if (!isNewThreadState) {
       setIsNewThreadState(true);
     }
-    if (threadId !== nextThreadId) {
-      setThreadIdState(nextThreadId);
+    if (newThreadId !== null && threadId !== newThreadId) {
+      setThreadIdState(newThreadId);
     }
   } else {
     if (newThreadId !== null) {
@@ -84,6 +87,9 @@ export function useThreadChat() {
       if (threadId !== threadIdFromPath) {
         setThreadIdState(threadIdFromPath);
       }
+    } else if (isNewThreadState) {
+      // replaceState 已离开 /new，params 仍可能是 "new"；保留 threadId，只收新会话标记。
+      setIsNewThreadState(false);
     }
   }
 

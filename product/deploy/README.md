@@ -15,6 +15,17 @@
 
 5. 检查 Gateway readiness 接口，创建首个管理员并测试一条会话；重启服务后确认账号和历史仍然存在。对公网开放前，关闭开放注册。
 
+本机 `make dev`（Gateway 在宿主机 8001，不是整套 Docker 栈）需要把 Postgres 端口打到 loopback。使用 `docker-compose.postgres-local.yaml`，不要绑 `0.0.0.0`。覆盖文件默认发布 `127.0.0.1:5433`，避开本机其他已占用 5432 的 Postgres：
+
+```powershell
+docker compose --env-file .env --project-name deer-flow `
+  -f product/deploy/docker-compose.postgres-local.yaml up -d
+```
+
+根目录 `.env` 设置 `UV_EXTRAS=postgres`、`POSTGRES_PASSWORD` 以及 `DATABASE_URL=postgresql://deerflow:<密码>@127.0.0.1:5433/deerflow`，再把 `config.postgres.fragment.yaml` 合并进 `config.yaml`。
+
+Windows 本机直接跑 uvicorn 且**没有** `--reload` 时，uvicorn 0.36 会使用 `ProactorEventLoop`，psycopg 无法连库。`make dev` 自带 `--reload`，会改用 Selector；只起 Gateway 时需加上 `--loop asyncio:SelectorEventLoop`。
+
 ## 首次构建前准备 Flow Desk 扩展
 
 仓库内的 `product/backend-extension/` 是 Flow Desk 的自有 Gateway API。它提供产品 bootstrap、偏好、审计、文件目录和受限数据任务；Docker 镜像不会因为目录存在就自动加载它，因为 Python 扩展拥有 Gateway 进程权限。若需要完整的 Flow Desk 页面与 API，必须在受控构建环境把扩展作为可信插件安装，再构建并发布镜像。
