@@ -4,10 +4,10 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { VirtualThreadList } from "@/components/workspace/thread-list-virtualizer";
+import { TimeAgo } from "@/components/workspace/time-ago";
 import { useI18n } from "@/core/i18n/hooks";
 import { type ProjectThreadsQueryResult } from "@/core/projects";
 import { pathOfThread } from "@/core/threads/utils";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import { cn } from "@/lib/utils";
 
 export function ProjectThreadsSection({
@@ -62,7 +62,7 @@ export function ProjectThreadsSection({
                   </div>
                   {thread.updated_at && (
                     <div className="text-muted-foreground shrink-0 text-sm">
-                      {formatTimeAgo(thread.updated_at)}
+                      <TimeAgo date={thread.updated_at} />
                     </div>
                   )}
                 </div>

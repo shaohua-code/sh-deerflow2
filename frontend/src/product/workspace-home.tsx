@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
+import { TimeAgo } from "@/components/workspace/time-ago";
 import {
   WorkspaceBody,
   WorkspaceContainer,
@@ -43,7 +44,6 @@ import {
   titleOfThread,
 } from "@/core/threads/utils";
 import { workspaceRecentThreadListParams } from "@/core/threads/workspace-thread-list";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import { fetchProductFiles, type ProductFileEntry } from "@/product/api";
 
 import { BrandMark } from "./brand-mark";
@@ -443,9 +443,11 @@ export function WorkspaceHome() {
                                 {titleOfThread(thread)}
                               </span>
                               <span className="text-muted-foreground mt-1 block text-xs">
-                                {thread.updated_at
-                                  ? formatTimeAgo(thread.updated_at)
-                                  : copy.recentWork}
+                                {thread.updated_at ? (
+                                  <TimeAgo date={thread.updated_at} />
+                                ) : (
+                                  copy.recentWork
+                                )}
                               </span>
                             </span>
                             <ArrowRight className="text-muted-foreground/50 group-hover:text-primary size-4 shrink-0 transition duration-200 group-hover:translate-x-0.5" />
@@ -676,9 +678,15 @@ export function WorkspaceHome() {
                                 </span>
                                 <span className="text-muted-foreground mt-1 block text-xs">
                                   {copy.activeTask}
-                                  {thread.updated_at
-                                    ? ` · ${formatTimeAgo(thread.updated_at, locale)}`
-                                    : ""}
+                                  {thread.updated_at ? (
+                                    <>
+                                      {" · "}
+                                      <TimeAgo
+                                        date={thread.updated_at}
+                                        locale={locale}
+                                      />
+                                    </>
+                                  ) : null}
                                 </span>
                               </span>
                               <ArrowRight className="text-muted-foreground/50 group-hover:text-primary size-4 shrink-0 transition duration-200 group-hover:translate-x-0.5" />
@@ -923,9 +931,11 @@ function RecentFileRow({
           </span>
         </span>
         <span className="text-muted-foreground hidden shrink-0 text-xs sm:block">
-          {file.modified_at
-            ? formatTimeAgo(file.modified_at, locale)
-            : copy.recentFilesNoDate}
+          {file.modified_at ? (
+            <TimeAgo date={file.modified_at} locale={locale} />
+          ) : (
+            copy.recentFilesNoDate
+          )}
         </span>
         <ArrowUpRight className="text-muted-foreground/60 group-hover:text-primary size-4 shrink-0 transition-colors" />
       </a>

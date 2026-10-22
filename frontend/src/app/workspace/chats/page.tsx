@@ -13,6 +13,7 @@ import {
   ThreadChannelIcon,
 } from "@/components/workspace/thread-channel-source";
 import { VirtualThreadList } from "@/components/workspace/thread-list-virtualizer";
+import { TimeAgo } from "@/components/workspace/time-ago";
 import { useThreadArchiveAction } from "@/components/workspace/use-thread-archive-action";
 import {
   WorkspaceBody,
@@ -29,7 +30,6 @@ import {
   pathOfThread,
   titleOfThread,
 } from "@/core/threads/utils";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import { env } from "@/env";
 
 export default function ChatsPage() {
@@ -189,7 +189,7 @@ export default function ChatsPage() {
                               </div>
                               {thread.updated_at && (
                                 <div className="text-muted-foreground text-sm">
-                                  {formatTimeAgo(thread.updated_at)}
+                                  <TimeAgo date={thread.updated_at} />
                                 </div>
                               )}
                             </div>

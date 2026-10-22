@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useTimeAgoText } from "@/components/workspace/time-ago";
 import {
   WorkspaceBody,
   WorkspaceContainer,
@@ -32,12 +33,12 @@ import {
 import { useAuth } from "@/core/auth/AuthProvider";
 import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import type { User } from "@/core/auth/types";
+import type { Locale } from "@/core/i18n";
 import { useI18n } from "@/core/i18n/hooks";
 import { deleteProjectDocument } from "@/core/projects/api";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { pathOfThread } from "@/core/threads/utils";
 import { deleteUploadedFile } from "@/core/uploads/api";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import {
   fetchProductFiles,
   invalidateProductFileCatalogEntry,
@@ -383,11 +384,11 @@ function FileCenterContent({ user }: { user: User | null }) {
               <div className="flex min-w-0 items-center justify-between gap-3">
                 <div className="min-w-0 text-xs leading-5">
                   {canReadFiles && catalogUpdatedAt && (
-                    <p className="text-muted-foreground">
-                      {copy.filesCatalogUpdated(
-                        formatTimeAgo(catalogUpdatedAt, locale),
-                      )}
-                    </p>
+                    <FileCatalogUpdatedLine
+                      catalogUpdatedAt={catalogUpdatedAt}
+                      locale={locale}
+                      label={copy.filesCatalogUpdated}
+                    />
                   )}
                   {canReadFiles && catalogStale && (
                     <p
@@ -535,11 +536,11 @@ function FileCenterContent({ user }: { user: User | null }) {
                             </Link>
                           )}
                           {row.modifiedAt && (
-                            <span className="shrink-0">
-                              {copy.filesModified(
-                                formatTimeAgo(row.modifiedAt, locale),
-                              )}
-                            </span>
+                            <FileRowModifiedLine
+                              modifiedAt={row.modifiedAt}
+                              locale={locale}
+                              label={copy.filesModified}
+                            />
                           )}
                         </div>
                       </div>
@@ -679,4 +680,30 @@ function FileCenterContent({ user }: { user: User | null }) {
       </Dialog>
     </WorkspaceContainer>
   );
+}
+
+function FileCatalogUpdatedLine({
+  catalogUpdatedAt,
+  locale,
+  label,
+}: {
+  catalogUpdatedAt: string;
+  locale: Locale;
+  label: (time: string) => string;
+}) {
+  const timeAgo = useTimeAgoText(catalogUpdatedAt, locale);
+  return <p className="text-muted-foreground">{label(timeAgo)}</p>;
+}
+
+function FileRowModifiedLine({
+  modifiedAt,
+  locale,
+  label,
+}: {
+  modifiedAt: string;
+  locale: Locale;
+  label: (time: string) => string;
+}) {
+  const timeAgo = useTimeAgoText(modifiedAt, locale);
+  return <span className="shrink-0">{label(timeAgo)}</span>;
 }

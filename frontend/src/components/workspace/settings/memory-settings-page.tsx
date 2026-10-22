@@ -24,12 +24,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
+import {
+  TimeAgo,
+  useRelativeTimesReady,
+} from "@/components/workspace/time-ago";
 import { useAuth } from "@/core/auth/AuthProvider";
 import {
   getMissingPermissions,
   hasPermission,
   PERMISSIONS,
 } from "@/core/auth/permissions";
+import type { Locale } from "@/core/i18n";
 import { useI18n } from "@/core/i18n/hooks";
 import { exportMemory } from "@/core/memory/api";
 import {
@@ -51,7 +56,10 @@ import {
 } from "@/core/streamdown/components";
 import { streamdownPlugins } from "@/core/streamdown/plugins";
 import { pathOfThread } from "@/core/threads/utils";
-import { formatTimeAgo } from "@/core/utils/datetime";
+import {
+  formatTimeAgo,
+  TIME_AGO_HYDRATION_PLACEHOLDER,
+} from "@/core/utils/datetime";
 
 import { SettingsSection } from "./settings-section";
 
@@ -155,9 +163,25 @@ function confidenceToLevelKey(confidence: unknown): {
   return { key: "normal", value };
 }
 
+function relativeTimeForMarkdown(
+  date: Date | string | number | undefined,
+  locale: Locale,
+  relativeTimesReady: boolean,
+): string {
+  if (!date) {
+    return TIME_AGO_HYDRATION_PLACEHOLDER;
+  }
+  if (!relativeTimesReady) {
+    return TIME_AGO_HYDRATION_PLACEHOLDER;
+  }
+  return formatTimeAgo(date, locale);
+}
+
 function formatMemorySection(
   section: MemorySection,
   t: ReturnType<typeof useI18n>["t"],
+  locale: Locale,
+  relativeTimesReady: boolean,
 ): string {
   const content =
     section.summary.trim() ||
@@ -167,7 +191,7 @@ function formatMemorySection(
     content,
     "",
     section.updatedAt &&
-      `> ${t.settings.memory.markdown.updatedAt}: \`${formatTimeAgo(section.updatedAt)}\``,
+      `> ${t.settings.memory.markdown.updatedAt}: \`${relativeTimeForMarkdown(section.updatedAt, locale, relativeTimesReady)}\``,
   ]
     .filter(Boolean)
     .join("\n");
@@ -225,18 +249,20 @@ function summariesToMarkdown(
   memory: UserMemory,
   sectionGroups: MemorySectionGroup[],
   t: ReturnType<typeof useI18n>["t"],
+  locale: Locale,
+  relativeTimesReady: boolean,
 ) {
   const parts: string[] = [];
 
   parts.push(`## ${t.settings.memory.markdown.overview}`);
   parts.push(
-    `- **${t.common.lastUpdated}**: \`${formatTimeAgo(memory.lastUpdated)}\``,
+    `- **${t.common.lastUpdated}**: \`${relativeTimeForMarkdown(memory.lastUpdated, locale, relativeTimesReady)}\``,
   );
 
   for (const group of sectionGroups) {
     parts.push(`\n## ${group.title}`);
     for (const section of group.sections) {
-      parts.push(formatMemorySection(section, t));
+      parts.push(formatMemorySection(section, t, locale, relativeTimesReady));
     }
   }
 
@@ -285,7 +311,8 @@ function upperFirst(str: string) {
 }
 
 export function MemorySettingsPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const relativeTimesReady = useRelativeTimesReady();
   const { user } = useAuth();
   const canReadMemory = hasPermission(user, PERMISSIONS.MEMORY_READ);
   const canWriteMemory = hasPermission(user, PERMISSIONS.MEMORY_WRITE);
@@ -900,7 +927,13 @@ export function MemorySettingsPage() {
                     a: createMarkdownLinkComponent(),
                   })}
                 >
-                  {summariesToMarkdown(memory, filteredSectionGroups, t)}
+                  {summariesToMarkdown(
+                    memory,
+                    filteredSectionGroups,
+                    t,
+                    locale,
+                    relativeTimesReady,
+                  )}
                 </SafeStreamdown>
               </div>
             ) : null}
@@ -947,7 +980,7 @@ export function MemorySettingsPage() {
                                 <span className="text-muted-foreground">
                                   {t.settings.memory.markdown.table.createdAt}:
                                 </span>{" "}
-                                {formatTimeAgo(fact.createdAt)}
+                                <TimeAgo date={fact.createdAt} />
                               </span>
                               <span>
                                 <span className="text-muted-foreground">
@@ -1304,9 +1337,11 @@ export function MemorySettingsPage() {
                 <span className="text-muted-foreground">
                   {t.common.lastUpdated}:
                 </span>{" "}
-                {pendingImport.memory.lastUpdated
-                  ? formatTimeAgo(pendingImport.memory.lastUpdated)
-                  : "-"}
+                {pendingImport.memory.lastUpdated ? (
+                  <TimeAgo date={pendingImport.memory.lastUpdated} />
+                ) : (
+                  TIME_AGO_HYDRATION_PLACEHOLDER
+                )}
               </div>
             </div>
           ) : null}

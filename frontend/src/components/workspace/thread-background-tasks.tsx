@@ -23,6 +23,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { useTimeAgoText } from "@/components/workspace/time-ago";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import {
@@ -36,7 +37,6 @@ import {
 } from "@/core/background-tasks";
 import { useMcpTasksEnabled } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import { cn } from "@/lib/utils";
 
 export function ThreadBackgroundTasks({ threadId }: { threadId: string }) {
@@ -218,6 +218,8 @@ function BackgroundTaskCard({
   onCancel?: (taskId: string) => void;
 }) {
   const { t } = useI18n();
+  const createdAgo = useTimeAgoText(task.created_at);
+  const updatedAgo = useTimeAgoText(task.updated_at);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsQuery = useBackgroundTask(threadId, task.task_id, {
     enabled: detailsOpen,
@@ -244,10 +246,10 @@ function BackgroundTaskCard({
           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
             <span className="flex items-center gap-1">
               <Clock3Icon className="size-3" />
-              {t.backgroundTasks.created(formatTimeAgo(task.created_at))}
+              {t.backgroundTasks.created(createdAgo)}
             </span>
             <span>
-              {t.backgroundTasks.updated(formatTimeAgo(task.updated_at))}
+              {t.backgroundTasks.updated(updatedAgo)}
             </span>
           </div>
         </div>

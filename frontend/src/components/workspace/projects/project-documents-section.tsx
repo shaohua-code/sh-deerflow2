@@ -36,6 +36,7 @@ import {
   ArtifactFilePreview,
   formatArtifactBytes,
 } from "@/components/workspace/artifacts/artifact-file-preview";
+import { TimeAgo } from "@/components/workspace/time-ago";
 import { getTabularDelimiter } from "@/core/artifacts/preview";
 import {
   resolveArtifactOpenURL,
@@ -71,7 +72,6 @@ import {
   pathOfThread,
   titleOfThread,
 } from "@/core/threads/utils";
-import { formatTimeAgo } from "@/core/utils/datetime";
 import { getFileIcon } from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
@@ -513,7 +513,7 @@ function ProjectDocumentRow({
         <div className="text-muted-foreground text-xs">
           {formatArtifactBytes(document.size_bytes)}
           {" · "}
-          {formatTimeAgo(document.updated_at)}
+          <TimeAgo date={document.updated_at} />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -973,7 +973,7 @@ function ConversationFileGroup({
                 <span className="text-muted-foreground text-xs">
                   {formatArtifactBytes(file.size_bytes)}
                   {" · "}
-                  {formatTimeAgo(file.modified_at)}
+                  <TimeAgo date={file.modified_at} />
                 </span>
               </div>
               <div className="flex shrink-0 items-center gap-1">
