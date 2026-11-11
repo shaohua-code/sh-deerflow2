@@ -70,6 +70,8 @@ data_jobs = Table(
     Column("job_id", String(36), nullable=False),
     Column("owner_user_id", String(255), nullable=False),
     Column("kind", String(24), nullable=False),
+    # 数据任务列表按这个路由授权键先过滤，再分页；nullable 供旧进程滚动升级期间兼容。
+    Column("authorization_key", String(64), nullable=True),
     Column("idempotency_key", String(128), nullable=False),
     Column("request_id", String(128), nullable=True),
     Column("scope", JSON, nullable=False),
@@ -179,6 +181,13 @@ Index(
     data_jobs.c.created_at,
 )
 Index("ix_flowdesk_data_jobs_owner_created", data_jobs.c.owner_user_id, data_jobs.c.created_at)
+Index(
+    "ix_flowdesk_data_jobs_owner_authorization_created",
+    data_jobs.c.owner_user_id,
+    data_jobs.c.authorization_key,
+    data_jobs.c.created_at,
+    data_jobs.c.job_id,
+)
 Index(
     "uq_flowdesk_data_jobs_active_owner",
     data_jobs.c.owner_user_id,
