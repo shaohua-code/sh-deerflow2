@@ -1031,6 +1031,8 @@ export const enUS: Translations = {
       "You do not have permission to view conversations. Ask your administrator for threads:read.",
     writePermissionRequired:
       "You do not have permission to update conversations. Ask your administrator for threads:write.",
+    createPermissionRequired:
+      "You do not have permission to start a new conversation. Ask your administrator to grant it in the identity platform.",
     activeChats: "Recent chats",
     archivedChats: "Archived",
     archiveChat: "Archive chat",
@@ -2320,10 +2322,6 @@ export const enUS: Translations = {
     adminSetupRequiredTitle: "Administrator setup is required",
     adminSetupRequiredDescription:
       "An administrator account is required before new regular accounts can be created.",
-    orContinueWith: "Or continue with",
-    ssoHint:
-      "If your account uses single sign-on, sign in with the option below instead.",
-    continueWith: (provider: string) => `Continue with ${provider}`,
     noAccountSignUp: "Don't have an account? Sign up",
     haveAccountSignIn: "Already have an account? Sign in",
     backToHome: "← Back to home",

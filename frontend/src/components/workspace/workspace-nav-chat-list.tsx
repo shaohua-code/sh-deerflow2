@@ -15,10 +15,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentsApiEnabled } from "@/core/agents";
-import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
 import { getProductCopy } from "@/product/copy";
-import { useProductBootstrap } from "@/product/hooks";
+import { useIamResourceControl, useProductBootstrap } from "@/product/hooks";
 import {
   getVisibleProductNavigation,
   type ProductNavigationId,
@@ -26,13 +25,18 @@ import {
 
 export function WorkspaceNavChatList() {
   const { t, locale } = useI18n();
-  const { user } = useAuth();
   const productCopy = getProductCopy(locale);
   const pathname = usePathname();
   const { enabled: agentsEnabled, isError: agentsCapabilityError } =
     useAgentsApiEnabled();
   const { data: product } = useProductBootstrap();
-  const items = getVisibleProductNavigation(product?.features, pathname, user);
+  // 菜单显隐来自 IAM 资源树；null（未受控）时侧栏全量显示，undefined（解析中）时暂不显示。
+  const iamControl = useIamResourceControl();
+  const items = getVisibleProductNavigation(
+    product?.features,
+    pathname,
+    iamControl,
+  );
   const labels: Record<ProductNavigationId, string> = {
     overview: productCopy.overview,
     chats: t.sidebar.chats,

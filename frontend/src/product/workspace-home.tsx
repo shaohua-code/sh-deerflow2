@@ -48,7 +48,8 @@ import { fetchProductFiles, type ProductFileEntry } from "@/product/api";
 
 import { BrandMark } from "./brand-mark";
 import { getProductCopy } from "./copy";
-import { useProductBootstrap, useProductBrandName } from "./hooks";
+import { useProductBootstrap, useProductBrandName, useIamButton } from "./hooks";
+import { IAM_BUTTON_CODES } from "./iam-resources";
 
 const RECENT_FILE_LIMIT = 5;
 const ACTIVE_TASK_LIMIT = 5;
@@ -121,7 +122,10 @@ export function WorkspaceHome() {
   const canReadThreads = hasPermission(user, PERMISSIONS.THREADS_READ);
   const canReadAgents = hasPermission(user, PERMISSIONS.AGENTS_READ);
   const canReadProjects = hasPermission(user, PERMISSIONS.PROJECTS_READ);
-  const canCreateRuns = hasPermission(user, PERMISSIONS.RUNS_CREATE);
+  // 所有「开始对话 / 快速开始」入口都是新会话，一并受 IAM 按钮码约束。
+  const iamCanCreateChat = useIamButton(IAM_BUTTON_CODES.chatCreate);
+  const canCreateRuns =
+    hasPermission(user, PERMISSIONS.RUNS_CREATE) && iamCanCreateChat;
   // 总览会话、运行状态与最近文件分别复用 Gateway 路由授权；显式撤权时不显示缓存。
   const showRecentThreads = showChats && canReadThreads;
   const showStartChat = showChats && canCreateRuns;

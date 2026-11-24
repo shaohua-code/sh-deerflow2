@@ -412,6 +412,52 @@ function isProductApiRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * `/api/v1/auth/iam/resources` 响应。controlled=false 表示本次会话不受管控
+ * （纯本地账号或 IAM 暂不可达降级）；受控时 menus / buttons 仅含已授权的码。
+ */
+export type IamResourcesResponse = {
+  controlled: boolean;
+  menus: string[];
+  buttons: string[];
+};
+
+function isIamCodeList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((code) => typeof code === "string" && code.length > 0)
+  );
+}
+
+function isIamResourcesResponse(value: unknown): value is IamResourcesResponse {
+  return (
+    isProductApiRecord(value) &&
+    typeof value.controlled === "boolean" &&
+    isIamCodeList(value.menus) &&
+    isIamCodeList(value.buttons)
+  );
+}
+
+/**
+ * 拉取当前会话的 IAM 资源授权。菜单与按钮显隐的唯一数据源：Gateway 用服务端
+ * 保管的 IAM 令牌调用 my-resources，浏览器永远接触不到 IAM 访问令牌本身。
+ */
+export async function fetchIamResources(
+  signal?: AbortSignal,
+): Promise<IamResourcesResponse> {
+  const response = await fetchWithAuth("/api/v1/auth/iam/resources", {
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to load IAM resources (${response.status})`);
+  }
+  const payload: unknown = await response.json();
+  if (!isIamResourcesResponse(payload)) {
+    throw new Error("The IAM resources API returned an unsupported response");
+  }
+  return payload;
+}
+
+/**
  * 读取登录用户的自有产品配置。新增产品 API 时复用这里的 fetchWithAuth，
  * 不要裸用浏览器 fetch，否则跨站 Cookie / CSRF 语义容易和 Gateway 不一致。
  */

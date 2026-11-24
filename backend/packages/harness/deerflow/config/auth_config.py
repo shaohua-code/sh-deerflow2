@@ -27,6 +27,12 @@ class OIDCProviderConfig(BaseModel):
         default=False,
         description=("Persist this provider's IAM access/refresh tokens in the encrypted Gateway vault. Requires the offline_access scope and DEERFLOW_IAM_TOKEN_ENCRYPTION_KEY."),
     )
+    # 资源所有者密码授权（ROPC）：部署方明确信任的第一方应用才可开启；
+    # 开启后 POST /api/v1/auth/login/iam 会把登录页凭据转发该 provider 的 token 端点。
+    password_grant_login: bool = Field(
+        default=False,
+        description=("Allow the resource-owner password grant (ROPC) on POST /api/v1/auth/login/iam for this provider. Only for deployment-trusted first-party apps."),
+    )
 
     @model_validator(mode="after")
     def require_refresh_scope_for_iam_vault(self) -> OIDCProviderConfig:

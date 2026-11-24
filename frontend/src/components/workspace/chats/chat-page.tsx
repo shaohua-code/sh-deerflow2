@@ -72,6 +72,8 @@ import {
 import { projectIdOfThread, textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { useIamResourceControl } from "@/product/hooks";
+import { IAM_BUTTON_CODES, isIamButtonGranted } from "@/product/iam-resources";
 import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
 import { ChatBox } from "./chat-box";
@@ -81,11 +83,21 @@ import { useThreadChat } from "./use-thread-chat";
 export default function ChatPage() {
   const { t } = useI18n();
   const { user } = useAuth();
-  const canStopStreaming = hasPermission(user, PERMISSIONS.RUNS_CANCEL);
+  // IAM 资源管控同时约束「停止生成」与「新建会话」两个按钮，三态口径见 IamResourceControlState。
+  const iamControl = useIamResourceControl();
+  // 停止按钮：角色权限与 IAM 按钮码须同时放行（IAM 未受控时只看角色权限）。
+  const canStopStreaming =
+    hasPermission(user, PERMISSIONS.RUNS_CANCEL) &&
+    isIamButtonGranted(iamControl, IAM_BUTTON_CODES.runCancel);
   const router = useRouter();
   const searchParams = useSearchParams();
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  // IAM 未授权「新建会话」时新会话页不提供输入框；已有会话继续对话不受该按钮约束。
+  const newChatBlocked =
+    isNewThread && !isIamButtonGranted(iamControl, IAM_BUTTON_CODES.chatCreate);
+  // 新会话页在 IAM 授权解析完成前不渲染：避免未授权用户先闪现输入框、已授权用户先闪现提示。
+  const iamResolving = isNewThread && iamControl === undefined;
   const canReadCurrentThread =
     isNewThread || isMock || hasPermission(user, PERMISSIONS.THREADS_READ);
   // Project-scoped new chat: `/workspace/chats/new?project={id}` assigns the
@@ -395,6 +407,23 @@ export default function ChatPage() {
     !isNewThread && !isMock && threadMetadata.data
       ? projectIdOfThread(threadMetadata.data)
       : null;
+
+  if (iamResolving) {
+    return <main aria-busy="true" className="size-full" />;
+  }
+
+  if (newChatBlocked) {
+    return (
+      <main className="flex size-full items-center justify-center p-6">
+        <div
+          role="alert"
+          className="text-muted-foreground max-w-md rounded-xl border p-6 text-center"
+        >
+          {t.chats.createPermissionRequired}
+        </div>
+      </main>
+    );
+  }
 
   if (!canReadCurrentThread) {
     return (

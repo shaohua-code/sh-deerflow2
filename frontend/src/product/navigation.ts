@@ -8,15 +8,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import {
-  getPermissionState,
-  PERMISSIONS,
-  type RoutePermission,
-} from "@/core/auth/permissions";
-import type { User } from "@/core/auth/types";
-
 import type { ProductFeatureKey } from "./api";
 import { isProductFeatureEnabled } from "./features";
+import { isIamMenuGranted, type IamResourceControlState } from "./iam-resources";
 
 /** 产品导航使用稳定 ID 做本地化映射，不把展示文字或路由散落在工作台组件里。 */
 export type ProductNavigationId =
@@ -36,17 +30,16 @@ type ProductNavigationItem = {
   activeMatch: "exact" | "section";
   /** 智能体页还要检查 Gateway 能力；不可用时保留入口并解释原因。 */
   gatewayCapability?: "agents";
-  /** 页面入口的一组 Gateway 权限，组内全部满足时即可显示。 */
-  permissions?: readonly RoutePermission[];
-  /** 任一权限组完整满足即可显示，例如仅可创建的用户也能进入任务页。 */
-  permissionAlternatives?: readonly (readonly RoutePermission[])[];
+  /** IAM 资源树中的菜单码；菜单显隐是唯一权限管控点（与 IAM 侧登记一致）。 */
+  iamMenuCode: string;
 };
 
 /**
  * Flow Desk 自有导航目录。
  *
  * 如果 DeerFlow 调整工作台侧栏结构，应优先复核这份目录和产品 renderer，
- * 而不是把品牌路由继续写进上游导航组件；feature 仅控制展示，授权仍由 Gateway 校验。
+ * 而不是把品牌路由继续写进上游导航组件；feature 仅控制展示，
+ * 菜单显隐由 IAM 资源树（iamMenuCode）决定，其余能力不再做权限管控。
  */
 export const productNavigation: readonly ProductNavigationItem[] = [
   {
@@ -55,6 +48,7 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     feature: "overview",
     icon: LayoutDashboard,
     activeMatch: "exact",
+    iamMenuCode: "deerflow.overview",
   },
   {
     id: "chats",
@@ -62,7 +56,7 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     feature: "chats",
     icon: MessagesSquare,
     activeMatch: "exact",
-    permissions: [PERMISSIONS.THREADS_READ],
+    iamMenuCode: "deerflow.chats",
   },
   {
     id: "agents",
@@ -71,7 +65,7 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     icon: BotIcon,
     activeMatch: "section",
     gatewayCapability: "agents",
-    permissions: [PERMISSIONS.AGENTS_READ],
+    iamMenuCode: "deerflow.agents",
   },
   {
     id: "scheduledTasks",
@@ -79,10 +73,7 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     feature: "scheduled_tasks",
     icon: CalendarClock,
     activeMatch: "section",
-    permissions: [PERMISSIONS.THREADS_READ],
-    permissionAlternatives: [
-      [PERMISSIONS.THREADS_WRITE, PERMISSIONS.RUNS_CREATE],
-    ],
+    iamMenuCode: "deerflow.scheduled-tasks",
   },
   {
     id: "files",
@@ -90,7 +81,7 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     feature: "files",
     icon: FilesIcon,
     activeMatch: "section",
-    permissions: [PERMISSIONS.THREADS_READ, PERMISSIONS.PROJECTS_READ],
+    iamMenuCode: "deerflow.files",
   },
   {
     id: "capabilities",
@@ -98,32 +89,28 @@ export const productNavigation: readonly ProductNavigationItem[] = [
     feature: "capabilities",
     icon: BlocksIcon,
     activeMatch: "section",
+    iamMenuCode: "deerflow.capabilities",
   },
 ];
 
 /**
- * 依产品展示开关和已核实的路由权限筛选导航，再计算当前路由状态。
- * 会话列表由 threads:read 保护；定时任务支持读取，或 threads:write + runs:create 的创建组合；Agent 列表由 agents:read 保护，文件中心需要 threads:read 和 projects:read；
- * 权限未解析时兼容显示。Agent 功能能力仍由 renderer 单独检查，避免混淆 IAM 与部署开关。
+ * 依产品展示开关和 IAM 菜单码筛选导航，再计算当前路由状态。
+ *
+ * 菜单显隐是 IAM 的管控点之一，三态口径见 IamResourceControlState：
+ * 未受控（null）时全量显示，避免 IAM 抖动吞掉侧栏；解析中（undefined）暂不显示，
+ * 避免未授权菜单先闪现再收起；受控时只显示 IAM 资源树已授权的菜单。
+ * Agent 功能能力仍由 renderer 单独检查。
  */
 export function getVisibleProductNavigation(
   features: Partial<Record<ProductFeatureKey, boolean>> | undefined,
   pathname: string | null,
-  user?: Pick<User, "permissions"> | null,
+  iamControl: IamResourceControlState,
 ) {
   return productNavigation
     .filter(
       (item) =>
         isProductFeatureEnabled(features, item.feature) &&
-        ((!item.permissions && !item.permissionAlternatives) ||
-          item.permissions?.every(
-            (permission) => getPermissionState(user, permission) !== "denied",
-          ) === true ||
-          item.permissionAlternatives?.some((group) =>
-            group.every(
-              (permission) => getPermissionState(user, permission) !== "denied",
-            ),
-          ) === true),
+        isIamMenuGranted(iamControl, item.iamMenuCode),
     )
     .map((item) => ({
       ...item,

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, field_validator
@@ -24,8 +25,8 @@ from app.gateway.auth import (
 )
 from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
-from app.gateway.auth.iam_token_vault import IamTokenVaultError, delete_iam_session, persist_iam_authentication
-from app.gateway.auth.oidc import OIDCError, OIDCService
+from app.gateway.auth.iam_token_vault import IamTokenVaultError, delete_iam_session, load_iam_authorization_attributes, persist_iam_authentication
+from app.gateway.auth.oidc import OIDCError, OIDCProviderError, OIDCService, OIDCValidationError
 from app.gateway.auth.oidc_state import (
     OIDCStatePayload,
     compute_code_challenge,
@@ -58,6 +59,22 @@ class LoginResponse(BaseModel):
 
     expires_in: int  # seconds
     needs_setup: bool = False
+
+
+# Central IAM（统一身份平台）provider 固定 ID，与 config.yaml 的 providers 键一致。
+_IAM_PROVIDER_ID = "iam"
+
+
+class IamResourcesResponse(BaseModel):
+    """菜单与按钮显隐管控的数据源。
+
+    controlled=false 表示本次会话不受管控（全量显示）。受控时只回传 IAM 资源树
+    已授权节点的 code：menus 驱动侧栏显隐，buttons 驱动按钮显隐；数据规则不下发。
+    """
+
+    controlled: bool
+    menus: list[str] = Field(default_factory=list)
+    buttons: list[str] = Field(default_factory=list)
 
 
 # Top common-password blocklist. Drawn from the public SecLists "10k worst
@@ -469,6 +486,154 @@ async def login_local(
     )
 
 
+def _iam_password_provider_config() -> OIDCProviderConfig:
+    """Resolve the IAM provider allowed to serve password direct login (ROPC)."""
+    from deerflow.config.app_config import get_app_config
+
+    oidc_config = get_app_config().auth.oidc
+    if not oidc_config.enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SSO authentication is not enabled")
+    provider_config = oidc_config.providers.get(_IAM_PROVIDER_ID)
+    if provider_config is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown SSO provider: {_IAM_PROVIDER_ID}")
+    if getattr(provider_config, "password_grant_login", False) is not True:
+        # ROPC 仅对显式开启 password_grant_login 的 provider 开放（部署方信任的第一方应用）。
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Password login is not enabled for this provider")
+    return provider_config
+
+
+@router.post("/login/iam", response_model=LoginResponse)
+async def login_iam(
+    request: Request,
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    remember_me: bool = Form(default=True),
+):
+    """IAM 统一身份平台账号密码直登（ROPC，不做本地优先回落）。
+
+    登录页提交的凭据直接转发 IAM token 端点（grant_type=password，仅 trusted
+    客户端；IAM 侧自带三桶节流与统一 invalid_grant）。成功后开通/关联本地
+    账号、令牌写入加密库并签发本地会话；IAM 拒绝即登录失败。
+    """
+    provider_config = _iam_password_provider_config()
+
+    client_ip = _get_client_ip(request)
+    await _check_rate_limit(client_ip)
+
+    overrides = {
+        "authorization_endpoint": provider_config.authorization_endpoint,
+        "token_endpoint": provider_config.token_endpoint,
+        "userinfo_endpoint": provider_config.userinfo_endpoint,
+        "jwks_uri": provider_config.jwks_uri,
+    }
+    service = _get_oidc_service()
+    try:
+        metadata = await service.discover(provider_config.issuer, overrides)
+    except OIDCError as exc:
+        logger.error("OIDC discovery failed for IAM password login: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to connect to the identity platform")
+
+    invalid_credentials = AuthErrorResponse(
+        code=AuthErrorCode.INVALID_CREDENTIALS,
+        message="Incorrect email or password",
+    ).model_dump()
+    try:
+        authentication = await service.authenticate_password(
+            provider_id=_IAM_PROVIDER_ID,
+            metadata=metadata,
+            client_id=provider_config.client_id,
+            client_secret=provider_config.client_secret,
+            username=form_data.username,
+            password=form_data.password,
+            # 密码授权 scope 与 SSO 一致；IAM 侧硬编码白名单校验，不允许自扩。
+            scope=" ".join(provider_config.scopes),
+            auth_method=provider_config.token_endpoint_auth_method,
+        )
+    except OIDCProviderError as exc:
+        if exc.status_code == 429:
+            # IAM 三桶节流：透传 429 让登录页提示稍后再试，不折叠成密码错误。
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many login attempts. Please try again later.")
+        if exc.status_code == 400 and exc.error_code == "invalid_grant":
+            # 密码错误 / 无该应用租户授权：统一折叠为凭据错误，防账号枚举。
+            await _record_login_failure(client_ip)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=invalid_credentials)
+        # 其余（invalid_client / unauthorized_client / invalid_request …）是客户端或配置被拒，
+        # 与用户凭据无关：不计入失败桶，也不伪装成「密码错误」，避免把配置故障误导成账号问题。
+        logger.error("IAM password grant rejected: HTTP %s (error=%s)", exc.status_code, exc.error_code)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to connect to the identity platform")
+    except OIDCValidationError:
+        await _record_login_failure(client_ip)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=invalid_credentials)
+    except OIDCError as exc:
+        # 网络抖动等传输层失败不消耗本地失败桶，也不暴露 IAM 地址或令牌信息。
+        logger.error("IAM password grant transport failure: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to connect to the identity platform")
+
+    identity = authentication.identity
+
+    # ── 开通 / 关联本地账号（与 SSO 回调同口径）──
+    try:
+        result = await get_or_provision_oidc_user(_IAM_PROVIDER_ID, provider_config, identity, get_local_provider())
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            # 同邮箱本地旧账号占用：绝不自动挂接 SSO 身份，提示管理员手动关联。
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=AuthErrorResponse(
+                    code=AuthErrorCode.EMAIL_ALREADY_EXISTS,
+                    message="An account with this email already exists. Contact your administrator to link it.",
+                ).model_dump(),
+            )
+        raise
+
+    user = result["user"]
+
+    if result.get("created") is True:
+        # 首次开通只审计账号 ID，不记录凭据、subject 或身份声明。
+        await notify_action_audit(
+            request,
+            action="auth.iam.provision",
+            resource_type="account",
+            resource_id=str(user.id),
+            actor_user_id=str(user.id),
+        )
+    else:
+        await notify_action_audit(
+            request,
+            action="auth.iam.password_login",
+            resource_type="account",
+            resource_id=str(user.id),
+            actor_user_id=str(user.id),
+        )
+
+    # ── 令牌写入加密库（菜单下发与后续 IAM 会话依赖它）──
+    iam_session_id: str | None = None
+    if provider_config.iam_token_vault_enabled:
+        iam_session_id = str(uuid4())
+        try:
+            await persist_iam_authentication(
+                user=user,
+                session_id=iam_session_id,
+                provider_id=_IAM_PROVIDER_ID,
+                issuer=metadata.issuer,
+                authentication=authentication,
+            )
+        except IamTokenVaultError:
+            logger.warning("Failed to prepare IAM token vault for password login")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to prepare the identity session")
+
+    # ── 签发本地会话 ──
+    _record_login_success(client_ip)
+    token = create_access_token(str(user.id), token_version=user.token_version, session_id=iam_session_id)
+    _set_session_cookie(response, token, request, remember_me=remember_me)
+    _set_csrf_cookie(response, request)
+
+    return LoginResponse(
+        expires_in=get_auth_config().token_expiry_days * 24 * 3600,
+        needs_setup=user.needs_setup,
+    )
+
+
 def _local_registration_enabled() -> bool:
     """Whether visitors may self-register a local account.
 
@@ -650,6 +815,112 @@ async def get_me(request: Request):
         oauth_provider=user.oauth_provider,
         permissions=permissions,
     )
+
+
+def _resolve_oidc_provider_config(provider_id: object) -> OIDCProviderConfig | None:
+    """按 provider ID 读取 config.yaml 的 OIDC provider 配置；缺失返回 None。"""
+    from deerflow.config.app_config import get_app_config
+
+    if not isinstance(provider_id, str) or not provider_id:
+        return None
+    return get_app_config().auth.oidc.providers.get(provider_id)
+
+
+async def _fetch_iam_resource_tree(api_base_url: str, access_token: str, client_id: str) -> list[dict]:
+    """调用 IAM ``GET /api/v1/authorization/my-resources``，返回原始资源树。
+
+    与登录链路同用 httpx（只遵循环境变量代理），保证「能登录就能取到资源树」。
+    应用身份以服务端验签的 access token 为准；client_id 只做一致性校验。
+    任何传输/契约失败抛异常，由调用端点折叠为「未受控」降级；异常信息只含状态码，
+    不回显响应体。
+    """
+    endpoint = api_base_url.rstrip("/") + "/api/v1/authorization/my-resources"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
+            response = await client.get(
+                endpoint,
+                params={"client_id": client_id},
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            body = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"IAM my-resources failed: HTTP {exc.response.status_code}") from None
+    except httpx.RequestError:
+        raise RuntimeError("IAM my-resources is unavailable") from None
+    except ValueError:
+        raise RuntimeError("IAM returned an invalid resources response") from None
+    if not isinstance(body, list):
+        raise RuntimeError("IAM returned an invalid resources payload")
+    return body
+
+
+def _collect_iam_resource_codes(tree: object, menus: list[str], buttons: list[str]) -> None:
+    """深度优先收集资源树中的 menu / button 节点 code；数据规则不下发。
+
+    按钮挂在菜单的 children 里，必须递归到底才能收全；结构异常的节点直接跳过，
+    不让一个坏节点中断整棵树的收集。
+    """
+    if not isinstance(tree, list):
+        return
+    for node in tree:
+        if not isinstance(node, dict):
+            continue
+        code = node.get("code")
+        if isinstance(code, str) and code:
+            if node.get("resource_type") == "menu":
+                menus.append(code)
+            elif node.get("resource_type") == "button":
+                buttons.append(code)
+        _collect_iam_resource_codes(node.get("children"), menus, buttons)
+
+
+@router.get("/iam/resources", response_model=IamResourcesResponse)
+async def get_iam_resources(request: Request):
+    """下发当前会话的 IAM 资源授权（菜单与按钮显隐的唯一数据源）。
+
+    - IAM 会话（provider 开启令牌加密库且令牌可读）：用服务端保管的 access
+      token 调 IAM my-resources，只回传已授权的菜单码与按钮码，前端据此显隐。
+    - 纯本地账号（无 IAM 身份）或 IAM 暂不可达：controlled=false，前端全量
+      显示——管控只约束 IAM 会话，接口判权等其余能力不受影响。
+    """
+    user = await get_current_user_from_request(request)
+    provider_config = _resolve_oidc_provider_config(getattr(user, "oauth_provider", None))
+    if provider_config is None or getattr(provider_config, "iam_token_vault_enabled", False) is not True:
+        return IamResourcesResponse()
+
+    try:
+        attributes = await load_iam_authorization_attributes(
+            user=user,
+            # 中间件解析会话时已把 JWT sid 落在 request.state；这里是加密库定位键。
+            session_id=getattr(request.state, "iam_session_id", None),
+            provider_configs={user.oauth_provider: provider_config},
+            oidc_service=_get_oidc_service(),
+        )
+    except Exception as exc:
+        # 与 logout 同口径：只记异常类型名，数据库异常可能含 SQL 细节，不输出堆栈。
+        logger.warning("Could not resolve the IAM session for menu/button resources (%s)", type(exc).__name__)
+        return IamResourcesResponse()
+    # 令牌库返回的是 Mapping 能力对象，access token 位于 iam_access_token 键；
+    # 读取时若已过期会得到空串，按未受控处理。
+    credentials = attributes.get("iam_credentials")
+    access_token = credentials.get("iam_access_token") if credentials is not None else None
+    if not isinstance(access_token, str) or not access_token:
+        return IamResourcesResponse()
+
+    try:
+        # IAM 基地址复用 OIDC issuer（同一服务，管理 API 与 OIDC 端点同源）。
+        tree = await _fetch_iam_resource_tree(provider_config.issuer, access_token, provider_config.client_id)
+    except Exception as exc:
+        # IAM 不可达时不吞掉整个侧栏：按未受控降级，下次刷新自动恢复管控。
+        # 取数函数的异常信息只含状态码，可直接记录；不输出可能携带令牌的堆栈。
+        logger.warning("IAM my-resources request failed; serving menus and buttons uncontrolled: %s", exc)
+        return IamResourcesResponse()
+
+    menus: list[str] = []
+    buttons: list[str] = []
+    _collect_iam_resource_codes(tree, menus, buttons)
+    return IamResourcesResponse(controlled=True, menus=menus, buttons=buttons)
 
 
 # ── Personal Access Tokens (#4849) ────────────────────────────────────────

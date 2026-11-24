@@ -37,9 +37,6 @@ export default function LoginPage() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLogin, setIsLogin] = useState(true);
-  const [ssoProviders, setSsoProviders] = useState<
-    { id: string; display_name: string; type: string }[]
-  >([]);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(
     null,
   );
@@ -56,11 +53,6 @@ export default function LoginPage() {
           t.login.authFailed)
       : "",
   );
-  // Soft hint shown after a failed login when SSO is configured: an SSO-only
-  // account has no local password, so the backend returns a generic
-  // "incorrect email or password" (deliberately, to avoid account enumeration).
-  // Nudge the user toward the SSO buttons without confirming the account exists.
-  const [showSsoHint, setShowSsoHint] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Get next parameter for validated redirect
@@ -121,35 +113,9 @@ export default function LoginPage() {
     };
   }, [setupStatusAttempt]);
 
-  // SSO providers are static for the page lifetime and should not be coupled to
-  // setup-status retries.
-  useEffect(() => {
-    let cancelled = false;
-
-    void fetch("/api/v1/auth/providers")
-      .then((r) => r.json())
-      .then(
-        (data: {
-          providers: { id: string; display_name: string; type: string }[];
-        }) => {
-          if (!cancelled) {
-            setSsoProviders(data.providers ?? []);
-          }
-        },
-      )
-      .catch(() => {
-        // Ignore errors; no SSO providers shown
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    setShowSsoHint(false);
     setLoading(true);
 
     if (!isLogin && !regularSignupAllowed) {
@@ -159,8 +125,9 @@ export default function LoginPage() {
     }
 
     try {
+      // 登录表单直接对接统一身份平台（IAM ROPC 直登），本地账号不再从登录页进入。
       const endpoint = isLogin
-        ? "/api/v1/auth/login/local"
+        ? "/api/v1/auth/login/iam"
         : "/api/v1/auth/register";
       const body = isLogin
         ? new URLSearchParams({
@@ -185,11 +152,6 @@ export default function LoginPage() {
         const data = await res.json();
         const authError = parseAuthError(data);
         setError(authError.message);
-        // On a failed login with SSO configured, surface a hint pointing at the
-        // SSO buttons — the "wrong password" may really mean "this is an SSO account".
-        if (isLogin && ssoProviders.length > 0) {
-          setShowSsoHint(true);
-        }
         return;
       }
 
@@ -345,43 +307,7 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        {ssoProviders.length > 0 && (
-          <div className="space-y-2">
-            {isLogin && (
-              <div className="relative my-4">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t" />
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-background text-muted-foreground px-2">
-                    {t.login.orContinueWith}
-                  </span>
-                </div>
-              </div>
-            )}
-            {showSsoHint && (
-              <p className="text-muted-foreground text-center text-sm">
-                {t.login.ssoHint}
-              </p>
-            )}
-            {ssoProviders.map((provider) => (
-              <Button
-                key={provider.id}
-                type="button"
-                variant="outline"
-                className="w-full"
-                disabled={loading}
-                onClick={() => {
-                  // OAuth 启动接口会响应外部身份提供方跳转，整页导航用于接收回调 Cookie。
-                  // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- 此处是 OAuth API 入口而非 Next 页面。
-                  window.location.href = `/api/v1/auth/oauth/${provider.id}?next=${encodeURIComponent(redirectPath)}&remember_me=${String(rememberMe)}`;
-                }}
-              >
-                {t.login.continueWith(provider.display_name)}
-              </Button>
-            ))}
-          </div>
-        )}
+        {/* IAM 密码直登口径：SSO 跳转按钮不再展示；/api/v1/auth/oauth/{provider} 保留供集成使用。 */}
 
         {/* 预留一行高度，避免 Gateway 返回注册策略后登录表单上下跳动。 */}
         <div className="min-h-5 text-center text-sm">
@@ -391,7 +317,6 @@ export default function LoginPage() {
               onClick={() => {
                 setIsLogin(!isLogin);
                 setError("");
-                setShowSsoHint(false);
               }}
               className="text-blue-500 hover:underline"
             >

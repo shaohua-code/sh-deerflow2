@@ -845,6 +845,8 @@ export interface Translations {
     noActiveChats: string;
     readPermissionRequired: string;
     writePermissionRequired: string;
+    /** IAM 资源树未授权「新建会话」按钮时，新会话页的提示。 */
+    createPermissionRequired: string;
     activeChats: string;
     archivedChats: string;
     archiveChat: string;
@@ -1851,9 +1853,6 @@ export interface Translations {
     createAdminAccount: string;
     adminSetupRequiredTitle: string;
     adminSetupRequiredDescription: string;
-    orContinueWith: string;
-    ssoHint: string;
-    continueWith: (provider: string) => string;
     noAccountSignUp: string;
     haveAccountSignIn: string;
     backToHome: string;

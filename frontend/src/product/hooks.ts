@@ -8,10 +8,18 @@ import { isStaticWebsiteOnly } from "@/core/static-mode";
 import {
   fetchProductBootstrap,
   fetchProductDataCapabilities,
+  fetchIamResources,
+  type IamResourcesResponse,
   type ProductFeatureKey,
 } from "./api";
 import { getBrandName } from "./brand";
 import { isProductFeatureEnabled } from "./features";
+import {
+  type IamButtonCode,
+  type IamResourceControl,
+  type IamResourceControlState,
+  isIamButtonGranted,
+} from "./iam-resources";
 
 export const PRODUCT_DATA_CAPABILITIES_QUERY_KEY = [
   "product",
@@ -68,4 +76,40 @@ export function useProductBrandName(locale: string) {
 export function useProductFeature(feature: ProductFeatureKey) {
   const { data } = useProductBootstrap();
   return isProductFeatureEnabled(data?.features, feature);
+}
+
+export const IAM_RESOURCES_QUERY_KEY = ["iam", "resources"] as const;
+
+/** 把接口响应折叠为「已授权码表」；未受控（controlled=false）统一折叠为 null。 */
+function selectIamResourceControl(
+  data: IamResourcesResponse,
+): IamResourceControl | null {
+  return data.controlled ? { menus: data.menus, buttons: data.buttons } : null;
+}
+
+/**
+ * IAM 资源管控的唯一数据源（菜单 + 按钮），返回三态见 IamResourceControlState。
+ * 按账号分区缓存，身份切换后不复用上一用户的授权结果。
+ */
+export function useIamResourceControl(): IamResourceControlState {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+  const enabled = userId !== null && !isStaticWebsiteOnly();
+  const query = useQuery({
+    queryKey: [...IAM_RESOURCES_QUERY_KEY, userId],
+    queryFn: ({ signal }) => fetchIamResources(signal),
+    enabled,
+    retry: false,
+    staleTime: 60 * 1000,
+    select: selectIamResourceControl,
+  });
+  // 未登录，或从未成功且请求出错：按未受控降级（全量显示），下次刷新自动恢复管控。
+  // 已有成功快照时沿用它——后台刷新失败不能放宽权限。
+  if (!enabled || (query.isError && query.data === undefined)) return null;
+  return query.data;
+}
+
+/** 单个按钮是否可用（IAM 按钮码显隐），三态口径同 useIamResourceControl。 */
+export function useIamButton(code: IamButtonCode): boolean {
+  return isIamButtonGranted(useIamResourceControl(), code);
 }

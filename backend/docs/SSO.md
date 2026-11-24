@@ -294,6 +294,36 @@ The backend also rejects password change requests for OAuth users:
 }
 ```
 
+## IAM Password Direct Login (ROPC)
+
+When `auth.oidc.providers.iam.password_grant_login` is `true`, the login page posts the
+credentials to `POST /api/v1/auth/login/iam` (OAuth2 form: `username`, `password`,
+`remember_me`). The Gateway forwards them to the provider token endpoint with
+`grant_type=password` and then issues the same local session as the SSO callback
+(provisioning/linking, audit, encrypted token vault when `iam_token_vault_enabled`).
+There is no local-account fallback: IAM is the only credential source.
+
+- The provider must be a trusted client that accepts `client_secret_basic`. Under Basic
+  auth the request body carries neither `client_id` nor `client_secret`; strict providers
+  (the central IAM token endpoint included) reject the request as `invalid_request`
+  otherwise. The password grant and the authorization-code exchange follow this rule.
+- **Known gap:** `OIDCService.refresh_tokens` still sends `client_id` in the body under
+  Basic auth, so a refresh against the central IAM is rejected. Until that is fixed, menu
+  and button control degrades to `controlled=false` once the vault access token nears
+  expiry (IAM default lifetime: 30 minutes) and only recovers after a new login.
+- Error mapping: provider `invalid_grant` → 401 `invalid_credentials` (counted by the
+  local login throttle); provider 429 → 429; any other provider rejection (client or
+  configuration) → 502 and not counted as a failed login.
+
+## IAM Menu / Button Control
+
+`GET /api/v1/auth/iam/resources` (authenticated) calls IAM
+`GET /api/v1/authorization/my-resources` with the access token held in the token vault and
+returns only the granted codes: `{controlled, menus: string[], buttons: string[]}`.
+Non-IAM sessions, a missing vault session, or an unreachable IAM return
+`controlled=false`, and the frontend then shows every menu and button. Menu and button
+visibility is presentation only; it never replaces API authorization.
+
 ## Public API Endpoints
 
 | Endpoint | Description |
@@ -301,6 +331,8 @@ The backend also rejects password change requests for OAuth users:
 | `GET /api/v1/auth/providers` | Returns list of enabled SSO providers (safe metadata only) |
 | `GET /api/v1/auth/oauth/{provider}` | Initiates SSO login, redirects to the OIDC provider |
 | `GET /api/v1/auth/callback/{provider}` | OIDC callback — exchanges code, creates session, redirects to frontend |
+| `POST /api/v1/auth/login/iam` | Password direct login against the `iam` provider (ROPC); requires `password_grant_login: true` |
+| `GET /api/v1/auth/iam/resources` | Authenticated — menus and buttons granted through the IAM resource tree |
 
 ## Frontend Callback Flow
 

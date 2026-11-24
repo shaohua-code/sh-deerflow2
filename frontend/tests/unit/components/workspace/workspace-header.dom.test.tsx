@@ -9,6 +9,8 @@ rs.mock("next/navigation", () => ({
 rs.mock("@/product/hooks", () => ({
   useProductBrandName: () => "Flow Desk",
   useProductFeature: () => true,
+  // IAM 未受控时「新建对话」按钮放行；这些用例不覆盖 IAM 受控场景。
+  useIamButton: () => true,
 }));
 
 import { SidebarProvider } from "@/components/ui/sidebar";

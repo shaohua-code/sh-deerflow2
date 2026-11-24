@@ -63,6 +63,9 @@ rs.mock("@/core/auth/AuthProvider", () => ({
   }),
 }));
 
+// 项目页「新对话」入口受 IAM 按钮码管控；这些用例不覆盖 IAM 受控场景，按未受控放行。
+rs.mock("@/product/hooks", () => ({ useIamButton: () => true }));
+
 rs.mock("@/core/projects", () => ({
   PROJECTS_CONFIG_DEFAULT: {
     instructions_max_bytes: 8192,

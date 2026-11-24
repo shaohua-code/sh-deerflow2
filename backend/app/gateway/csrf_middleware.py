@@ -64,6 +64,8 @@ def should_check_csrf(request: Request) -> bool:
 _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/auth/login/local",
+        # IAM 账号密码直登与本地登录同一 posture：首登无 CSRF 令牌，仅做 Origin 校验。
+        "/api/v1/auth/login/iam",
         "/api/v1/auth/logout",
         "/api/v1/auth/register",
         "/api/v1/auth/initialize",

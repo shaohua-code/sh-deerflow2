@@ -22,6 +22,9 @@ rs.mock("@/core/agents", () => ({
 }));
 rs.mock("@/core/auth/AuthProvider", () => ({ useAuth }));
 
+// 卡片「对话」入口受 IAM 按钮码管控；这些用例不覆盖 IAM 受控场景，按未受控放行。
+rs.mock("@/product/hooks", () => ({ useIamButton: () => true }));
+
 rs.mock("@/core/i18n/hooks", () => ({ useI18n: () => ({ t: enUS }) }));
 
 afterEach(() => {

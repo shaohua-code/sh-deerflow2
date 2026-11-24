@@ -6,7 +6,9 @@ generation, token exchange, ID token validation, and userinfo retrieval.
 
 from __future__ import annotations
 
+import base64
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -90,6 +92,16 @@ class OIDCError(Exception):
 class OIDCProviderError(OIDCError):
     """The OIDC provider returned an error (e.g. access_denied)."""
 
+    def __init__(self, message: str, status_code: int | None = None, error_code: str | None = None) -> None:
+        super().__init__(message)
+        # Optional upstream HTTP status (e.g. 429 rate limit) so callers can
+        # pass through backoff semantics without parsing provider text.
+        self.status_code = status_code
+        # Optional OAuth ``error`` code (a fixed enumeration such as
+        # ``invalid_grant``). It lets callers tell credential failures apart
+        # from client/configuration rejections without echoing provider text.
+        self.error_code = error_code
+
 
 class OIDCValidationError(OIDCError):
     """ID token validation failed."""
@@ -97,6 +109,21 @@ class OIDCValidationError(OIDCError):
 
 class OIDCUserInfoMismatch(OIDCError):
     """UserInfo sub is missing or does not match the ID token sub."""
+
+
+def _oauth_error_code(response: httpx.Response) -> str | None:
+    """Extract the OAuth ``error`` code from a provider error response.
+
+    Only a short snake_case token is kept: the ``error`` field is a fixed
+    enumeration, unlike ``error_description``, which may quote submitted
+    credentials or account identifiers and is therefore never read.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    code = payload.get("error") if isinstance(payload, dict) else None
+    return code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else None
 
 
 # ── Service ────────────────────────────────────────────────────────────────
@@ -222,20 +249,12 @@ class OIDCService:
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": client_id,
         }
         if code_verifier:
             data["code_verifier"] = code_verifier
 
         headers: dict[str, str] = {"Accept": "application/json"}
-
-        if auth_method == "client_secret_basic" and client_secret:
-            import base64
-
-            creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
-            headers["Authorization"] = f"Basic {creds}"
-        elif auth_method == "client_secret_post" and client_secret:
-            data["client_secret"] = client_secret
+        self._apply_client_auth(data, headers, client_id=client_id, client_secret=client_secret, auth_method=auth_method)
 
         try:
             resp = await self._http.post(metadata.token_endpoint, data=data, headers=headers)
@@ -250,6 +269,79 @@ class OIDCService:
             raise OIDCError(f"Token exchange failed: HTTP {exc.response.status_code} — {body}") from exc
         except httpx.RequestError as exc:
             raise OIDCError(f"Token exchange failed: {exc}") from exc
+
+    @staticmethod
+    def _apply_client_auth(
+        data: dict[str, str],
+        headers: dict[str, str],
+        *,
+        client_id: str,
+        client_secret: str | None,
+        auth_method: str,
+    ) -> None:
+        """Attach client authentication to a token-endpoint request.
+
+        ``client_secret_basic``: credentials travel only in the Authorization
+        header (form-encoded first, as RFC 6749 §2.3.1 requires) and the body
+        carries neither ``client_id`` nor ``client_secret``. Strict providers —
+        the central IAM token endpoint among them — reject a request that adds
+        a body ``client_id`` next to Basic auth as ``invalid_request``.
+        Any other method keeps the previous body behaviour: ``client_id`` is
+        always sent and ``client_secret_post`` adds the secret.
+        """
+        if auth_method == "client_secret_basic" and client_secret:
+            user_name = quote_plus(client_id, safe="")
+            password = quote_plus(client_secret, safe="")
+            creds = base64.b64encode(f"{user_name}:{password}".encode()).decode("ascii")
+            headers["Authorization"] = f"Basic {creds}"
+            return
+        data["client_id"] = client_id
+        if auth_method == "client_secret_post" and client_secret:
+            data["client_secret"] = client_secret
+
+    async def request_password_token(
+        self,
+        metadata: OIDCMetadata,
+        client_id: str,
+        client_secret: str | None,
+        username: str,
+        password: str,
+        scope: str,
+        auth_method: str = "client_secret_post",
+    ) -> dict[str, Any]:
+        """Request tokens via the resource-owner password credentials grant.
+
+        ROPC is OAuth 2.1-removed and only appropriate for deployment-trusted
+        first-party apps whose own login page collects credentials. Provider
+        rejections (invalid_grant, rate_limited, …) raise ``OIDCProviderError``
+        with the upstream status and OAuth error code attached so the router
+        can preserve 429 backoff, fold credential failures into one generic
+        message, and report client/configuration rejections as such.
+        """
+        data: dict[str, str] = {
+            "grant_type": "password",
+            "username": username,
+            "password": password,
+            "scope": scope,
+        }
+        headers: dict[str, str] = {"Accept": "application/json"}
+        self._apply_client_auth(data, headers, client_id=client_id, client_secret=client_secret, auth_method=auth_method)
+
+        try:
+            resp = await self._http.post(metadata.token_endpoint, data=data, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            # Never echo provider text: it may quote submitted credentials or
+            # account identifiers. The upstream status and OAuth error code are
+            # all callers need.
+            raise OIDCProviderError(
+                f"Password grant failed: HTTP {exc.response.status_code}",
+                status_code=exc.response.status_code,
+                error_code=_oauth_error_code(exc.response),
+            ) from None
+        except httpx.RequestError as exc:
+            raise OIDCError(f"Password grant failed: {exc}") from exc
 
     async def refresh_tokens(
         self,
@@ -268,15 +360,10 @@ class OIDCService:
         if not isinstance(refresh_token, str) or not refresh_token:
             raise OIDCError("OIDC refresh token is unavailable")
 
-        data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
         headers: dict[str, str] = {"Accept": "application/json"}
-        if auth_method == "client_secret_basic" and client_secret:
-            import base64
-
-            creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
-            headers["Authorization"] = f"Basic {creds}"
-        elif auth_method == "client_secret_post" and client_secret:
-            data["client_secret"] = client_secret
+        # 与授权码兑换、密码授权共用客户端认证：Basic 模式下表单不再携带 client_id。
+        self._apply_client_auth(data, headers, client_id=client_id, client_secret=client_secret, auth_method=auth_method)
 
         try:
             response = await self._http.post(metadata.token_endpoint, data=data, headers=headers)
@@ -537,6 +624,64 @@ class OIDCService:
             auth_method=auth_method,
         )
 
+        return await self._result_from_token_response(
+            provider_id=provider_id,
+            metadata=metadata,
+            client_id=client_id,
+            token_response=token_response,
+            nonce=nonce,
+        )
+
+    async def authenticate_password(
+        self,
+        provider_id: str,
+        metadata: OIDCMetadata,
+        client_id: str,
+        client_secret: str | None,
+        username: str,
+        password: str,
+        scope: str,
+        auth_method: str = "client_secret_post",
+    ) -> OIDCAuthenticationResult:
+        """Orchestrate the ROPC password grant: token request, ID token validation, userinfo.
+
+        Same result contract as ``authenticate_callback`` — verified identity
+        plus backend-only token material for the encrypted vault. There is no
+        nonce in this flow (no front-channel authorization request), so the ID
+        token nonce check is skipped.
+        """
+        token_response = await self.request_password_token(
+            metadata=metadata,
+            client_id=client_id,
+            client_secret=client_secret,
+            username=username,
+            password=password,
+            scope=scope,
+            auth_method=auth_method,
+        )
+
+        return await self._result_from_token_response(
+            provider_id=provider_id,
+            metadata=metadata,
+            client_id=client_id,
+            token_response=token_response,
+        )
+
+    async def _result_from_token_response(
+        self,
+        *,
+        provider_id: str,
+        metadata: OIDCMetadata,
+        client_id: str,
+        token_response: dict[str, Any],
+        nonce: str | None = None,
+    ) -> OIDCAuthenticationResult:
+        """Validate tokens and build the normalized authentication result.
+
+        Shared by the authorization-code callback and the ROPC password grant;
+        keeps identity/tenant boundaries anchored to the validated ID Token.
+        The nonce check applies only to the front-channel code flow.
+        """
         id_token = token_response.get("id_token")
         if not id_token:
             raise OIDCError("Token response is missing id_token")

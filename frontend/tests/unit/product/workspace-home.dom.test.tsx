@@ -85,6 +85,8 @@ rs.mock("@/core/agents/api", () => ({
 rs.mock("@/product/hooks", () => ({
   useProductBootstrap: () => ({ data: { features: mocks.features } }),
   useProductBrandName: () => "Flow Desk",
+  // IAM 未授权「新建会话」时为 false；这里保持原有行为（不受控即放行）。
+  useIamButton: () => true,
 }));
 rs.mock("@/product/api", () => ({
   fetchProductFiles: (...args: unknown[]) => mocks.fetchProductFiles(...args),

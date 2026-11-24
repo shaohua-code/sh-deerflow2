@@ -44,6 +44,8 @@ interface AgentCardProps {
   agent: Agent;
   canEdit?: boolean;
   canDelete?: boolean;
+  /** 是否显示「对话」入口（IAM 按钮码 deerflow.chats.new）；默认显示。 */
+  canChat?: boolean;
 }
 
 /**
@@ -113,6 +115,7 @@ export function AgentCard({
   agent,
   canEdit = true,
   canDelete = true,
+  canChat = true,
 }: AgentCardProps) {
   const displayName = agent.display_name?.length
     ? agent.display_name
@@ -205,18 +208,21 @@ export function AgentCard({
         )}
 
         <CardFooter className="mt-auto flex items-center justify-between gap-2 pt-3">
-          <Button
-            size="sm"
-            className="flex-1"
-            aria-label={chatLabel}
-            title={chatLabel}
-            onClick={handleChat}
-          >
-            <MessageSquareIcon className="mr-1.5 h-3.5 w-3.5" />
-            {t.agents.chat}
-          </Button>
+          {/* IAM 未授权「新建会话」时不渲染对话入口，操作按钮靠 ml-auto 保持靠右。 */}
+          {canChat && (
+            <Button
+              size="sm"
+              className="flex-1"
+              aria-label={chatLabel}
+              title={chatLabel}
+              onClick={handleChat}
+            >
+              <MessageSquareIcon className="mr-1.5 h-3.5 w-3.5" />
+              {t.agents.chat}
+            </Button>
+          )}
           {canEdit || canDelete ? (
-            <div className="flex gap-1">
+            <div className="ml-auto flex gap-1">
               {canEdit ? (
                 <Button
                   size="icon"

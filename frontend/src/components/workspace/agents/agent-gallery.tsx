@@ -17,6 +17,8 @@ import {
   PERMISSIONS,
 } from "@/core/auth/permissions";
 import { useI18n } from "@/core/i18n/hooks";
+import { useIamButton } from "@/product/hooks";
+import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 
 import { AgentCard } from "./agent-card";
 
@@ -26,6 +28,8 @@ export function AgentGallery() {
   const canRead = hasPermission(user, PERMISSIONS.AGENTS_READ);
   const canEdit = hasPermission(user, PERMISSIONS.AGENTS_WRITE);
   const canDelete = hasPermission(user, PERMISSIONS.AGENTS_DELETE);
+  // 卡片上的「对话」入口即新建会话，受 IAM 按钮码管控；未受控（null）时照常显示。
+  const canChat = useIamButton(IAM_BUTTON_CODES.chatCreate);
   const createPermissionsMissing = getMissingPermissions(user, [
     PERMISSIONS.AGENTS_READ,
     PERMISSIONS.AGENTS_WRITE,
@@ -164,6 +168,7 @@ export function AgentGallery() {
                   agent={agent}
                   canEdit={canEdit}
                   canDelete={canDelete}
+                  canChat={canChat}
                 />
               ))}
             </div>

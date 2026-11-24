@@ -62,6 +62,8 @@ import { getProjectPermissionAccess } from "@/core/projects/permissions";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
+import { useIamButton } from "@/product/hooks";
+import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).length;
@@ -92,6 +94,8 @@ export default function ProjectPage() {
   const { t } = useI18n();
   const { user } = useAuth();
   const access = getProjectPermissionAccess(user);
+  // 项目页「新对话」是新建会话入口：角色权限与 IAM 按钮码须同时放行（IAM 未受控时只看角色权限）。
+  const iamCanCreateChat = useIamButton(IAM_BUTTON_CODES.chatCreate);
   const { id: projectId } = useParams<{ id: string }>();
   const [tab, setTab] = useState("chats");
   const projectQuery = useProject(projectId, {
@@ -159,7 +163,7 @@ export default function ProjectPage() {
                 ) : null}
                 <ProjectHeader
                   project={project}
-                  canCreateChat={access.canCreateProjectChat}
+                  canCreateChat={access.canCreateProjectChat && iamCanCreateChat}
                   missingChatPermissions={getMissingPermissions(user, [
                     PERMISSIONS.THREADS_WRITE,
                     PERMISSIONS.RUNS_CREATE,
@@ -302,7 +306,10 @@ function ProjectHeader({
       )}
       {project.status !== "archived" && !canCreateChat && (
         <p role="status" className="text-muted-foreground w-full text-sm">
-          {t.agents.permissionActionsLimited(missingChatPermissions.join(", "))}
+          {/* 角色权限齐全但仍不可用，说明是 IAM 未授权「新建会话」按钮。 */}
+          {missingChatPermissions.length > 0
+            ? t.agents.permissionActionsLimited(missingChatPermissions.join(", "))
+            : t.chats.createPermissionRequired}
         </p>
       )}
     </header>

@@ -5,6 +5,9 @@ import {
   productNavigation,
 } from "@/product/navigation";
 
+/** IAM 侧登记的全部菜单码（与 productNavigation.iamMenuCode 一一对应）。 */
+const ALL_MENU_CODES = productNavigation.map((item) => item.iamMenuCode);
+
 describe("product workspace navigation", () => {
   it("keeps product routes in one directory and hides only disabled entries", () => {
     expect(productNavigation.map((item) => item.id)).toEqual([
@@ -16,6 +19,7 @@ describe("product workspace navigation", () => {
       "capabilities",
     ]);
 
+    // 菜单未受控（null）时只按产品展示开关过滤。
     const visible = getVisibleProductNavigation(
       {
         overview: true,
@@ -26,6 +30,7 @@ describe("product workspace navigation", () => {
         capabilities: false,
       },
       "/workspace",
+      null,
     );
 
     expect(visible.map((item) => item.id)).toEqual([
@@ -39,6 +44,7 @@ describe("product workspace navigation", () => {
     const agentPage = getVisibleProductNavigation(
       { overview: true, agents: true },
       "/workspace/agents/researcher",
+      null,
     );
 
     expect(agentPage.find((item) => item.id === "agents")?.isActive).toBe(true);
@@ -51,98 +57,80 @@ describe("product workspace navigation", () => {
     const agent = getVisibleProductNavigation(
       { agents: true },
       "/workspace/agents",
+      null,
     ).find((item) => item.id === "agents");
 
     expect(agent?.gatewayCapability).toBe("agents");
     expect(agent?.isActive).toBe(true);
   });
 
-  it("hides Agents only when the resolved route permissions explicitly deny access", () => {
-    // productFeatureDefaults 已默认开启核心入口，因此断言聚焦目标 entry
-    // 的存在性，而不是整份目录的长度。
-    expect(
-      getVisibleProductNavigation({ agents: true }, "/workspace/agents", {
-        permissions: ["threads:read"],
-      }).find((item) => item.id === "agents"),
-    ).toBeUndefined();
-
-    expect(
-      getVisibleProductNavigation({ agents: true }, "/workspace/agents", {
-        permissions: null,
-      }).find((item) => item.id === "agents")?.isActive,
-    ).toBe(true);
-  });
-
-  it("uses route permission groups for chats and scheduled tasks independently", () => {
+  it("shows every entry when the IAM control is unavailable", () => {
+    // null = 未受控（请求失败 / 纯本地账号 / IAM 明示不受控）：
+    // 菜单管控降级为全量显示，不能因为 IAM 抖动吞掉整个侧栏。
     const visible = getVisibleProductNavigation(
       { chats: true, agents: true, scheduled_tasks: true },
-      "/workspace/chats",
-      { permissions: ["agents:read"] },
+      "/workspace",
+      null,
     );
-
-    // 缺 threads:read 时 chats 与 scheduledTasks 被拒，agents 仍可见。
     const visibleIds = visible.map((item) => item.id);
-    expect(visibleIds).toContain("agents");
-    expect(visibleIds).not.toContain("chats");
-    expect(visibleIds).not.toContain("scheduledTasks");
-
-    const threadsAllowed = getVisibleProductNavigation(
-      { chats: true, agents: true, scheduled_tasks: true },
-      "/workspace/scheduled-tasks",
-      { permissions: ["threads:read"] },
+    expect(visibleIds).toEqual(
+      expect.arrayContaining(["chats", "agents", "scheduledTasks"]),
     );
+  });
 
-    const threadsAllowedIds = threadsAllowed.map((item) => item.id);
-    expect(threadsAllowedIds).toEqual(
+  it("renders nothing while the IAM control is still resolving", () => {
+    // undefined = 解析中：未授权菜单不能先全量闪现再收起，等结果出来再渲染。
+    const visible = getVisibleProductNavigation(
+      { chats: true, agents: true, scheduled_tasks: true },
+      "/workspace",
+      undefined,
+    );
+    expect(visible).toEqual([]);
+  });
+
+  it("hides only the menus the IAM resource tree did not grant", () => {
+    // IAM 勾选里没有 agents：智能体入口隐藏，其余照常。
+    const visible = getVisibleProductNavigation(
+      { chats: true, agents: true, scheduled_tasks: true },
+      "/workspace",
+      { menus: ALL_MENU_CODES.filter((code) => code !== "deerflow.agents"), buttons: [] },
+    );
+    const visibleIds = visible.map((item) => item.id);
+    expect(visibleIds).not.toContain("agents");
+    expect(visibleIds).toEqual(
       expect.arrayContaining(["chats", "scheduledTasks"]),
     );
-    expect(threadsAllowedIds).not.toContain("agents");
-    expect(
-      threadsAllowed.find((item) => item.id === "scheduledTasks")?.isActive,
-    ).toBe(true);
-
-    const createOnly = getVisibleProductNavigation(
-      { chats: true, scheduled_tasks: true },
-      "/workspace/scheduled-tasks",
-      { permissions: ["threads:write", "runs:create"] },
-    );
-    const createOnlyIds = createOnly.map((item) => item.id);
-    expect(createOnlyIds).toContain("scheduledTasks");
-    expect(createOnlyIds).not.toContain("chats");
-
-    const noTaskAccess = getVisibleProductNavigation(
-      { scheduled_tasks: true },
-      "/workspace/scheduled-tasks",
-      { permissions: ["threads:write", "runs:read"] },
-    );
-    expect(
-      noTaskAccess.find((item) => item.id === "scheduledTasks"),
-    ).toBeUndefined();
   });
 
-  it("keeps read-protected entries visible while permissions are unresolved", () => {
-    expect(
-      getVisibleProductNavigation(
-        { chats: true, agents: true, scheduled_tasks: true },
-        "/workspace",
-        { permissions: null },
-      ).map((item) => item.id),
-    ).toEqual(expect.arrayContaining(["chats", "agents", "scheduledTasks"]));
-  });
-
-  it("requires both verified read permissions before showing the file center", () => {
-    expect(
-      getVisibleProductNavigation({ files: true }, "/workspace/files", {
-        permissions: ["threads:read"],
-      }).find((item) => item.id === "files"),
-    ).toBeUndefined();
-
-    const files = getVisibleProductNavigation(
-      { files: true },
+  it("keeps every granted menu visible and active with full IAM grants", () => {
+    const visible = getVisibleProductNavigation(
+      { chats: true, agents: true, scheduled_tasks: true, files: true },
       "/workspace/files",
-      { permissions: ["threads:read", "projects:read"] },
+      { menus: ALL_MENU_CODES, buttons: [] },
     );
 
-    expect(files.find((item) => item.id === "files")?.isActive).toBe(true);
+    expect(visible.map((item) => item.id)).toEqual([
+      "overview",
+      "chats",
+      "agents",
+      "scheduledTasks",
+      "files",
+      "capabilities",
+    ]);
+    expect(visible.find((item) => item.id === "files")?.isActive).toBe(true);
+  });
+
+  it("keeps the IAM menu code list aligned with the directory", () => {
+    // 每个导航项必须带唯一的 IAM 菜单码，否则资源树勾选无法对应侧栏入口。
+    const codes = productNavigation.map((item) => item.iamMenuCode);
+    expect(new Set(codes).size).toBe(codes.length);
+    expect(codes).toEqual([
+      "deerflow.overview",
+      "deerflow.chats",
+      "deerflow.agents",
+      "deerflow.scheduled-tasks",
+      "deerflow.files",
+      "deerflow.capabilities",
+    ]);
   });
 });

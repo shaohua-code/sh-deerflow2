@@ -48,6 +48,8 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
 _PUBLIC_EXACT_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/auth/login/local",
+        # IAM 统一身份平台账号密码直登（ROPC）与本地登录同为匿名入口。
+        "/api/v1/auth/login/iam",
         "/api/v1/auth/register",
         "/api/v1/auth/logout",
         "/api/v1/auth/setup-status",

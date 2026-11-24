@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/dialog";
 import { useI18n } from "@/core/i18n/hooks";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
+import { useIamButton } from "@/product/hooks";
+import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 
 import { useSettingsDialog } from "./settings";
 
@@ -38,11 +40,15 @@ export function CommandPalette() {
   // 平台探测是静态浏览器快照，用 useSyncExternalStore 挂载后读取，
   // 服务端渲染保持 false，替代"effect 内同步 setState"的旧写法。
   const isMac = useSyncExternalStore(subscribeNoop, getIsMac, getIsMacServer);
+  // 「新建会话」受 IAM 按钮码管控：无权时命令项、快捷键与说明一并移除。
+  const canCreateChat = useIamButton(IAM_BUTTON_CODES.chatCreate);
 
   const handleNewChat = useCallback(() => {
+    // 处理函数内再判一次，防止无权时仍可通过其他触发路径进入新会话。
+    if (!canCreateChat) return;
     router.push("/workspace/chats/new");
     setOpen(false);
-  }, [router]);
+  }, [canCreateChat, router]);
 
   const handleOpenSettings = useCallback(() => {
     setOpen(false);
@@ -57,11 +63,14 @@ export function CommandPalette() {
   const shortcuts = useMemo(
     () => [
       { key: "k", meta: true, action: () => setOpen((o) => !o) },
-      { key: "n", meta: true, shift: true, action: handleNewChat },
+      // 无权新建会话时不注册快捷键，与命令项的显隐保持一致。
+      ...(canCreateChat
+        ? [{ key: "n", meta: true, shift: true, action: handleNewChat }]
+        : []),
       { key: ",", meta: true, action: handleOpenSettings },
       { key: "/", meta: true, action: handleShowShortcuts },
     ],
-    [handleNewChat, handleOpenSettings, handleShowShortcuts],
+    [canCreateChat, handleNewChat, handleOpenSettings, handleShowShortcuts],
   );
 
   useGlobalShortcuts(shortcuts);
@@ -76,14 +85,17 @@ export function CommandPalette() {
         <CommandList>
           <CommandEmpty>{t.shortcuts.noResults}</CommandEmpty>
           <CommandGroup heading={t.shortcuts.actions}>
-            <CommandItem onSelect={handleNewChat}>
-              <MessageSquarePlusIcon className="mr-2 h-4 w-4" />
-              {t.sidebar.newChat}
-              <CommandShortcut>
-                {metaKey}
-                {shiftKey}N
-              </CommandShortcut>
-            </CommandItem>
+            {/* IAM 未授权「新建会话」时不渲染该命令项。 */}
+            {canCreateChat && (
+              <CommandItem onSelect={handleNewChat}>
+                <MessageSquarePlusIcon className="mr-2 h-4 w-4" />
+                {t.sidebar.newChat}
+                <CommandShortcut>
+                  {metaKey}
+                  {shiftKey}N
+                </CommandShortcut>
+              </CommandItem>
+            )}
             <CommandItem onSelect={handleOpenSettings}>
               <SettingsIcon className="mr-2 h-4 w-4" />
               {t.common.settings}
@@ -109,7 +121,15 @@ export function CommandPalette() {
           <div className="space-y-3 text-sm">
             {[
               { keys: `${metaKey}K`, label: t.shortcuts.openCommandPalette },
-              { keys: `${metaKey}${shiftKey}N`, label: t.sidebar.newChat },
+              // 无权新建会话时快捷键说明同步隐藏。
+              ...(canCreateChat
+                ? [
+                    {
+                      keys: `${metaKey}${shiftKey}N`,
+                      label: t.sidebar.newChat,
+                    },
+                  ]
+                : []),
               { keys: `${metaKey}B`, label: t.shortcuts.toggleSidebar },
               { keys: `${metaKey},`, label: t.common.settings },
               {

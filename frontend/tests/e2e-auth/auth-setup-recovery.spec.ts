@@ -37,16 +37,6 @@ async function mockSetupStatusRecovery(
 }
 
 test.describe("auth setup-status recovery", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.route("**/api/v1/auth/providers", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ providers: [] }),
-      }),
-    );
-  });
-
   test("login restores registration after setup-status retry", async ({
     page,
   }) => {

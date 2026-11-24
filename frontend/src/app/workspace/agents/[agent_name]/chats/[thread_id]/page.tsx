@@ -76,6 +76,8 @@ import {
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { useIamResourceControl } from "@/product/hooks";
+import { IAM_BUTTON_CODES, isIamButtonGranted } from "@/product/iam-resources";
 import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
 export default function AgentChatPage() {
@@ -85,7 +87,17 @@ export default function AgentChatPage() {
   // 智能体会话的发送、续答与重新生成都创建 Gateway run。
   const submissionBlock = getChatSubmissionBlock(user);
   const canSubmit = submissionBlock === null;
-  const canStopStreaming = hasPermission(user, PERMISSIONS.RUNS_CANCEL);
+  // IAM 资源管控同时约束「停止生成」与「新建会话」两个按钮，三态口径见 IamResourceControlState。
+  const iamControl = useIamResourceControl();
+  // 停止按钮：角色权限与 IAM 按钮码须同时放行（IAM 未受控时只看角色权限）。
+  const canStopStreaming =
+    hasPermission(user, PERMISSIONS.RUNS_CANCEL) &&
+    isIamButtonGranted(iamControl, IAM_BUTTON_CODES.runCancel);
+  // 页头「新对话」按钮与下方的输入框共用同一个 IAM 按钮码。
+  const canCreateChat = isIamButtonGranted(
+    iamControl,
+    IAM_BUTTON_CODES.chatCreate,
+  );
   // 文本运行允许 `runs:create`，附件上传另由 Gateway 的 `threads:write` 保护。
   const canUploadFiles = hasPermission(user, PERMISSIONS.THREADS_WRITE);
   const router = useRouter();
@@ -104,6 +116,10 @@ export default function AgentChatPage() {
 
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  // IAM 未授权「新建会话」时新会话页不提供输入框；已有会话继续对话不受该按钮约束。
+  const newChatBlocked = isNewThread && !canCreateChat;
+  // 新会话页在 IAM 授权解析完成前不渲染：避免未授权用户先闪现输入框、已授权用户先闪现提示。
+  const iamResolving = isNewThread && iamControl === undefined;
   const canReadCurrentThread =
     canReadAgent &&
     (isNewThread || isMock || hasPermission(user, PERMISSIONS.THREADS_READ));
@@ -327,6 +343,23 @@ export default function AgentChatPage() {
     );
   }
 
+  if (iamResolving) {
+    return <main aria-busy="true" className="size-full" />;
+  }
+
+  if (newChatBlocked) {
+    return (
+      <main className="flex size-full items-center justify-center p-6">
+        <div
+          role="alert"
+          className="text-muted-foreground max-w-md rounded-xl border p-6 text-center"
+        >
+          {t.chats.createPermissionRequired}
+        </div>
+      </main>
+    );
+  }
+
   if (!canReadCurrentThread) {
     return (
       <main className="flex size-full items-center justify-center p-6">
@@ -394,19 +427,26 @@ export default function AgentChatPage() {
                   env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" && (
                     <ThreadSubagentBatches threadId={threadId} />
                   )}
-                <Tooltip content={t.agents.newChat}>
-                  <Button
-                    className="px-2 sm:px-3"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      router.push(`/workspace/agents/${agent_name}/chats/new`);
-                    }}
-                  >
-                    <PlusSquare />
-                    <span className="hidden sm:inline">{t.agents.newChat}</span>
-                  </Button>
-                </Tooltip>
+                {/* IAM 未授权「新建会话」时不渲染该按钮。 */}
+                {canCreateChat && (
+                  <Tooltip content={t.agents.newChat}>
+                    <Button
+                      className="px-2 sm:px-3"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        router.push(
+                          `/workspace/agents/${agent_name}/chats/new`,
+                        );
+                      }}
+                    >
+                      <PlusSquare />
+                      <span className="hidden sm:inline">
+                        {t.agents.newChat}
+                      </span>
+                    </Button>
+                  </Tooltip>
+                )}
                 {tokenUsageEnabled ? (
                   <TokenUsageIndicator
                     threadId={isNewThread ? undefined : threadId}

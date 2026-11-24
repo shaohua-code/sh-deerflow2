@@ -14,7 +14,8 @@ import { useI18n } from "@/core/i18n/hooks";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/product/brand-mark";
-import { useProductBrandName, useProductFeature } from "@/product/hooks";
+import { useIamButton, useProductBrandName, useProductFeature } from "@/product/hooks";
+import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 
 export function WorkspaceHeader({ className }: { className?: string }) {
@@ -22,6 +23,8 @@ export function WorkspaceHeader({ className }: { className?: string }) {
   const { state } = useSidebar();
   const brandName = useProductBrandName(locale);
   const chatsEnabled = useProductFeature("chats");
+  // 「新建对话」按钮受 IAM 按钮码管控；未受控（null）时照常显示。
+  const canCreateChat = useIamButton(IAM_BUTTON_CODES.chatCreate);
   const pathname = usePathname();
   return (
     <>
@@ -65,7 +68,7 @@ export function WorkspaceHeader({ className }: { className?: string }) {
           </div>
         )}
       </div>
-      {chatsEnabled && (
+      {chatsEnabled && canCreateChat && (
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton

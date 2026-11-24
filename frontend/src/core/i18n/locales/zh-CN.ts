@@ -959,6 +959,8 @@ export const zhCN: Translations = {
       "你没有查看会话的权限，请联系管理员开通 threads:read。",
     writePermissionRequired:
       "你没有修改会话的权限，请联系管理员开通 threads:write。",
+    createPermissionRequired:
+      "你没有新建会话的权限，请联系管理员在统一身份平台开通。",
     activeChats: "近期会话",
     archivedChats: "已归档",
     archiveChat: "归档",
@@ -2170,9 +2172,6 @@ export const zhCN: Translations = {
     adminSetupRequiredTitle: "需要先完成管理员初始化",
     adminSetupRequiredDescription:
       "请先创建管理员账号，然后才能创建新的普通账号。",
-    orContinueWith: "或使用以下方式登录",
-    ssoHint: "如果你的账号使用单点登录（SSO），请改用下方的选项登录。",
-    continueWith: (provider: string) => `使用 ${provider} 登录`,
     noAccountSignUp: "还没有账号？立即注册",
     haveAccountSignIn: "已有账号？立即登录",
     backToHome: "← 返回首页",
