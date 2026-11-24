@@ -16,8 +16,11 @@ dev:
 		--reload-exclude="$(BACKEND_SANDBOX_HOME)" \
 		--reload-exclude="$(DEER_FLOW_HOME)"
 
+# --loop forces a SelectorEventLoop: without --reload, uvicorn's Windows default
+# (ProactorEventLoop) is incompatible with psycopg async and crashes checkpointer
+# startup with a pool timeout. See app/gateway/event_loop.py.
 gateway:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run --locked uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run --locked uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop app.gateway.event_loop:selector_event_loop_factory
 
 test:
 	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run pytest -m "not live" --ignore=tests/blocking_io tests/ -v

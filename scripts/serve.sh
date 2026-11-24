@@ -493,9 +493,12 @@ run_service() {
 mkdir -p logs
 mkdir -p temp/client_body_temp temp/proxy_temp temp/fastcgi_temp temp/uwsgi_temp temp/scgi_temp
 
+# --loop forces a SelectorEventLoop: without --reload (prod/daemon), uvicorn's
+# Windows default loop (Proactor) is incompatible with psycopg async and crashes
+# checkpointer startup with a pool timeout. See backend/app/gateway/event_loop.py.
 # 1. Gateway API
 run_service "Gateway" \
-    "cd backend && PYTHONPATH=. uv run --no-sync uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1" \
+    "cd backend && PYTHONPATH=. uv run --no-sync uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop app.gateway.event_loop:selector_event_loop_factory $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1" \
     8001 30
 
 # 2. Frontend

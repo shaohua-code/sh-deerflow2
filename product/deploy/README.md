@@ -24,7 +24,7 @@ docker compose --env-file .env --project-name deer-flow `
 
 根目录 `.env` 设置 `UV_EXTRAS=postgres`、`POSTGRES_PASSWORD` 以及 `DATABASE_URL=postgresql://deerflow:<密码>@127.0.0.1:5433/deerflow`，再把 `config.postgres.fragment.yaml` 合并进 `config.yaml`。
 
-Windows 本机直接跑 uvicorn 且**没有** `--reload` 时，uvicorn 0.36 会使用 `ProactorEventLoop`，psycopg 无法连库。`make dev` 自带 `--reload`，会改用 Selector；只起 Gateway 时需加上 `--loop asyncio:SelectorEventLoop`。
+Windows 本机直接跑 uvicorn 且**没有** `--reload` 时，uvicorn 0.36 会使用 `ProactorEventLoop`，psycopg 无法连库，启动报 `psycopg_pool.PoolTimeout: couldn't get a connection after 30.00 sec`——这不是数据库故障。`make dev` 自带 `--reload`，会改用 Selector；单独起 Gateway 时需加上 `--loop app.gateway.event_loop:selector_event_loop_factory`（`backend/Makefile`、`scripts/serve.sh` 与 `docs/快速启动.md` 中的启动命令均已内置该标志，回归测试见 `backend/tests/test_gateway_event_loop.py`）。
 
 ## 首次构建前准备 Flow Desk 扩展
 
