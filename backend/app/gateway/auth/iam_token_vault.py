@@ -542,7 +542,8 @@ async def load_iam_authorization_attributes(
         return {}
     issuer = getattr(provider_config, "issuer", None)
     refresh_tokens = getattr(oidc_service, "refresh_tokens", None)
-    if not isinstance(issuer, str) or not issuer or not callable(refresh_tokens):
+    discover = getattr(oidc_service, "discover", None)
+    if not isinstance(issuer, str) or not issuer or not callable(refresh_tokens) or not callable(discover):
         return {}
 
     session_factory = get_session_factory()
@@ -551,7 +552,25 @@ async def load_iam_authorization_attributes(
     repository = IamTokenVaultRepository(session_factory, IamTokenVaultCipher.from_environment())
 
     async def refresh(refresh_token: str) -> object:
-        return await refresh_tokens(provider_config, refresh_token)
+        # OIDCService.refresh_tokens 的入参是端点元数据与客户端凭据，而不是 provider 配置：
+        # 先按 provider 配置发现端点（结果带缓存，显式配置的端点会覆盖发现值），再以与
+        # 登录链路一致的客户端认证发起刷新。
+        metadata = await discover(
+            issuer,
+            {
+                "authorization_endpoint": getattr(provider_config, "authorization_endpoint", None),
+                "token_endpoint": getattr(provider_config, "token_endpoint", None),
+                "userinfo_endpoint": getattr(provider_config, "userinfo_endpoint", None),
+                "jwks_uri": getattr(provider_config, "jwks_uri", None),
+            },
+        )
+        return await refresh_tokens(
+            metadata,
+            client_id=getattr(provider_config, "client_id", None),
+            client_secret=getattr(provider_config, "client_secret", None),
+            refresh_token=refresh_token,
+            auth_method=getattr(provider_config, "token_endpoint_auth_method", "client_secret_post"),
+        )
 
     async def resolve_tokens() -> IamStoredTokens | None:
         """Re-read this exact session and lock only when rotating a token."""

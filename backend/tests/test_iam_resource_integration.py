@@ -1,6 +1,8 @@
 """IAM 密码直登与菜单/按钮资源下发的单元测试（不访问真实 IAM）。"""
 
 import base64
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -191,6 +193,91 @@ async def test_token_refresh_omits_body_client_id_under_basic_auth(monkeypatch):
         assert result.access_token == "new-access"
     finally:
         await service.close()
+
+
+@pytest.mark.asyncio
+async def test_vault_refresh_wrapper_drives_the_real_oidc_service(monkeypatch):
+    # 契约漂移防线：令牌库的刷新包装必须能驱动真实的 OIDCService。
+    # 此前两边签名不一致（provider 配置 vs 端点元数据），只用假对象的单测发现不了。
+    from app.gateway.auth.iam_token_vault import (
+        IamTokenVaultCipher,
+        load_iam_authorization_attributes,
+    )
+    from deerflow.config.auth_config import OIDCProviderConfig
+
+    provider_config = OIDCProviderConfig(
+        display_name="IAM",
+        issuer=METADATA.issuer,
+        client_id="deer-flow",
+        client_secret="client-secret",
+        scopes=["openid", "offline_access"],
+        iam_token_vault_enabled=True,
+        token_endpoint_auth_method="client_secret_basic",
+    )
+    rotated = SimpleNamespace(
+        provider_id="iam",
+        issuer=METADATA.issuer,
+        subject="subject-1",
+        tenant_id="tenant-1",
+        access_token="rotated-access",
+        access_expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+
+    class Repository:
+        async def load_for_identity(self, **kwargs):
+            # 距到期不足 60 秒的 access token：促使令牌库走刷新分支。
+            return SimpleNamespace(
+                **(
+                    vars(rotated)
+                    | {
+                        "access_token": "expiring-access",
+                        "access_expires_at": datetime.now(UTC) + timedelta(seconds=30),
+                    }
+                )
+            )
+
+        async def load_or_refresh_for_identity(self, **kwargs):
+            await kwargs["refresh"]("stored-refresh")
+            return rotated
+
+    monkeypatch.setattr("app.gateway.auth.iam_token_vault.get_session_factory", lambda: object())
+    monkeypatch.setattr(IamTokenVaultCipher, "from_environment", classmethod(lambda cls: object()))
+    monkeypatch.setattr("app.gateway.auth.iam_token_vault.IamTokenVaultRepository", lambda *_: Repository())
+
+    service = OIDCService()
+    monkeypatch.setattr(service, "discover", AsyncMock(return_value=METADATA))
+    post = AsyncMock(
+        return_value=_token_response(200, {"access_token": "rotated-access", "expires_in": 600}),
+    )
+    monkeypatch.setattr(service._http, "post", post)
+
+    try:
+        attributes = await load_iam_authorization_attributes(
+            user=SimpleNamespace(
+                id="user-1",
+                is_active=True,
+                oauth_provider="iam",
+                oauth_id="subject-1",
+            ),
+            session_id="11111111-1111-4111-8111-111111111111",
+            provider_configs={"iam": provider_config},
+            oidc_service=service,
+        )
+    finally:
+        await service.close()
+
+    assert attributes["iam_credentials"]["iam_access_token"] == "rotated-access"
+    service.discover.assert_awaited_once()
+    assert service.discover.await_args.args[0] == METADATA.issuer
+    assert post.await_args.args[0] == METADATA.token_endpoint
+    assert post.await_args.kwargs["data"] == {
+        "grant_type": "refresh_token",
+        "refresh_token": "stored-refresh",
+    }
+    assert _basic_credentials(post.await_args.kwargs["headers"]["Authorization"]) == (
+        "deer-flow",
+        "client-secret",
+    )
 
 
 @pytest.mark.asyncio

@@ -306,11 +306,12 @@ There is no local-account fallback: IAM is the only credential source.
 - The provider must be a trusted client that accepts `client_secret_basic`. Under Basic
   auth the request body carries neither `client_id` nor `client_secret`; strict providers
   (the central IAM token endpoint included) reject the request as `invalid_request`
-  otherwise. The password grant and the authorization-code exchange follow this rule.
-- **Known gap:** `OIDCService.refresh_tokens` still sends `client_id` in the body under
-  Basic auth, so a refresh against the central IAM is rejected. Until that is fixed, menu
-  and button control degrades to `controlled=false` once the vault access token nears
-  expiry (IAM default lifetime: 30 minutes) and only recovers after a new login.
+  otherwise. The password grant, the authorization-code exchange and the token-vault
+  refresh share one implementation (`OIDCService._apply_client_auth`).
+- The vault's refresh wrapper resolves endpoint metadata through discovery first and then
+  calls `OIDCService.refresh_tokens(metadata, client_id=…, client_secret=…,
+  refresh_token=…, auth_method=…)`. `tests/test_iam_resource_integration.py` drives the
+  wrapper with the real `OIDCService`, so the two contracts cannot drift apart unnoticed.
 - Error mapping: provider `invalid_grant` → 401 `invalid_credentials` (counted by the
   local login throttle); provider 429 → 429; any other provider rejection (client or
   configuration) → 502 and not counted as a failed login.

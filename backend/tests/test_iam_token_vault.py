@@ -138,7 +138,12 @@ async def test_request_iam_credentials_use_signed_session_and_refreshable_vault(
         oauth_provider=IDENTITY["provider_id"],
         oauth_id=IDENTITY["subject"],
     )
-    oidc_service = SimpleNamespace(refresh_tokens=AsyncMock(return_value=SimpleNamespace()))
+    # 刷新包装按 OIDCService 的真实契约调用：端点元数据 + 客户端凭据 + 刷新令牌。
+    discovered = SimpleNamespace(token_endpoint="https://iam.example.com/token")
+    oidc_service = SimpleNamespace(
+        refresh_tokens=AsyncMock(return_value=SimpleNamespace()),
+        discover=AsyncMock(return_value=discovered),
+    )
 
     attributes = await load_iam_authorization_attributes(
         user=user,
@@ -154,7 +159,15 @@ async def test_request_iam_credentials_use_signed_session_and_refreshable_vault(
     assert credential_context["iam_tenant_id"] == IDENTITY["tenant_id"]
     assert "rotated-access-secret" not in repr(credential_context)
     assert "rotated-access-secret" not in repr(attributes)
-    oidc_service.refresh_tokens.assert_awaited_once_with(provider_config, "stored-refresh-secret")
+    oidc_service.discover.assert_awaited_once()
+    assert oidc_service.discover.await_args.args[0] == IDENTITY["issuer"]
+    oidc_service.refresh_tokens.assert_awaited_once_with(
+        discovered,
+        client_id="deer-flow",
+        client_secret=None,
+        refresh_token="stored-refresh-secret",
+        auth_method="client_secret_post",
+    )
 
     # Long-running Agent checks re-read the exact session and update only the
     # in-memory access token after the vault returns a newer credential pair.

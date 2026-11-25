@@ -16,10 +16,13 @@ rs.mock("@/product/api", () => ({
   fetchIamResources: (...args: unknown[]) => mocks.fetchIamResources(...args),
 }));
 
-import { useIamButton, useIamResourceControl } from "@/product/hooks";
+import {
+  IAM_RESOURCES_QUERY_KEY,
+  useIamButton,
+  useIamResourceControl,
+} from "@/product/hooks";
 import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 
-const RESOURCES_KEY = ["iam", "resources"] as const;
 const CHAT_CREATE = IAM_BUTTON_CODES.chatCreate;
 
 function renderControl(client: QueryClient) {
@@ -145,7 +148,7 @@ describe("useIamResourceControl", () => {
   it("keeps the last granted snapshot when a background refresh fails", async () => {
     mocks.userId = "user-1";
     const client = new QueryClient();
-    client.setQueryData([...RESOURCES_KEY, "user-1"], {
+    client.setQueryData([...IAM_RESOURCES_QUERY_KEY, "user-1"], {
       controlled: true,
       menus: ["deerflow.chats"],
       buttons: [],
@@ -158,9 +161,9 @@ describe("useIamResourceControl", () => {
     });
 
     await act(async () => {
-      await client.refetchQueries({ queryKey: RESOURCES_KEY });
+      await client.refetchQueries({ queryKey: IAM_RESOURCES_QUERY_KEY });
     });
-    expect(client.getQueryState([...RESOURCES_KEY, "user-1"])?.status).toBe(
+    expect(client.getQueryState([...IAM_RESOURCES_QUERY_KEY, "user-1"])?.status).toBe(
       "error",
     );
     // 后台刷新失败不能放宽权限：仍沿用上一次成功的授权快照。
