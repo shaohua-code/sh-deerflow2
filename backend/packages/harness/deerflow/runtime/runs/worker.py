@@ -329,7 +329,8 @@ def _delivery_content_with_outputs(
     if not produced_paths:
         return content
 
-    presented_paths = content.get("by_tool", {}).get("present_files", [])
+    by_tool = content.get("by_tool", {})
+    presented_paths = list(dict.fromkeys(by_tool.get("present_files", []) + by_tool.get("generate_image", [])))
     matched_paths = [produced_path for produced_path in produced_paths if any(_presented_path_covers_output(presented_path, produced_path) for presented_path in presented_paths)]
     satisfied = bool(matched_paths)
     return {

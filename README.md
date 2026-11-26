@@ -1336,9 +1336,12 @@ The built-in `image-generation` skill supports Gemini, MiniMax, and
 OpenAI-compatible Images APIs. Select the latter with
 `IMAGE_GENERATION_PROVIDER=openai`, then configure
 `IMAGE_GENERATION_API_KEY`, `IMAGE_GENERATION_BASE_URL`, and
-`IMAGE_GENERATION_MODEL`. For a containerized sandbox, expose these variables
-through `sandbox.environment`; sandbox commands intentionally do not inherit
-API keys from the Gateway process.
+`IMAGE_GENERATION_MODEL`. With an OpenAI-compatible provider, the built-in
+`generate_image` tool can generate and present images without enabling host
+shell access. The skill must be activated so its declared API key is bound to
+that run. Script-based Gemini and MiniMax generation requires sandbox command
+execution; sandbox commands intentionally do not inherit API keys from the
+Gateway process.
 
 #### Exporting Custom Skills
 

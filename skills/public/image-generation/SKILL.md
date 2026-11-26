@@ -20,6 +20,11 @@ This skill generates high-quality images using structured prompts and a Python s
 
 ## Workflow
 
+When the `generate_image` tool is available, call it with a detailed English
+prompt and the requested aspect ratio. It writes and presents the image in the
+current conversation. This is the supported production path when sandbox bash
+is disabled. The script workflow below is for environments with sandbox bash.
+
 ### Step 1: Understand Requirements
 
 When a user requests image generation, identify:

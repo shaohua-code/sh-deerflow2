@@ -16,6 +16,7 @@ from deerflow.tools.builtins import (
     batch_task,
     cancel_background_task,
     cancel_batch,
+    generate_image_tool,
     list_background_tasks,
     list_uploaded_files,
     present_file_tool,
@@ -32,6 +33,7 @@ BUILTIN_TOOLS = [
     present_file_tool,
     ask_clarification_tool,
     review_skill_package,
+    generate_image_tool,
 ]
 
 SUBAGENT_TOOLS = [
