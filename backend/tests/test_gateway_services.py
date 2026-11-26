@@ -1974,6 +1974,19 @@ def test_inject_authenticated_user_context_overrides_client_user_id():
     assert config["context"]["user_id"] == "auth-user-42"
 
 
+def test_inject_authenticated_user_context_binds_deployment_skill_secret(monkeypatch):
+    """Deployment image credentials reach only the runtime skill-secret carrier."""
+    from app.gateway.services import inject_authenticated_user_context
+
+    monkeypatch.setenv("IMAGE_GENERATION_API_KEY", "server-image-key")
+    config = {"context": {"secrets": {"IMAGE_GENERATION_API_KEY": "client-key"}}, "configurable": {}}
+
+    inject_authenticated_user_context(config, _make_request_with_auth_source("session"))
+
+    assert config["context"]["secrets"] == {"IMAGE_GENERATION_API_KEY": "server-image-key"}
+    assert "secrets" not in config["configurable"]
+
+
 def test_merge_run_context_overrides_propagates_user_id():
     """Regression for PR #3294: ``user_id`` from ``body.context`` must land in
     ``config['context']`` so non-web callers (e.g. IM channels) keep their identity

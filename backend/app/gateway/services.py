@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -578,7 +579,16 @@ _SERVER_OWNED_RUNTIME_CONTEXT_KEYS: frozenset[str] = (
 # (``ChannelManager._apply_channel_policy`` and ``app.gateway.github.run_policy``),
 # which reach the Gateway over the internally-authenticated request channel, so
 # they are internal-only as well — see :data:`_INTERNAL_ONLY_CONTEXT_KEYS`.
-_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification"})
+_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification", "secrets"})
+
+# Deployment credentials are server-owned runtime inputs. They are made
+# available to the skill binding middleware, which only injects a declared key
+# into the active skill's sandbox process. They never enter configurable state.
+_DEPLOYMENT_SKILL_SECRET_ENV_VARS: tuple[str, ...] = (
+    "IMAGE_GENERATION_API_KEY",
+    "GEMINI_API_KEY",
+    "MINIMAX_API_KEY",
+)
 
 # Every run-context key an external client may never supply, in either section.
 # The two sets differ only in *where* a legitimate internal caller's value lands
@@ -716,6 +726,15 @@ def inject_authenticated_user_context(
         if isinstance(configurable, dict):
             configurable.pop("user_id", None)
     runtime_context["is_internal"] = auth_source == AUTH_SOURCE_INTERNAL
+    deployment_secrets = {name: value for name in _DEPLOYMENT_SKILL_SECRET_ENV_VARS if (value := os.getenv(name))}
+    if deployment_secrets:
+        # Deployment values take precedence over caller-supplied values. The
+        # runtime context is redacted before persistence and the skill
+        # middleware applies the declaration/activation gates.
+        runtime_context["secrets"] = {
+            **(runtime_context.get("secrets") if isinstance(runtime_context.get("secrets"), dict) else {}),
+            **deployment_secrets,
+        }
     auth_context = getattr(request.state, "auth", None)
     if auth_context is not None:
         permissions = getattr(auth_context, "permissions", None)
