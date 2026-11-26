@@ -710,6 +710,7 @@ def inject_authenticated_user_context(
         runtime_context.pop(key, None)
     configurable = config.get("configurable")
     if isinstance(configurable, dict):
+        configurable.pop("secrets", None)
         for key in _SERVER_OWNED_RUNTIME_CONTEXT_KEYS:
             configurable.pop(key, None)
     auth_source = getattr(getattr(request, "state", None), "auth_source", None)

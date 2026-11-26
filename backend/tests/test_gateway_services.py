@@ -1979,7 +1979,10 @@ def test_inject_authenticated_user_context_binds_deployment_skill_secret(monkeyp
     from app.gateway.services import inject_authenticated_user_context
 
     monkeypatch.setenv("IMAGE_GENERATION_API_KEY", "server-image-key")
-    config = {"context": {"secrets": {"IMAGE_GENERATION_API_KEY": "client-key"}}, "configurable": {}}
+    config = {
+        "context": {"secrets": {"IMAGE_GENERATION_API_KEY": "client-key"}},
+        "configurable": {"secrets": {"IMAGE_GENERATION_API_KEY": "client-key"}},
+    }
 
     inject_authenticated_user_context(config, _make_request_with_auth_source("session"))
 
