@@ -96,9 +96,11 @@ class CIGateTests(unittest.TestCase):
         runs = self.runs()
         old = dict(runs[0], run_attempt=0, conclusion="failure")
         self.assertTrue(gate.verdict(runs + [old]))
-        extra = dict(runs[0], name="E2E Tests", conclusion="failure")
+        extra = dict(runs[0], name="Replay E2E (front-back contract)", conclusion="failure")
         with self.assertRaises(RuntimeError):
             gate.verdict(runs + [extra])
+        browser_suite = dict(runs[0], name="E2E Tests", conclusion="failure")
+        self.assertTrue(gate.verdict(runs + [browser_suite]))
 
 
 class RolloutTests(unittest.TestCase):

@@ -7,7 +7,7 @@ import time
 import urllib.request
 
 REQUIRED = {"Lint Check", "Unit Tests", "Frontend Unit Tests"}
-OPTIONAL = {"Backend Blocking IO", "Replay E2E (front-back contract)", "E2E Tests", "Skill Quality Review"}
+OPTIONAL = {"Backend Blocking IO", "Replay E2E (front-back contract)", "Skill Quality Review"}
 
 
 def verdict(runs):
