@@ -2,12 +2,6 @@
 
 ## Project Overview
 
-The built-in `generate_image` tool calls the configured OpenAI-compatible Images
-API with the active `image-generation` skill's bound key. It writes only to the
-current user's thread outputs and records the image as a presented artifact.
-Run delivery treats its artifact as presented, alongside `present_files`. This
-allows production image generation while LocalSandbox host bash remains disabled.
-
 For Central IAM model authorization, Gateway run context binds a server-owned
 principal, the effective route-permission snapshot, and ephemeral vault capability before Agent construction. The shared
 model factory checks the exact configured profile's `model:use` immediately
