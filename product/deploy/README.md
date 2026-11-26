@@ -6,6 +6,8 @@
 
 服务器 `/usr/local/lib/flowdesk/receive_release.py` 是 root 拥有的受限入口，`authorized_keys` 为 CI 独立公钥指定强制命令。GitHub Actions Secrets 为 `FLOWDESK_DEPLOY_SSH_KEY` 和 `FLOWDESK_DEPLOY_KNOWN_HOSTS`；前者只供此流程使用，后者固定服务器的 ED25519 主机密钥。CI 用短期 `GITHUB_TOKEN` 登录 GHCR，服务器使用临时 Docker 配置拉取镜像，凭据不会保存在服务器。两个镜像必须声明相同的 `org.opencontainers.image.revision`。部署前会检查剩余磁盘空间，并在停止入口、前端和 Gateway 后制作 PostgreSQL dump 与 `/data/flowdesk` 文件快照。升级后检查 Gateway、数据库、checkpoint、登录页和产品 API；失败时尝试恢复旧镜像、数据库和文件。恢复快照在 `/srv/flowdesk-backups`，需要另外复制到异机并做恢复演练；自动部署的备份与回退不能代替正式的异机备份。
 
+接收端先拉取两张新镜像，再要求磁盘至少剩余 6 GiB 才开始停服务和备份。若发布在此处拒绝，先用 `df -h /` 和 `docker system df` 核对空间，再按镜像 revision 与容器引用逐一清理不再使用的旧 Flow Desk 镜像；保留当前运行镜像和待发布镜像，以便回退和重试。不要对生产主机执行无差别的卷或镜像清理。
+
 这条流程严格执行上述 CI 门禁，未通过前不会更新服务器。后续推送 `main` 时，只有门禁检查全通过才自动更新。发布状态看 GitHub Actions 和服务器 `/srv/flowdesk/deployed-revision`；不要手工修改受限部署脚本的生产副本而不更新仓库源码。
 
 默认 DeerFlow 服务栈主要面向开发。此部署方案增加自有 PostgreSQL 16 服务，并让 Gateway 将应用数据、LangGraph checkpoint、运行事件和 Custom Agent 定义持久化到该数据库。
