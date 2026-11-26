@@ -31,7 +31,7 @@ def main():
             return json.load(response)
     if get("/git/ref/heads/main")["object"]["sha"] != sha:
         raise RuntimeError("This commit is no longer main; release blocked")
-    for attempt in range(150):
+    for attempt in range(360):
         if get("/git/ref/heads/main")["object"]["sha"] != sha:
             raise RuntimeError("Main advanced while waiting for CI; release blocked")
         runs = get(f"/actions/runs?head_sha={sha}&per_page=100")["workflow_runs"]
@@ -40,7 +40,7 @@ def main():
             return
         print("Waiting for existing push checks", flush=True)
         time.sleep(10)
-    raise RuntimeError("Required checks did not pass within 25 minutes")
+    raise RuntimeError("Required checks did not pass within 60 minutes")
 
 
 if __name__ == "__main__":

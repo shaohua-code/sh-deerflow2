@@ -13,7 +13,7 @@ from app.gateway.auth.oidc import (
     OIDCProviderError,
     OIDCService,
 )
-from app.gateway.routers.auth import _collect_iam_resource_codes
+from app.gateway.routers.auth import _collect_iam_resource_codes, get_iam_resources
 
 METADATA = OIDCMetadata(
     issuer="https://issuer.example.com",
@@ -80,6 +80,18 @@ def test_collect_iam_resource_codes_tolerates_malformed_children():
 
     assert menus == ["x", "y"]
     assert buttons == ["y.run"]
+
+
+@pytest.mark.asyncio
+async def test_iam_resources_for_local_session_is_uncontrolled(monkeypatch):
+    monkeypatch.setattr(
+        "app.gateway.routers.auth.get_current_user_from_request",
+        AsyncMock(return_value=SimpleNamespace(oauth_provider=None)),
+    )
+
+    response = await get_iam_resources(SimpleNamespace(state=SimpleNamespace()))
+
+    assert response.model_dump() == {"controlled": False, "menus": [], "buttons": []}
 
 
 @pytest.mark.asyncio

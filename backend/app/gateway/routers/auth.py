@@ -72,7 +72,7 @@ class IamResourcesResponse(BaseModel):
     已授权节点的 code：menus 驱动侧栏显隐，buttons 驱动按钮显隐；数据规则不下发。
     """
 
-    controlled: bool
+    controlled: bool = False
     menus: list[str] = Field(default_factory=list)
     buttons: list[str] = Field(default_factory=list)
 
