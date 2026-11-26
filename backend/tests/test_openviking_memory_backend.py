@@ -32,6 +32,8 @@ from deerflow.agents.memory.manager import (
 )
 from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 
+pytestmark = pytest.mark.usefixtures("non_iam_memory_scope")
+
 
 class _CommitPolicy:
     def __init__(self, *, mode: str, pending_token_threshold: int = 8_000):

@@ -43,7 +43,7 @@ def app(tmp_path, monkeypatch):
             user = User(id=uuid4(), email="test@example.com", password_hash="x", system_role=request.headers.get("x-role", "admin"))
             request.state.user = user
         request.state.auth_source = auth_source if user is not None else None
-        request.state.auth = AuthContext(user=user, permissions=["skills:read"] if user is not None else [])
+        request.state.auth = AuthContext(user=user, permissions=["skills:read", "skills:write"] if user is not None else [])
         return await call_next(request)
 
     app.dependency_overrides[get_config] = lambda: SimpleNamespace()

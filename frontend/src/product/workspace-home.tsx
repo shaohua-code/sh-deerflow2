@@ -48,7 +48,11 @@ import { fetchProductFiles, type ProductFileEntry } from "@/product/api";
 
 import { BrandMark } from "./brand-mark";
 import { getProductCopy } from "./copy";
-import { useProductBootstrap, useProductBrandName, useIamButton } from "./hooks";
+import {
+  useProductBootstrap,
+  useProductBrandName,
+  useIamButton,
+} from "./hooks";
 import { IAM_BUTTON_CODES } from "./iam-resources";
 
 const RECENT_FILE_LIMIT = 5;

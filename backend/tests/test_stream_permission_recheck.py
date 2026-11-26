@@ -315,6 +315,7 @@ def test_data_scope_pass_through_reaches_stream_consumer(monkeypatch: pytest.Mon
 async def test_denied_recheck_ends_stream_without_cancelling_run(monkeypatch: pytest.MonkeyPatch):
     """Revocation ends the caller's stream; the run itself keeps running."""
     event_published = asyncio.Event()
+    message_delivered = asyncio.Event()
     recheck_calls: list[tuple[str, str]] = []
 
     async def _fake_recheck(request, resource, action, **_kwargs):
@@ -340,10 +341,12 @@ async def test_denied_recheck_ends_stream_without_cancelling_run(monkeypatch: py
             permission_recheck_interval=0.0,
         ):
             frames.append(frame)
+            if frame.startswith("event: message"):
+                message_delivered.set()
 
     driver = asyncio.create_task(_drive())
-    await asyncio.sleep(0.05)
     await bridge.publish(record.run_id, "message", {"content": "hello"})
+    await asyncio.wait_for(message_delivered.wait(), timeout=5.0)
     event_published.set()
     await asyncio.wait_for(driver, timeout=5.0)
 

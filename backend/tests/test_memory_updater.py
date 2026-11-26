@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import threading
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,8 +19,17 @@ from deerflow.agents.memory.backends.deermem.deermem.core.updater import (
     _extract_text,
     _parse_memory_update_response,
 )
-from deerflow.agents.memory.manager import LangfuseMemoryCallbacks
+from deerflow.agents.memory.manager import LangfuseMemoryCallbacks, set_gateway_memory_authorizers
 from deerflow.trace_context import get_current_trace_id, request_trace_context
+
+RECENT_FACT_TIME = datetime.now(UTC).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gateway_memory_authorizers():
+    set_gateway_memory_authorizers(model_authorizer=None, write_authorizer=None)
+    yield
+    set_gateway_memory_authorizers(model_authorizer=None, write_authorizer=None)
 
 
 def _make_memory(facts: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -274,7 +284,7 @@ def test_automatic_update_uses_hybrid_capacity_policy() -> None:
                     "content": f"high {index}",
                     "category": "preference",
                     "confidence": 0.99,
-                    "createdAt": "2026-08-12T00:00:00Z",
+                    "createdAt": RECENT_FACT_TIME,
                 }
                 for index in range(8)
             ],
@@ -291,7 +301,7 @@ def test_automatic_update_uses_hybrid_capacity_policy() -> None:
                 "category": "preference",
                 "confidence": 0.7,
                 "createdAt": "2025-01-01T00:00:00Z",
-                "lastConfirmedAt": "2026-08-12T00:00:00Z",
+                "lastConfirmedAt": RECENT_FACT_TIME,
             },
         ]
     )

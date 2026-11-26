@@ -10,6 +10,7 @@ Starlette runs when a client drops the connection — against the production
 consumer.
 """
 
+import ast
 import asyncio
 import inspect
 from types import SimpleNamespace
@@ -105,11 +106,18 @@ def test_join_routes_wire_sse_consumer_as_observers():
 
     thread_runs_source = inspect.getsource(thread_runs)
     # join_run + the shared existing-run stream implementation
-    assert thread_runs_source.count("sse_consumer(bridge, record, request, run_mgr, apply_on_disconnect=False)") == 2
+    consumer_calls = [node for node in ast.walk(ast.parse(thread_runs_source)) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sse_consumer"]
+    observer_calls = [call for call in consumer_calls if any(keyword.arg == "apply_on_disconnect" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False for keyword in call.keywords)]
+    assert len(observer_calls) == 2
     # stream_run — creating retry opts into missing-stream gap; first create does not
     assert "emit_gap_on_missing_stream=record.idempotency_reused" in thread_runs_source
 
     runs_source = inspect.getsource(runs_router)
     # stateless create-and-stream — creator on_disconnect policy, not the retry gap
-    assert "sse_consumer(bridge, record, request, run_mgr, apply_on_disconnect=False)" not in runs_source
+    assert not any(
+        keyword.arg == "apply_on_disconnect" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+        for node in ast.walk(ast.parse(runs_source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sse_consumer"
+        for keyword in node.keywords
+    )
     assert "emit_gap_on_missing_stream" not in runs_source

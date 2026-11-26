@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 
 const mocks = rs.hoisted(() => ({
@@ -9,7 +9,9 @@ const mocks = rs.hoisted(() => ({
 }));
 
 rs.mock("@/core/auth/AuthProvider", () => ({
-  useAuth: () => ({ user: mocks.userId === null ? null : { id: mocks.userId } }),
+  useAuth: () => ({
+    user: mocks.userId === null ? null : { id: mocks.userId },
+  }),
 }));
 rs.mock("@/core/static-mode", () => ({ isStaticWebsiteOnly: () => false }));
 rs.mock("@/product/api", () => ({
@@ -163,9 +165,9 @@ describe("useIamResourceControl", () => {
     await act(async () => {
       await client.refetchQueries({ queryKey: IAM_RESOURCES_QUERY_KEY });
     });
-    expect(client.getQueryState([...IAM_RESOURCES_QUERY_KEY, "user-1"])?.status).toBe(
-      "error",
-    );
+    expect(
+      client.getQueryState([...IAM_RESOURCES_QUERY_KEY, "user-1"])?.status,
+    ).toBe("error");
     // 后台刷新失败不能放宽权限：仍沿用上一次成功的授权快照。
     expect(result.current.control).toEqual({
       menus: ["deerflow.chats"],

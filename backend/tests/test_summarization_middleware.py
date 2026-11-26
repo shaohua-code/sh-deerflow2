@@ -22,6 +22,8 @@ from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.summarization_config import ContextSize, SummarizationConfig
 
+pytestmark = pytest.mark.usefixtures("non_iam_memory_scope")
+
 
 def _messages() -> list:
     return [

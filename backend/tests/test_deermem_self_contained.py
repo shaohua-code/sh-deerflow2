@@ -14,6 +14,7 @@ injected onto the updater so no network is needed.
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ from deerflow.agents.memory.backends.deermem.deermem.core.message_processing imp
 )
 from deerflow.agents.memory.backends.deermem.deermem.core.storage import FileMemoryStorage
 from deerflow.agents.memory.manager import MemoryCallbacks
+
+RECENT_FACT_TIME = datetime.now(UTC).isoformat()
 
 
 @pytest.fixture
@@ -604,7 +607,7 @@ def test_hybrid_capacity_keeps_recent_confirmation_over_stale_confidence(deermem
                         "content": f"high {index}",
                         "category": "preference",
                         "confidence": 0.99,
-                        "createdAt": "2026-08-12T00:00:00Z",
+                        "createdAt": RECENT_FACT_TIME,
                     }
                     for index in range(8)
                 ],
@@ -621,7 +624,7 @@ def test_hybrid_capacity_keeps_recent_confirmation_over_stale_confidence(deermem
                     "category": "preference",
                     "confidence": 0.7,
                     "createdAt": "2025-01-01T00:00:00Z",
-                    "lastConfirmedAt": "2026-08-12T00:00:00Z",
+                    "lastConfirmedAt": RECENT_FACT_TIME,
                 },
             ],
         },
@@ -661,7 +664,7 @@ def test_hybrid_import_applies_same_capacity_policy(deermem_data_dir):
                         "content": f"high {index}",
                         "category": "preference",
                         "confidence": 0.99,
-                        "createdAt": "2026-08-12T00:00:00Z",
+                        "createdAt": RECENT_FACT_TIME,
                     }
                     for index in range(8)
                 ],
@@ -678,14 +681,14 @@ def test_hybrid_import_applies_same_capacity_policy(deermem_data_dir):
                     "category": "preference",
                     "confidence": 0.7,
                     "createdAt": "2025-01-01T00:00:00Z",
-                    "lastConfirmedAt": "2026-08-12T00:00:00Z",
+                    "lastConfirmedAt": RECENT_FACT_TIME,
                 },
                 {
                     "id": "new_context",
                     "content": "new useful context",
                     "category": "context",
                     "confidence": 0.8,
-                    "createdAt": "2026-08-12T00:00:00Z",
+                    "createdAt": RECENT_FACT_TIME,
                 },
             ],
         },
@@ -716,7 +719,7 @@ def test_hybrid_capacity_reserves_correction_and_writes_audit(deermem_data_dir):
                     "content": f"preference {index}",
                     "category": "preference",
                     "confidence": 0.99,
-                    "createdAt": "2026-08-12T00:00:00Z",
+                    "createdAt": RECENT_FACT_TIME,
                 }
                 for index in range(10)
             ],
@@ -755,7 +758,7 @@ def test_confidence_policy_shadow_does_not_change_actual_selection(deermem_data_
                 "content": f"high {index}",
                 "category": "preference",
                 "confidence": 0.99,
-                "createdAt": "2026-08-12T00:00:00Z",
+                "createdAt": RECENT_FACT_TIME,
             }
             for index in range(8)
         ],
@@ -772,7 +775,7 @@ def test_confidence_policy_shadow_does_not_change_actual_selection(deermem_data_
             "category": "preference",
             "confidence": 0.7,
             "createdAt": "2025-01-01T00:00:00Z",
-            "lastConfirmedAt": "2026-08-12T00:00:00Z",
+            "lastConfirmedAt": RECENT_FACT_TIME,
         },
     ]
     dm.import_memory({"user": {}, "history": {}, "facts": facts}, user_id="u1")

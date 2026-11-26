@@ -93,7 +93,10 @@ describe("product workspace navigation", () => {
     const visible = getVisibleProductNavigation(
       { chats: true, agents: true, scheduled_tasks: true },
       "/workspace",
-      { menus: ALL_MENU_CODES.filter((code) => code !== "deerflow.agents"), buttons: [] },
+      {
+        menus: ALL_MENU_CODES.filter((code) => code !== "deerflow.agents"),
+        buttons: [],
+      },
     );
     const visibleIds = visible.map((item) => item.id);
     expect(visibleIds).not.toContain("agents");

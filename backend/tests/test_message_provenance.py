@@ -5,6 +5,7 @@ An observer cannot reconstruct this after the fact: by the time a message
 reaches the model-call boundary, its producer is no longer recoverable.
 """
 
+import pytest
 from deerflow_extension_api import (
     MESSAGE_CONTENT_KIND_KEY,
     MESSAGE_PRODUCER_ENTITY_ID_KEY,
@@ -17,6 +18,8 @@ from deerflow_extension_api import (
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from deerflow.utils.messages import UNTRUSTED_INPUT_KEY
+
+pytestmark = pytest.mark.usefixtures("non_iam_memory_scope")
 
 
 def test_kwargs_round_trip_through_a_message():

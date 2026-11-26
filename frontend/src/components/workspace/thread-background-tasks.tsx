@@ -248,9 +248,7 @@ function BackgroundTaskCard({
               <Clock3Icon className="size-3" />
               {t.backgroundTasks.created(createdAgo)}
             </span>
-            <span>
-              {t.backgroundTasks.updated(updatedAgo)}
-            </span>
+            <span>{t.backgroundTasks.updated(updatedAgo)}</span>
           </div>
         </div>
         <Badge variant="outline" className={cn("shrink-0", status.className)}>

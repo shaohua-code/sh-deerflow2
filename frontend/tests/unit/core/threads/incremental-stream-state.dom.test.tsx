@@ -57,8 +57,8 @@ rs.mock("@langchain/langgraph-sdk/react", () => ({
 }));
 
 function createWrapper(queryClient: QueryClient) {
-  return ({ children }: { children: ReactNode }) =>
-    createElement(
+  return function QueryWrapper({ children }: { children: ReactNode }) {
+    return createElement(
       QueryClientProvider,
       { client: queryClient },
       createElement(
@@ -73,6 +73,7 @@ function createWrapper(queryClient: QueryClient) {
         children,
       ),
     );
+  };
 }
 
 test("does not re-render-loop while a live stream has no message identities yet", async () => {

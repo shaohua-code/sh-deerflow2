@@ -163,7 +163,9 @@ export default function ProjectPage() {
                 ) : null}
                 <ProjectHeader
                   project={project}
-                  canCreateChat={access.canCreateProjectChat && iamCanCreateChat}
+                  canCreateChat={
+                    access.canCreateProjectChat && iamCanCreateChat
+                  }
                   missingChatPermissions={getMissingPermissions(user, [
                     PERMISSIONS.THREADS_WRITE,
                     PERMISSIONS.RUNS_CREATE,
@@ -308,7 +310,9 @@ function ProjectHeader({
         <p role="status" className="text-muted-foreground w-full text-sm">
           {/* 角色权限齐全但仍不可用，说明是 IAM 未授权「新建会话」按钮。 */}
           {missingChatPermissions.length > 0
-            ? t.agents.permissionActionsLimited(missingChatPermissions.join(", "))
+            ? t.agents.permissionActionsLimited(
+                missingChatPermissions.join(", "),
+              )
             : t.chats.createPermissionRequired}
         </p>
       )}

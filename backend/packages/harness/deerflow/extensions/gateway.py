@@ -47,6 +47,7 @@ _HOST_PUBLIC_PATH_PREFIXES = (
 _HOST_PUBLIC_EXACT_PATHS = frozenset(
     {
         "/api/v1/auth/login/local",
+        "/api/v1/auth/login/iam",
         "/api/v1/auth/register",
         "/api/v1/auth/logout",
         "/api/v1/auth/setup-status",

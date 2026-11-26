@@ -36,6 +36,8 @@ from deerflow.runtime.checkpoint_mode import INTERNAL_CHECKPOINT_MODE_KEY
 from deerflow.runtime.secret_context import write_slash_skill_source_path
 from deerflow.skills.types import Skill, SkillCategory
 
+pytestmark = pytest.mark.usefixtures("non_iam_memory_scope")
+
 _POLICY_INTEGRATION_TOOL_CALLS: list[str] = []
 
 

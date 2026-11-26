@@ -10,7 +10,10 @@ import {
 
 import type { ProductFeatureKey } from "./api";
 import { isProductFeatureEnabled } from "./features";
-import { isIamMenuGranted, type IamResourceControlState } from "./iam-resources";
+import {
+  isIamMenuGranted,
+  type IamResourceControlState,
+} from "./iam-resources";
 
 /** 产品导航使用稳定 ID 做本地化映射，不把展示文字或路由散落在工作台组件里。 */
 export type ProductNavigationId =

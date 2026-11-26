@@ -250,6 +250,7 @@ async def test_scheduled_task_creation_checks_run_scope_before_create(monkeypatc
             raise HTTPException(status_code=403, detail="run scope denied")
 
     monkeypatch.setattr(scheduled_tasks, "get_scheduled_task_repo", lambda _request: repo)
+    monkeypatch.setattr(scheduled_tasks, "get_config", lambda: SimpleNamespace())
     monkeypatch.setattr(scheduled_tasks, "get_optional_user_from_request", AsyncMock(return_value=user))
     monkeypatch.setattr(scheduled_tasks, "require_iam_data_scope_for_request", deny_run_create)
 

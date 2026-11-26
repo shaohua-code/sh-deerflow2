@@ -32,9 +32,7 @@ export function isIamMenuGranted(
   control: IamResourceControlState,
   code: string,
 ): boolean {
-  return (
-    control === null || (control !== undefined && control.menus.includes(code))
-  );
+  return control === null || control?.menus.includes(code) === true;
 }
 
 /** 按钮是否可用，口径与 isIamMenuGranted 一致。 */
@@ -42,7 +40,5 @@ export function isIamButtonGranted(
   control: IamResourceControlState,
   code: IamButtonCode,
 ): boolean {
-  return (
-    control === null || (control !== undefined && control.buttons.includes(code))
-  );
+  return control === null || control?.buttons.includes(code) === true;
 }

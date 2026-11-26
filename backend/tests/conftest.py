@@ -78,6 +78,17 @@ def provisioner_module():
             sys.modules[spec.name] = previous_module
 
 
+@pytest.fixture()
+def non_iam_memory_scope(monkeypatch):
+    """Keep standalone memory tests independent of an operator config file."""
+    from deerflow.config.authorization_config import AuthorizationConfig
+
+    monkeypatch.setattr(
+        "deerflow.agents.memory.authorization.get_app_config",
+        lambda: SimpleNamespace(authorization=AuthorizationConfig(enabled=False)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auto-set user context for every test unless marked no_auto_user
 # ---------------------------------------------------------------------------

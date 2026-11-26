@@ -313,9 +313,7 @@ async def test_password_token_reports_credential_rejection_without_provider_text
 @pytest.mark.asyncio
 async def test_password_token_preserves_rate_limit_status(monkeypatch):
     service = OIDCService()
-    post = AsyncMock(
-        return_value=_token_response(429, {"error": "rate_limited", "error_description": "登录尝试过于频繁"})
-    )
+    post = AsyncMock(return_value=_token_response(429, {"error": "rate_limited", "error_description": "登录尝试过于频繁"}))
     monkeypatch.setattr(service._http, "post", post)
 
     try:

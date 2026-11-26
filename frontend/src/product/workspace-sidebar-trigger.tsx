@@ -34,9 +34,7 @@ function useWorkspaceSidebarToggleLabel() {
   // SSR/水合首帧只按桌面侧栏 state 算文案，与 useIsMobile 的 server snapshot 对齐
   if (!hydrated) {
     const isOpenDesktop = state === "expanded";
-    return isOpenDesktop
-      ? t.sidebar.collapseSidebar
-      : t.sidebar.expandSidebar;
+    return isOpenDesktop ? t.sidebar.collapseSidebar : t.sidebar.expandSidebar;
   }
   const isOpen = isMobile ? openMobile : state === "expanded";
   return isOpen ? t.sidebar.collapseSidebar : t.sidebar.expandSidebar;

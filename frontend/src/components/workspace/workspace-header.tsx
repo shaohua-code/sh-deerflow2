@@ -14,7 +14,11 @@ import { useI18n } from "@/core/i18n/hooks";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/product/brand-mark";
-import { useIamButton, useProductBrandName, useProductFeature } from "@/product/hooks";
+import {
+  useIamButton,
+  useProductBrandName,
+  useProductFeature,
+} from "@/product/hooks";
 import { IAM_BUTTON_CODES } from "@/product/iam-resources";
 import { WorkspaceSidebarTrigger } from "@/product/workspace-sidebar-trigger";
 

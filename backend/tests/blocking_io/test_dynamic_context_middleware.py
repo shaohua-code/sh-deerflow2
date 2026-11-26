@@ -36,7 +36,7 @@ from deerflow.agents.middlewares.dynamic_context_middleware import (
 from deerflow.config.memory_config import MemoryConfig
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("non_iam_memory_scope")]
 
 
 class _FakeModel(FakeMessagesListChatModel):
