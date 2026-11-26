@@ -1,5 +1,13 @@
 # Flow Desk 部署方案
 
+## 腾讯云自动部署
+
+仓库的 [Deploy Flow Desk to Tencent Cloud](../../.github/workflows/flowdesk-tencent-deploy.yml) 在 `main` 推送或手动触发时运行。它等待同一 commit 的既有 CI 全部成功，再检查产品扩展快照与发布脚本，构建带 commit 标签的 Gateway/Frontend 镜像并推送到 GHCR。发布请求只包含 commit、两个镜像 digest、公开 Skill 和 Nginx 配置；服务器的 `.env`、`config.yaml`、`extensions_config.json`、数据库和运行目录不由 GitHub 仓库覆盖。
+
+服务器 `/usr/local/lib/flowdesk/receive_release.py` 是 root 拥有的受限入口，`authorized_keys` 为 CI 独立公钥指定强制命令。GitHub Actions Secrets 为 `FLOWDESK_DEPLOY_SSH_KEY` 和 `FLOWDESK_DEPLOY_KNOWN_HOSTS`；前者只供此流程使用，后者固定服务器的 ED25519 主机密钥。CI 用短期 `GITHUB_TOKEN` 登录 GHCR，服务器使用临时 Docker 配置拉取镜像，凭据不会保存在服务器。两个镜像必须声明相同的 `org.opencontainers.image.revision`。部署前会检查剩余磁盘空间，并在停止入口、前端和 Gateway 后制作 PostgreSQL dump 与 `/data/flowdesk` 文件快照。升级后检查 Gateway、数据库、checkpoint、登录页和产品 API；失败时尝试恢复旧镜像、数据库和文件。恢复快照在 `/srv/flowdesk-backups`，需要另外复制到异机并做恢复演练；自动部署的备份与回退不能代替正式的异机备份。
+
+这条流程严格执行现有 CI 门禁。当前 `main` 的 Lint、后端单测等检查已在 GitHub 报错，所以门禁未通过前不会更新服务器。首次启用需修复这些检查并验证一次完整发布。后续推送 `main` 时，只有检查全通过才自动更新。发布状态看 GitHub Actions 和服务器 `/srv/flowdesk/deployed-revision`；不要手工修改受限部署脚本的生产副本而不更新仓库源码。
+
 默认 DeerFlow 服务栈主要面向开发。此部署方案增加自有 PostgreSQL 16 服务，并让 Gateway 将应用数据、LangGraph checkpoint、运行事件和 Custom Agent 定义持久化到该数据库。
 
 ## 配置与启动

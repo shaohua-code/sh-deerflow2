@@ -1,5 +1,7 @@
 ## Service Startup Contracts
 
+Flow Desk 腾讯云自动部署使用 `product/deploy/check_ci.py` 和 `product/deploy/receive_release.py`。前者只放行同一 `main` commit 的现有 CI 成功结果；后者通过受限 SSH 强制命令运行，固定 `/srv/flowdesk` 与 `/data/flowdesk`，按镜像 digest 拉取，迁移前备份并在失败时恢复。改动发布输入格式、备份或回退语义时同步 `tests/test_flowdesk_deploy.py` 和 `product/deploy/README.md`。
+
 Optional browser dependency detection reads the top-level `tools:` sequence
 without requiring `name` to be its first mapping key. Both indented and
 indentless lists are supported; nested option names and block-scalar text

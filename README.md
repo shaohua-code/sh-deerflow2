@@ -2,6 +2,8 @@
 
 For the current Flow Desk implementation, verification gaps, and ordered next steps, read [改造进度与后续计划 (progress and model handoff)](docs/改造进度与后续计划.md). Update it after each related work turn; older implementation logs retain their original verification scope.
 
+Flow Desk 腾讯云实例的自动部署流程和门禁见 [产品部署说明](product/deploy/README.md#腾讯云自动部署)。
+
 **2026-10-14 Central IAM B04 update:** The second ordered 104-file slice now reports **2,368 passed, 2 failed, 86 skipped** before a follow-up notification-budget race fix. The notification lifecycle/extension manager/API pin targeted selection passed **126** with **40** uv-dependent skips; Ruff check/format passed. One remaining known environment mismatch is installed `deerflow-extension-api` metadata **0.2.16** vs source/lock **0.2.18**. The full suite and post-fix slice remain unverified; the user-reported IAM readiness page says the database is pending migration, and no migration was run.
 
 **2026-10-14 Central IAM B04 follow-up:** Windows Git Bash sync tests now run a temporary script file instead of passing the full block through `sh -c`; tests requiring missing GNU make/`uv` report explicit skips. Three focused modules: **44 passed, 13 skipped**; Ruff and `git diff --check` passed. The second 104-file slice and complete suite remain unrerun; no production runtime or IAM database changed.

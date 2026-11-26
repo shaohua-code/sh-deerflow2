@@ -1,0 +1,139 @@
+name: Deploy Flow Desk to Tencent Cloud
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: flowdesk-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Wait for the same commit's existing CI checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: python product/deploy/check_ci.py
+      - name: Check product extension snapshot
+        run: |
+          python -m pip install pytest==9.0.3
+          python -m unittest discover -s tests -p test_flowdesk_deploy.py -v
+          python -m pytest tests/test_flow_desk_extension_snapshot.py -q
+      - name: Check release assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          archive = subprocess.run(["git", "ls-files", "--stage", "skills/public"], capture_output=True, text=True, check=True)
+          if any(line.startswith("120000 ") for line in archive.stdout.splitlines()):
+              raise SystemExit("Public skill symlinks are forbidden in release assets")
+          if not Path("docker/nginx/nginx.conf").is_file():
+              raise SystemExit("Nginx release config is missing")
+          print("Release asset paths checked")
+          PY
+
+  gateway-image:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository }}-flowdesk-gateway:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: UV_EXTRAS=postgres
+
+  frontend-image:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build
+        with:
+          context: .
+          file: frontend/Dockerfile
+          target: prod
+          push: true
+          tags: ghcr.io/${{ github.repository }}-flowdesk-frontend:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+  deploy:
+    needs: [gateway-image, frontend-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Prepare restricted SSH connection
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.FLOWDESK_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.FLOWDESK_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/flowdesk_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/flowdesk_deploy" "$HOME/.ssh/known_hosts"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/flowdesk_deploy" ubuntu@175.178.62.55 verify
+      - name: Deploy verified images and runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.sha }}
+          GATEWAY_DIGEST: ${{ needs.gateway-image.outputs.digest }}
+          FRONTEND_DIGEST: ${{ needs.frontend-image.outputs.digest }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/flowdesk-assets"
+          cp docker/nginx/nginx.conf "$RUNNER_TEMP/flowdesk-assets/nginx.conf"
+          cp -a skills/public "$RUNNER_TEMP/flowdesk-assets/public"
+          mkdir -p "$RUNNER_TEMP/flowdesk-assets/skills"
+          mv "$RUNNER_TEMP/flowdesk-assets/public" "$RUNNER_TEMP/flowdesk-assets/skills/public"
+          tar -C "$RUNNER_TEMP/flowdesk-assets" -czf "$RUNNER_TEMP/flowdesk-assets.tar.gz" nginx.conf skills/public
+          test "$(stat -c %s "$RUNNER_TEMP/flowdesk-assets.tar.gz")" -lt 33554432
+          {
+            printf '%s\n' "$GH_ACTOR" "$GH_TOKEN"
+            cat "$RUNNER_TEMP/flowdesk-assets.tar.gz"
+          } | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/flowdesk_deploy" ubuntu@175.178.62.55 "deploy $DEPLOY_SHA $GATEWAY_DIGEST $FRONTEND_DIGEST"

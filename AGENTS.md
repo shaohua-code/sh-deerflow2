@@ -22,6 +22,8 @@ DingTalk) bridge into the same agent through the Gateway.
 
 ## Service Topology
 
+Flow Desk 腾讯云实例的 CI 发布入口见 [product/deploy/README.md](product/deploy/README.md#腾讯云自动部署)：`main` 的同 commit 检查全部成功后，专用 workflow 将两张 digest 固定镜像交给受限 SSH 接收端，并在服务器保留生产配置、备份 PostgreSQL/运行目录及验证就绪。不要从通用 `v*` 镜像发布工作流推断该实例会自动更新。
+
 A single `make dev` / Docker stack runs four cooperating services:
 
 | Service         | Port   | Role                                                                |
