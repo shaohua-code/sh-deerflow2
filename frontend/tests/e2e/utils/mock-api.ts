@@ -30,6 +30,40 @@ const MOCK_AUTH_USER = {
   email: "default@test.local",
   system_role: "admin",
   needs_setup: false,
+  permissions: [
+    "threads:read",
+    "threads:write",
+    "threads:delete",
+    "runs:create",
+    "runs:read",
+    "runs:cancel",
+    "projects:read",
+    "projects:write",
+    "projects:delete",
+    "memory:read",
+    "memory:write",
+    "memory:delete",
+    "memory:admin",
+    "preferences:read",
+    "preferences:write",
+    "agents:read",
+    "agents:write",
+    "agents:delete",
+    "agents:admin",
+    "channels:read",
+    "channels:write",
+    "channels:admin",
+    "integrations:read",
+    "integrations:write",
+    "integrations:admin",
+    "skills:read",
+    "skills:write",
+    "skills:delete",
+    "skills:admin",
+    "subagents:read",
+    "subagents:admin",
+    "mcp:admin",
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -480,6 +514,14 @@ export function mockLangGraphAPI(page: Page, options?: MockAPIOptions) {
     }
     return route.fallback();
   });
+
+  void page.route("**/api/v1/auth/iam/resources", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ controlled: false, menus: [], buttons: [] }),
+    }),
+  );
 
   void page.route("**/api/v1/auth/logout", (route) => {
     if (route.request().method() === "POST") {
