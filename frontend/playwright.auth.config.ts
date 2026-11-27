@@ -30,6 +30,7 @@ export default defineConfig({
         {
           name: "locale",
           value: "en-US",
+          expires: -1,
           domain: "localhost",
           path: "/",
           httpOnly: false,

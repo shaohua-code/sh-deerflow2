@@ -39,6 +39,7 @@ export default defineConfig({
         {
           name: "locale",
           value: "en-US",
+          expires: -1,
           domain: "localhost",
           path: "/",
           httpOnly: false,
@@ -48,6 +49,7 @@ export default defineConfig({
         {
           name: "locale",
           value: "en-US",
+          expires: -1,
           domain: "127.0.0.1",
           path: "/",
           httpOnly: false,

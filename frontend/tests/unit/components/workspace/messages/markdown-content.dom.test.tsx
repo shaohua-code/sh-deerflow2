@@ -2,16 +2,14 @@ import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 
 import { MarkdownContent } from "@/components/workspace/messages/markdown-content";
-import { clearRevealProgressForTests } from "@/components/workspace/messages/use-smooth-streaming-content";
 
 afterEach(() => {
   cleanup();
-  clearRevealProgressForTests();
   rs.useRealTimers();
 });
 
 describe("MarkdownContent bounded streaming cadence", () => {
-  it("commits at most once per 50ms and keeps typing after the stream ends", async () => {
+  it("commits at most once per 50ms and flushes exact completed content", async () => {
     rs.useFakeTimers();
     const content = "x".repeat(200);
     const { container, rerender } = render(
@@ -19,7 +17,6 @@ describe("MarkdownContent bounded streaming cadence", () => {
     );
 
     expect(container.textContent).toBe("");
-
     act(() => {
       void rs.advanceTimersByTime(49);
     });
@@ -28,23 +25,17 @@ describe("MarkdownContent bounded streaming cadence", () => {
       void rs.advanceTimersByTime(1);
     });
     const firstCommitLength = container.textContent?.length ?? 0;
-    // 逐字显示：一次提交只推进几个字符，不再至少 64 个
-    expect(firstCommitLength).toBe(5);
+    expect(firstCommitLength).toBeGreaterThanOrEqual(64);
+    expect(firstCommitLength).toBeLessThan(200);
 
     act(() => {
       void rs.advanceTimersByTime(49);
     });
     expect(container.textContent).toHaveLength(firstCommitLength);
 
-    // 流结束后剩余文字继续逐字显示，而不是一次性补齐
     act(() =>
       rerender(<MarkdownContent content={content} isLoading={false} />),
     );
-    expect(container.textContent).toHaveLength(firstCommitLength);
-
-    act(() => {
-      void rs.advanceTimersByTime(5000);
-    });
     expect(container.textContent).toBe(content);
   });
 });
