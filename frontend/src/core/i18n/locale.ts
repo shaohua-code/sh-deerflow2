@@ -1,6 +1,9 @@
 export const SUPPORTED_LOCALES = ["en-US", "zh-CN"] as const;
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
-export const DEFAULT_LOCALE: Locale = "en-US";
+// 产品默认语言（自有决策）：无 locale Cookie 的服务端渲染、无法识别的
+// 浏览器语言和空值一律回退中文；英文需要显式写入 locale Cookie。
+// 固定回归见 tests/unit/core/i18n/locale.test.ts，修改默认值时同步该测试。
+export const DEFAULT_LOCALE: Locale = "zh-CN";
 
 export function isLocale(value: string): value is Locale {
   return (SUPPORTED_LOCALES as readonly string[]).includes(value);

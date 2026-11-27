@@ -23,6 +23,22 @@ export default defineConfig({
     baseURL: frontendURL,
     locale: "en-US",
     trace: "on-first-retry",
+    // 与 playwright.config.ts 一致：注入 en-US locale Cookie，让认证页 E2E
+    // 在产品默认语言切为中文后仍按英文断言。
+    storageState: {
+      cookies: [
+        {
+          name: "locale",
+          value: "en-US",
+          domain: "localhost",
+          path: "/",
+          httpOnly: false,
+          secure: false,
+          sameSite: "Lax",
+        },
+      ],
+      origins: [],
+    },
   },
 
   projects: [

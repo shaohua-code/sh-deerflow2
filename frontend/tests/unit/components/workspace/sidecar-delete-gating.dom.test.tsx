@@ -11,7 +11,6 @@ import {
 import { SidecarPanel } from "@/components/workspace/sidecar/sidecar-panel";
 import { AuthProvider, useAuth } from "@/core/auth/AuthProvider";
 import type { User } from "@/core/auth/types";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
 // AuthProvider and the panel both reach into next/navigation. Keep it inert
@@ -79,7 +78,7 @@ function buildTree(
   } = {},
 ): ReactNode {
   return (
-    <I18nProvider initialLocale={DEFAULT_LOCALE}>
+    <I18nProvider initialLocale="en-US">
       <QueryClientProvider client={queryClient}>
         <AuthProvider initialUser={initialUser}>
           {withFlip && <FlipUserProbe to={flipTo} />}

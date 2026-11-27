@@ -17,7 +17,6 @@ import {
 } from "@/components/workspace/input-box";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { AuthProvider } from "@/core/auth/AuthProvider";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 import { stageProjectAttachment } from "@/core/projects/composer-attach";
 import type { AttachProjectDocumentResult } from "@/core/projects/types";
@@ -112,7 +111,7 @@ function renderComposer({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const tree = (threadIdProp: string, onSubmitProp: SubmitSpy): ReactNode => (
-    <I18nProvider initialLocale={DEFAULT_LOCALE}>
+    <I18nProvider initialLocale="en-US">
       <QueryClientProvider client={queryClient}>
         <AuthProvider
           initialUser={{

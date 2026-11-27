@@ -28,7 +28,8 @@ const config = {
       : undefined,
   i18n: {
     locales: ["en", "zh"],
-    defaultLocale: "en",
+    // 与 core/i18n/locale.ts 的 DEFAULT_LOCALE 保持一致：产品默认中文。
+    defaultLocale: "zh",
   },
   turbopack: {
     root: fileURLToPath(new URL(".", import.meta.url)),

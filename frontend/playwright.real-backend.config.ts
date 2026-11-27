@@ -29,6 +29,22 @@ export default defineConfig({
   use: {
     baseURL: frontendUrl,
     trace: "on-first-retry",
+    // 与 playwright.config.ts 一致：注入 en-US locale Cookie，让真实后端
+    // 回放套件在产品默认语言切为中文后仍按英文语义渲染与断言。
+    storageState: {
+      cookies: [
+        {
+          name: "locale",
+          value: "en-US",
+          domain: "localhost",
+          path: "/",
+          httpOnly: false,
+          secure: false,
+          sameSite: "Lax",
+        },
+      ],
+      origins: [],
+    },
   },
 
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

@@ -16,7 +16,6 @@ import { PromptInputProvider } from "@/components/ai-elements/prompt-input";
 import { InputBox } from "@/components/workspace/input-box";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { AuthProvider, useAuth } from "@/core/auth/AuthProvider";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
 // rstest dom 环境的 jsdom File 不是 undici Blob 的子类实例，上传链路
@@ -113,7 +112,7 @@ function renderComposer({
   canSubmit,
   canStopStreaming,
   onStop,
-  locale = DEFAULT_LOCALE,
+  locale = "en-US",
   status = "streaming",
   canUploadFiles = true,
   onSubmit,

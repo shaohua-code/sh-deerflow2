@@ -30,6 +30,33 @@ export default defineConfig({
     baseURL,
     locale: "en-US",
     trace: "on-first-retry",
+    // 产品默认语言是中文（core/i18n/locale.ts 的 DEFAULT_LOCALE）；无 Cookie
+    // 时服务端一律渲染中文。绝大多数 E2E 断言英文文案，这里通过全局注入
+    // en-US locale Cookie 维持原语义；个别用例自设 zh-CN Cookie 会覆盖它，
+    // 默认中文路径由 landing.spec.ts 的清 Cookie 用例单独覆盖。
+    storageState: {
+      cookies: [
+        {
+          name: "locale",
+          value: "en-US",
+          domain: "localhost",
+          path: "/",
+          httpOnly: false,
+          secure: false,
+          sameSite: "Lax",
+        },
+        {
+          name: "locale",
+          value: "en-US",
+          domain: "127.0.0.1",
+          path: "/",
+          httpOnly: false,
+          secure: false,
+          sameSite: "Lax",
+        },
+      ],
+      origins: [],
+    },
   },
 
   projects: [

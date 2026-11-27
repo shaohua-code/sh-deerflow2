@@ -8,7 +8,6 @@ import {
 } from "@/components/workspace/sidecar/context";
 import { AuthProvider, useAuth } from "@/core/auth/AuthProvider";
 import type { User } from "@/core/auth/types";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
 const mocks = rs.hoisted(() => ({
@@ -61,7 +60,7 @@ function buildTree(
   { withFlip = false, flipTo = makeUser(["threads:read"]) } = {},
 ): ReactNode {
   return (
-    <I18nProvider initialLocale={DEFAULT_LOCALE}>
+    <I18nProvider initialLocale="en-US">
       <AuthProvider initialUser={initialUser}>
         {withFlip && <FlipUserProbe to={flipTo} />}
         <SidecarProvider

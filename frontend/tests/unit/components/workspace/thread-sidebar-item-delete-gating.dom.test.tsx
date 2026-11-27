@@ -8,7 +8,6 @@ import { ThreadSidebarItem } from "@/components/workspace/recent-chat-list";
 import { ThreadDeleteDialogProvider } from "@/components/workspace/thread-delete-dialog";
 import { AuthProvider } from "@/core/auth/AuthProvider";
 import type { User } from "@/core/auth/types";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
 rs.mock("next/navigation", () => ({
@@ -59,7 +58,7 @@ function renderItem(user: User): ReturnType<typeof render> {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const tree: ReactNode = (
-    <I18nProvider initialLocale={DEFAULT_LOCALE}>
+    <I18nProvider initialLocale="en-US">
       <QueryClientProvider client={queryClient}>
         <AuthProvider initialUser={user}>
           <SidebarProvider>

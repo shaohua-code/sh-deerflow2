@@ -7,10 +7,7 @@ import {
   type ReactNode,
   useContext,
   useDeferredValue,
-  useEffect,
   useMemo,
-  useRef,
-  useState,
 } from "react";
 
 import { type ClipboardSafeStreamdownProps } from "@/components/ai-elements/streamdown";
@@ -28,6 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { createMarkdownLinkComponent } from "./markdown-link";
+import { useSmoothStreamingContent } from "./use-smooth-streaming-content";
 
 export type MarkdownContentProps = {
   content: string;
@@ -43,109 +41,7 @@ type StreamingCodeProps = ComponentProps<"code"> & {
   children?: ReactNode;
 };
 
-const SMOOTH_REVEAL_MIN_DELTA = 80;
-const SMOOTH_REVEAL_CADENCE_MS = 50;
-const SMOOTH_REVEAL_MIN_CHARS_PER_COMMIT = 64;
-const SMOOTH_REVEAL_DURATION_MS = 300;
-
 const StreamingCodeBlockContext = createContext(false);
-
-function useSmoothStreamingContent(content: string, isLoading: boolean) {
-  const initialContent =
-    isLoading && content.length >= SMOOTH_REVEAL_MIN_DELTA ? "" : content;
-  const [displayContent, setDisplayContent] = useState(initialContent);
-  const displayContentRef = useRef(initialContent);
-  const targetContentRef = useRef(content);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const revealStartedAtRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    targetContentRef.current = content;
-
-    const current = displayContentRef.current;
-    const prefersReducedMotion =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const shouldSmoothReveal =
-      content !== current &&
-      content.startsWith(current) &&
-      !prefersReducedMotion &&
-      isLoading;
-
-    if (!shouldSmoothReveal) {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      revealStartedAtRef.current = null;
-      if (current !== content) {
-        displayContentRef.current = content;
-        setDisplayContent(content);
-      }
-      return;
-    }
-
-    const tick = () => {
-      timerRef.current = null;
-      const target = targetContentRef.current;
-      const latest = displayContentRef.current;
-      if (!target.startsWith(latest) || latest.length >= target.length) {
-        revealStartedAtRef.current = null;
-        return;
-      }
-
-      const startedAt = revealStartedAtRef.current ?? performance.now();
-      revealStartedAtRef.current = startedAt;
-      const remainingDuration = Math.max(
-        SMOOTH_REVEAL_CADENCE_MS,
-        SMOOTH_REVEAL_DURATION_MS - (performance.now() - startedAt),
-      );
-      const remainingCommits = Math.max(
-        1,
-        Math.ceil(remainingDuration / SMOOTH_REVEAL_CADENCE_MS),
-      );
-      const nextLength = Math.min(
-        target.length,
-        latest.length +
-          Math.max(
-            SMOOTH_REVEAL_MIN_CHARS_PER_COMMIT,
-            Math.ceil((target.length - latest.length) / remainingCommits),
-          ),
-      );
-      const next = target.slice(0, nextLength);
-      displayContentRef.current = next;
-      setDisplayContent(next);
-
-      if (next.length < target.length) {
-        scheduleTick();
-      } else {
-        revealStartedAtRef.current = null;
-      }
-    };
-
-    const scheduleTick = () => {
-      if (timerRef.current !== null) return;
-      revealStartedAtRef.current ??= performance.now();
-      timerRef.current = setTimeout(tick, SMOOTH_REVEAL_CADENCE_MS);
-    };
-
-    scheduleTick();
-  }, [content, isLoading]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, []);
-
-  return {
-    content: displayContent,
-    isRevealing: displayContent !== content,
-  };
-}
 
 function StreamingPre({ children }: ComponentProps<"pre">) {
   const childClassName = isValidElement<{ className?: string }>(children)
@@ -257,7 +153,8 @@ export function MarkdownContent({
       remarkPlugins={remarkPlugins}
       rehypePlugins={effectiveRehypePlugins}
       components={toStreamdownComponents(components)}
-      parseIncompleteMarkdown={isLoading}
+      // 流结束后仍在逐字显示时，已显示内容的末尾一样可能停在未闭合的标记中间，继续按不完整 Markdown 解析
+      parseIncompleteMarkdown={isStreamingRender}
       animated={streamdownSmoothStreamingAnimation}
       isAnimating={isLoading}
     >

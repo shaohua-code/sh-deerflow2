@@ -12,7 +12,6 @@ import { PromptInputProvider } from "@/components/ai-elements/prompt-input";
 import { InputBox } from "@/components/workspace/input-box";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { AuthProvider } from "@/core/auth/AuthProvider";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 import { buildComposerDraftKey } from "@/core/threads/composer-draft";
 
@@ -71,7 +70,7 @@ function renderComposer({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
-    <I18nProvider initialLocale={DEFAULT_LOCALE}>
+    <I18nProvider initialLocale="en-US">
       <QueryClientProvider client={queryClient}>
         <AuthProvider
           initialUser={{
@@ -146,7 +145,7 @@ describe("InputBox agent skill draft hydration", () => {
     );
 
     view.rerender(
-      <I18nProvider initialLocale={DEFAULT_LOCALE}>
+      <I18nProvider initialLocale="en-US">
         <QueryClientProvider
           client={
             new QueryClient({

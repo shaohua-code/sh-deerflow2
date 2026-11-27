@@ -17,7 +17,6 @@ import {
   ThreadDeleteDialogProvider,
   useThreadDeleteDialog,
 } from "@/components/workspace/thread-delete-dialog";
-import { DEFAULT_LOCALE } from "@/core/i18n";
 import { I18nProvider } from "@/core/i18n/context";
 
 const { deleteThread } = rs.hoisted(() => ({ deleteThread: rs.fn() }));
@@ -81,7 +80,7 @@ describe("thread deletion failure feedback", () => {
         defaultOptions: { mutations: { retry: false } },
       });
       render(
-        <I18nProvider initialLocale={DEFAULT_LOCALE}>
+        <I18nProvider initialLocale="en-US">
           <QueryClientProvider client={client}>
             <ThreadDeleteDialogProvider>
               <Trigger />

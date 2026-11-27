@@ -23,9 +23,6 @@ rs.mock("@/core/auth/setup", () => ({
 rs.mock("@/core/auth/remember-login", () => ({
   loadRememberLoginPreference: () => ({ rememberMe: true }),
 }));
-rs.mock("@/components/ui/flickering-grid", () => ({
-  FlickeringGrid: () => null,
-}));
 rs.mock("@/product/brand-mark", () => ({ BrandMark: () => null }));
 
 import SetupPage from "@/app/(auth)/setup/page";

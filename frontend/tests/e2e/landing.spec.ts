@@ -70,4 +70,22 @@ test.describe("Landing page", () => {
     await page.waitForURL("**/workspace");
     await expect(page).toHaveURL(/\/workspace$/);
   });
+
+  // 产品默认语言是中文：清掉全局注入的 en-US Cookie 后，无 Cookie 的服务端
+  // 渲染必须回退中文（DEFAULT_LOCALE，见 core/i18n/locale.ts）。
+  test("renders Chinese default copy without a locale cookie", async ({
+    page,
+    context,
+  }) => {
+    await context.clearCookies();
+    await page.goto("/");
+
+    await expect(
+      page.getByRole("link", { name: "智能工作台", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("h1")).toContainText("理清每一步，做好每件事。");
+    await expect(
+      page.getByRole("link", { name: "进入工作空间", exact: true }).last(),
+    ).toBeVisible();
+  });
 });
